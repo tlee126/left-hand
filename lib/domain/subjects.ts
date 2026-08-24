@@ -1,6 +1,6 @@
 /**
  * Canonical Learning Domain - Subjects & Categories
- * Derived from data/catalog.ts and data/site.ts
+ * Strictly derived from data/catalog.ts
  */
 
 export const CATEGORIES = [
@@ -45,7 +45,6 @@ export const CATEGORY_THEME_MAP: Record<Category, ColorTheme> = {
 
 export interface Subject {
   readonly id: string;
-  readonly code?: string;
   readonly slug: string;
   readonly name: string;
   readonly category: Category;
@@ -53,6 +52,9 @@ export interface Subject {
   readonly colorTheme: ColorTheme;
 }
 
+/**
+ * Canonical subjects existing in current data/catalog.ts
+ */
 export const CANONICAL_SUBJECTS: readonly Subject[] = [
   // Kế toán - Kiểm toán
   {
@@ -79,22 +81,6 @@ export const CANONICAL_SUBJECTS: readonly Subject[] = [
     facultyGroup: "Kế toán - Kiểm toán",
     colorTheme: "accounting"
   },
-  {
-    id: "sub-kttc2",
-    slug: "ke-toan-tai-chinh-2",
-    name: "Kế toán tài chính 2",
-    category: "Kế toán",
-    facultyGroup: "Kế toán - Kiểm toán",
-    colorTheme: "accounting"
-  },
-  {
-    id: "sub-ktcb",
-    slug: "kiem-toan-can-ban",
-    name: "Kiểm toán căn bản",
-    category: "Kế toán",
-    facultyGroup: "Kế toán - Kiểm toán",
-    colorTheme: "accounting"
-  },
 
   // Kinh tế - Định lượng
   {
@@ -106,7 +92,7 @@ export const CANONICAL_SUBJECTS: readonly Subject[] = [
     colorTheme: "economics"
   },
   {
-    id: "sub-ktvm-macro",
+    id: "sub-ktvmo",
     slug: "kinh-te-vi-mo-macro",
     name: "Kinh tế vĩ mô",
     category: "Kinh tế",
@@ -125,22 +111,6 @@ export const CANONICAL_SUBJECTS: readonly Subject[] = [
     id: "sub-tcc",
     slug: "toan-cao-cap",
     name: "Toán cao cấp",
-    category: "Thống kê",
-    facultyGroup: "Kinh tế - Định lượng",
-    colorTheme: "statistics"
-  },
-  {
-    id: "sub-tkt",
-    slug: "toan-kinh-te",
-    name: "Toán kinh tế",
-    category: "Thống kê",
-    facultyGroup: "Kinh tế - Định lượng",
-    colorTheme: "statistics"
-  },
-  {
-    id: "sub-ktl",
-    slug: "kinh-te-luong",
-    name: "Kinh tế lượng",
     category: "Thống kê",
     facultyGroup: "Kinh tế - Định lượng",
     colorTheme: "statistics"
@@ -164,25 +134,9 @@ export const CANONICAL_SUBJECTS: readonly Subject[] = [
     colorTheme: "marketing"
   },
   {
-    id: "sub-hvntd",
-    slug: "hanh-vi-nguoi-tieu-dung",
-    name: "Hành vi người tiêu dùng",
-    category: "Marketing",
-    facultyGroup: "Marketing - Quản trị",
-    colorTheme: "marketing"
-  },
-  {
     id: "sub-qth",
     slug: "quan-tri-hoc",
     name: "Quản trị học",
-    category: "Quản trị",
-    facultyGroup: "Marketing - Quản trị",
-    colorTheme: "management"
-  },
-  {
-    id: "sub-qtcl",
-    slug: "quan-tri-chien-luoc",
-    name: "Quản trị chiến lược",
     category: "Quản trị",
     facultyGroup: "Marketing - Quản trị",
     colorTheme: "management"
@@ -198,14 +152,6 @@ export const CANONICAL_SUBJECTS: readonly Subject[] = [
 
   // Tài chính - Ngân hàng
   {
-    id: "sub-tcdn",
-    slug: "tai-chinh-doanh-nghiep",
-    name: "Tài chính doanh nghiệp",
-    category: "Tài chính",
-    facultyGroup: "Tài chính - Ngân hàng",
-    colorTheme: "finance"
-  },
-  {
     id: "sub-tctt",
     slug: "tai-chinh-tien-te",
     name: "Tài chính tiền tệ",
@@ -214,25 +160,9 @@ export const CANONICAL_SUBJECTS: readonly Subject[] = [
     colorTheme: "finance"
   },
   {
-    id: "sub-nhtm",
-    slug: "ngan-hang-thuong-mai",
-    name: "Ngân hàng thương mại",
-    category: "Tài chính",
-    facultyGroup: "Tài chính - Ngân hàng",
-    colorTheme: "finance"
-  },
-  {
-    id: "sub-thue",
-    slug: "thue",
-    name: "Thuế",
-    category: "Tài chính",
-    facultyGroup: "Tài chính - Ngân hàng",
-    colorTheme: "finance"
-  },
-  {
-    id: "sub-tttc",
-    slug: "thi-truong-tai-chinh",
-    name: "Thị trường tài chính",
+    id: "sub-tcdn",
+    slug: "tai-chinh-doanh-nghiep",
+    name: "Tài chính doanh nghiệp",
     category: "Tài chính",
     facultyGroup: "Tài chính - Ngân hàng",
     colorTheme: "finance"
@@ -251,22 +181,6 @@ export const CANONICAL_SUBJECTS: readonly Subject[] = [
     id: "sub-htttql",
     slug: "he-thong-thong-tin-quan-ly",
     name: "Hệ thống thông tin quản lý",
-    category: "MIS",
-    facultyGroup: "MIS / Công nghệ / Dữ liệu",
-    colorTheme: "mis"
-  },
-  {
-    id: "sub-pttkht",
-    slug: "phan-tich-thiet-ke-he-thong",
-    name: "Phân tích thiết kế hệ thống",
-    category: "MIS",
-    facultyGroup: "MIS / Công nghệ / Dữ liệu",
-    colorTheme: "mis"
-  },
-  {
-    id: "sub-tmdt",
-    slug: "thuong-mai-dien-tu",
-    name: "Thương mại điện tử",
     category: "MIS",
     facultyGroup: "MIS / Công nghệ / Dữ liệu",
     colorTheme: "mis"
@@ -292,20 +206,33 @@ export const CANONICAL_SUBJECTS: readonly Subject[] = [
 ] as const;
 
 export function findSubjectBySlug(slug: string): Subject | undefined {
+  if (!slug) return undefined;
   const normalized = normalizeSlug(slug);
   return CANONICAL_SUBJECTS.find((s) => s.slug === normalized);
 }
 
+/**
+ * Looks up a subject by name with full accent, case, and whitespace tolerance.
+ * Handles both accented Vietnamese ("Kế toán tài chính 1") and unaccented ("ke toan tai chinh 1").
+ */
 export function findSubjectByName(name: string): Subject | undefined {
-  const trimmed = name.trim().toLowerCase();
-  return CANONICAL_SUBJECTS.find((s) => s.name.toLowerCase() === trimmed);
+  if (!name || typeof name !== "string") return undefined;
+  const normalizedInput = normalizeSlug(name);
+  if (!normalizedInput) return undefined;
+
+  return CANONICAL_SUBJECTS.find((s) => {
+    return (
+      normalizeSlug(s.name) === normalizedInput ||
+      s.name.trim().toLowerCase() === name.trim().toLowerCase()
+    );
+  });
 }
 
 /**
  * Normalizes an arbitrary text string or raw slug into a safe lowercase kebab-case slug.
  */
 export function normalizeSlug(input: string): string {
-  if (!input) return "";
+  if (!input || typeof input !== "string") return "";
 
   return input
     .normalize("NFD")
