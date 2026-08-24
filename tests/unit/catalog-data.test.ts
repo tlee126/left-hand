@@ -4,7 +4,15 @@
 
 import assert from "node:assert/strict";
 import { test, describe } from "node:test";
-import { materials, courses, tutors, MaterialItem, CourseItem, TutorItem } from "../../data/catalog";
+import {
+  materials,
+  courses,
+  tutors,
+  MaterialItem,
+  CourseItem,
+  TutorItem,
+  TUTOR_FORMATS
+} from "../../data/catalog";
 import {
   CATEGORIES,
   COLOR_THEMES,
@@ -184,8 +192,11 @@ describe("Catalog Seed Integrity & Normalization", () => {
           `Tutor ${item.id} price format invalid: ${item.price}`
         );
 
-        // Format is non-empty string
-        assert.ok(item.format && item.format.trim() !== "", `Tutor ${item.id} format must not be empty`);
+        // Format belongs to canonical TUTOR_FORMATS union
+        assert.ok(
+          (TUTOR_FORMATS as readonly string[]).includes(item.format),
+          `Tutor ${item.id} format "${item.format}" must be one of ${TUTOR_FORMATS.join(", ")}`
+        );
       }
     });
   });

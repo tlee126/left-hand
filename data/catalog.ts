@@ -3,14 +3,17 @@ import type { EnrollmentStatus } from "@/lib/domain/product-types";
 
 export type CourseFormat = "online" | "offline" | "video" | "zoom";
 
-export type TutorFormat =
-  | "1:1 & Nhóm nhỏ (Online/Offline)"
-  | "1:1 (Online/Offline quận 7)"
-  | "1:1 & Nhóm nhỏ (Online)"
-  | "1:1 (Online qua Google Meet)"
-  | "1:1 & Nhóm nhỏ (Offline/Online)"
-  | "1:1 (Online)"
-  | "1:1 & Nhóm nhỏ (Online/Offline Q7)";
+export const TUTOR_FORMATS = [
+  "1:1 & Nhóm nhỏ (Online/Offline)",
+  "1:1 (Online/Offline quận 7)",
+  "1:1 & Nhóm nhỏ (Online)",
+  "1:1 (Online qua Google Meet)",
+  "1:1 & Nhóm nhỏ (Offline/Online)",
+  "1:1 (Online)",
+  "1:1 & Nhóm nhỏ (Online/Offline Q7)"
+] as const;
+
+export type TutorFormat = (typeof TUTOR_FORMATS)[number];
 
 export interface MaterialItem {
   id: string;
@@ -62,7 +65,7 @@ export interface TutorItem {
   subjects: string[];
   faculty: string;
   strengths: string[];
-  format: TutorFormat | string;
+  format: TutorFormat;
   price: string;
   availability: string;
   rating: number;
