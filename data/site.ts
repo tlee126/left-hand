@@ -11,29 +11,12 @@ export type FeatureIconKey =
 
 export type SocialIconKey = "facebook" | "youtube" | "messenger";
 
-export type ResourceCategory =
-  | "Kế toán"
-  | "Kinh tế"
-  | "Thống kê"
-  | "Marketing"
-  | "Quản trị"
-  | "Tài chính"
-  | "MIS"
-  | "Luật"
-  | "Ngoại ngữ";
+import type { Category, ColorTheme } from "@/lib/domain/subjects";
+
+export type ResourceCategory = Category;
+export type ResourceColorTheme = ColorTheme;
 
 export type ResourceType = "TÀI LIỆU" | "KHÓA HỌC";
-
-export type ResourceColorTheme =
-  | "accounting"
-  | "economics"
-  | "statistics"
-  | "marketing"
-  | "management"
-  | "finance"
-  | "law"
-  | "mis"
-  | "languages";
 
 export type ResourceItem = {
   id: string;

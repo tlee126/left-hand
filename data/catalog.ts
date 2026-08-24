@@ -1,10 +1,24 @@
+import type { Category, ColorTheme } from "@/lib/domain/subjects";
+import type { EnrollmentStatus } from "@/lib/domain/product-types";
+
+export type CourseFormat = "online" | "offline" | "video" | "zoom";
+
+export type TutorFormat =
+  | "1:1 & Nhóm nhỏ (Online/Offline)"
+  | "1:1 (Online/Offline quận 7)"
+  | "1:1 & Nhóm nhỏ (Online)"
+  | "1:1 (Online qua Google Meet)"
+  | "1:1 & Nhóm nhỏ (Offline/Online)"
+  | "1:1 (Online)"
+  | "1:1 & Nhóm nhỏ (Online/Offline Q7)";
+
 export interface MaterialItem {
   id: string;
   slug: string;
   title: string;
   subject: string;
   facultyGroup: string;
-  category: string;
+  category: Category;
   type: "TÀI LIỆU";
   description: string;
   price: string;
@@ -13,7 +27,7 @@ export interface MaterialItem {
   tags: string[];
   rating: number;
   isHot: boolean;
-  colorTheme: "accounting" | "economics" | "statistics" | "marketing" | "management" | "finance" | "law" | "mis" | "languages";
+  colorTheme: ColorTheme;
   includes?: string[];
   suitableFor?: string[];
 }
@@ -23,19 +37,19 @@ export interface CourseItem {
   slug: string;
   title: string;
   subject: string;
-  category: string;
-  format: "online" | "offline" | "video" | "zoom";
+  category: Category;
+  format: CourseFormat;
   sessions: number;
   duration: string;
   schedule: string;
   description: string;
   price: string;
   oldPrice?: string;
-  status: "open" | "coming-soon" | "full";
+  status: EnrollmentStatus;
   mentor: string;
   tags: string[];
   rating: number;
-  colorTheme: "accounting" | "economics" | "statistics" | "marketing" | "management" | "finance" | "law" | "mis" | "languages";
+  colorTheme: ColorTheme;
   curriculum?: string[];
   suitableFor?: string[];
   preparation?: string[];
@@ -48,13 +62,13 @@ export interface TutorItem {
   subjects: string[];
   faculty: string;
   strengths: string[];
-  format: string; // e.g., "1:1", "Nhóm nhỏ", "Online"
+  format: TutorFormat | string;
   price: string;
   availability: string;
   rating: number;
   shortBio: string;
   tags: string[];
-  colorTheme: "accounting" | "economics" | "statistics" | "marketing" | "management" | "finance" | "law" | "mis" | "languages";
+  colorTheme: ColorTheme;
   suitableFor?: string[];
   supportMethods?: string[];
 }
