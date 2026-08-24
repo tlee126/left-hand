@@ -2,7 +2,21 @@ node_modules
 .next
 out
 .vercel
+
+# Environment files
 .env
 .env.local
 .env*.local
+
+# Logs
 npm-debug.log*
+*.log
+logs/
+
+# TypeScript
+tsconfig.tsbuildinfo
+
+# Test artifacts
+coverage/
+test-results/
+playwright-report/

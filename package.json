@@ -2,11 +2,12 @@
   "name": "left-hand-next",
   "version": "0.1.0",
   "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
-  },
+"scripts": {
+  "dev": "next dev",
+  "build": "next build",
+  "start": "next start",
+  "typecheck": "tsc --noEmit"
+},
   "dependencies": {
     "@fontsource/be-vietnam-pro": "5.2.8",
     "framer-motion": "12.40.0",
