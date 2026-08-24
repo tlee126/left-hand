@@ -1,7 +1,7 @@
 import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
 import { featureIcons } from "@/components/site/icon-map";
-import { aboutItems } from "@/data/site";
+import { aboutItems, coreTeam } from "@/data/site";
 
 export function AboutSection() {
   return (
@@ -44,6 +44,25 @@ export function AboutSection() {
             );
           })}
         </div>
+
+        <MotionReveal delay={0.2} className="mt-8">
+          <div className="rounded-[24px] border border-ink/10 bg-white/70 p-5 sm:p-6 backdrop-blur-sm shadow-[0_4px_20px_rgba(19,36,93,0.04)]">
+            <p className="text-center text-xs font-bold uppercase tracking-[0.14em] text-ink/60 sm:text-sm">
+              LEFT HAND được vận hành bởi core team sinh viên UFM phụ trách học thuật, growth, vận hành và cộng đồng:
+            </p>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
+              {coreTeam.map((member) => (
+                <div
+                  key={member.role}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-accent/15 bg-white/90 px-3.5 py-1.5 text-xs font-semibold text-ink/85 shadow-sm transition hover:border-accent/30 hover:bg-white"
+                >
+                  <span className="font-extrabold text-accent">{member.role}:</span>
+                  <span>{member.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </MotionReveal>
       </div>
     </section>
   );

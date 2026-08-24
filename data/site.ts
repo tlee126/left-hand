@@ -78,6 +78,18 @@ export const aboutItems = [
   }
 ];
 
+export interface TeamMember {
+  role: string;
+  name: string;
+}
+
+export const coreTeam: TeamMember[] = [
+  { role: "CEO", name: "Thảo Trang / Zoey Huynh" },
+  { role: "Head of Academic", name: "Quỳnh Như" },
+  { role: "Head of Growth", name: "Huỳnh Nhật" },
+  { role: "COO", name: "Xuân Mai" }
+];
+
 export const impactStats = [
   {
     numericValue: 300,
