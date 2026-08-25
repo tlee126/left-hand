@@ -1,6 +1,7 @@
 -- seed.sql
 -- Idempotent seed data for LEFT HAND core subjects and catalog items
 -- Derived directly from data/catalog.ts with integer numeric VND pricing
+-- NOTE: All subject UUID variables (v_sub_*) used in DO blocks must be explicitly declared and selected from subjects by slug.
 
 BEGIN;
 
