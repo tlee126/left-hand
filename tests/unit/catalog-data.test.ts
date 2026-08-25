@@ -241,6 +241,62 @@ describe("Catalog Seed Integrity & Normalization", () => {
         "profiles.id must reference auth.users(id) ON DELETE CASCADE"
       );
     });
+
+    test("0002_public_catalog_read_policies.sql defines valid SELECT policies with publication_status checks", async () => {
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+
+      const policyPath = path.resolve(process.cwd(), "supabase/migrations/0002_public_catalog_read_policies.sql");
+      const policyContent = await fs.readFile(policyPath, "utf-8");
+
+      // Verify policy exists for each catalog table
+      const catalogTables = [
+        "subjects",
+        "products",
+        "materials",
+        "courses",
+        "course_lessons",
+        "tutors",
+        "tutor_subjects"
+      ];
+
+      for (const table of catalogTables) {
+        const policyPattern = new RegExp(`CREATE\\s+POLICY\\s+["'][^"']+["']\\s+ON\\s+${table}\\s+FOR\\s+SELECT\\s+TO\\s+anon,\\s*authenticated`, "i");
+        assert.ok(
+          policyPattern.test(policyContent),
+          `Table "${table}" must have a SELECT policy for anon and authenticated users`
+        );
+      }
+
+      // Verify no mutation policies (INSERT, UPDATE, DELETE)
+      assert.ok(!/FOR\s+(INSERT|UPDATE|DELETE)/i.test(policyContent), "Policy file must not grant write/mutation permissions");
+
+      // Verify published condition is enforced for products and dependent tables
+      assert.ok(
+        /ON\s+products[\s\S]*?USING\s*\(\s*publication_status\s*=\s*'published'\s*\)/i.test(policyContent),
+        "products policy must enforce publication_status = 'published'"
+      );
+      assert.ok(
+        /ON\s+materials[\s\S]*?publication_status\s*=\s*'published'/i.test(policyContent),
+        "materials policy must check parent product publication_status"
+      );
+      assert.ok(
+        /ON\s+courses[\s\S]*?publication_status\s*=\s*'published'/i.test(policyContent),
+        "courses policy must check parent product publication_status"
+      );
+      assert.ok(
+        /ON\s+course_lessons[\s\S]*?publication_status\s*=\s*'published'/i.test(policyContent),
+        "course_lessons policy must check parent course product publication_status"
+      );
+      assert.ok(
+        /ON\s+tutors[\s\S]*?publication_status\s*=\s*'published'/i.test(policyContent),
+        "tutors policy must check parent product publication_status"
+      );
+      assert.ok(
+        /ON\s+tutor_subjects[\s\S]*?publication_status\s*=\s*'published'/i.test(policyContent),
+        "tutor_subjects policy must check parent tutor product publication_status"
+      );
+    });
   });
 
   describe("SQL Seed Integrity", () => {

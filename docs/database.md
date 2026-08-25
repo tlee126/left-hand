@@ -116,7 +116,12 @@ erDiagram
 
 - **Supabase Auth Integration:** `profiles.id` is explicitly anchored to `auth.users(id)` with `ON DELETE CASCADE`. No detached or unauthenticated profile records can exist.
 - **RLS Enabled:** All 8 application tables (`profiles`, `subjects`, `products`, `materials`, `courses`, `course_lessons`, `tutors`, `tutor_subjects`) have `ROW LEVEL SECURITY` enabled by default.
-- **Policy Staging:** Default RLS denies all unauthorized access. Granular public read policies (e.g. for published catalog items) and authenticated profile read/write policies (`auth.uid() = id`) will be created in the dedicated Auth & Catalog access phase prior to connecting client queries.
+- **Public Catalog Read Access (`0002_public_catalog_read_policies.sql`):**
+  - Public anonymous (`anon`) and authenticated (`authenticated`) users can query catalog items using safe SELECT policies.
+  - Public users may read only published content (`publication_status = 'published'`).
+  - Child tables (`materials`, `courses`, `course_lessons`, `tutors`, `tutor_subjects`) restrict reads to items whose parent product is published.
+  - User profiles remain strictly private and protected under default RLS denial until authenticated profile policies are added.
+  - No public mutation (INSERT, UPDATE, DELETE) policies are permitted.
 
 ---
 
@@ -129,7 +134,7 @@ When ready to apply to local or hosted Supabase:
 # 1. Start local Supabase instance
 npx supabase start
 
-# 2. Apply migration
+# 2. Apply migrations
 npx supabase migration up
 
 # 3. Seed database
@@ -139,6 +144,7 @@ npx supabase db reset # (or run psql against supabase/seed.sql)
 ### Using psql / direct connection:
 ```bash
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0001_core_schema.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0002_public_catalog_read_policies.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/seed.sql
 ```
 
