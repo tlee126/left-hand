@@ -112,9 +112,15 @@ erDiagram
 - No fractional cents or formatted strings (`29.000đ`) are stored in the database.
 - Contact pricing is enforced via `is_contact_for_price = true` with `price_vnd IS NULL` via check constraint `chk_pricing_consistency`.
 
+## 4. Security & Row Level Security (RLS) Policy
+
+- **Supabase Auth Integration:** `profiles.id` is explicitly anchored to `auth.users(id)` with `ON DELETE CASCADE`. No detached or unauthenticated profile records can exist.
+- **RLS Enabled:** All 8 application tables (`profiles`, `subjects`, `products`, `materials`, `courses`, `course_lessons`, `tutors`, `tutor_subjects`) have `ROW LEVEL SECURITY` enabled by default.
+- **Policy Staging:** Default RLS denies all unauthorized access. Granular public read policies (e.g. for published catalog items) and authenticated profile read/write policies (`auth.uid() = id`) will be created in the dedicated Auth & Catalog access phase prior to connecting client queries.
+
 ---
 
-## 4. How to Run Migrations and Seed Later
+## 5. How to Run Migrations and Seed Later
 
 When ready to apply to local or hosted Supabase:
 

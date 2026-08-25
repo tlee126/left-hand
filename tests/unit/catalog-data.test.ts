@@ -201,6 +201,48 @@ describe("Catalog Seed Integrity & Normalization", () => {
     });
   });
 
+  describe("SQL Schema & Migration Integrity", () => {
+    test("every application table in 0001_core_schema.sql enables row level security", async () => {
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+
+      const schemaPath = path.resolve(process.cwd(), "supabase/migrations/0001_core_schema.sql");
+      const schemaContent = await fs.readFile(schemaPath, "utf-8");
+
+      const expectedTables = [
+        "profiles",
+        "subjects",
+        "products",
+        "materials",
+        "courses",
+        "course_lessons",
+        "tutors",
+        "tutor_subjects"
+      ];
+
+      for (const table of expectedTables) {
+        const rlsPattern = new RegExp(`ALTER\\s+TABLE\\s+${table}\\s+ENABLE\\s+ROW\\s+LEVEL\\s+SECURITY;`, "i");
+        assert.ok(
+          rlsPattern.test(schemaContent),
+          `Table "${table}" must have an ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY; statement`
+        );
+      }
+    });
+
+    test("profiles table references auth.users(id) with ON DELETE CASCADE", async () => {
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+
+      const schemaPath = path.resolve(process.cwd(), "supabase/migrations/0001_core_schema.sql");
+      const schemaContent = await fs.readFile(schemaPath, "utf-8");
+
+      assert.ok(
+        /id\s+UUID\s+PRIMARY\s+KEY\s+REFERENCES\s+auth\.users\s*\(\s*id\s*\)\s+ON\s+DELETE\s+CASCADE/i.test(schemaContent),
+        "profiles.id must reference auth.users(id) ON DELETE CASCADE"
+      );
+    });
+  });
+
   describe("SQL Seed Integrity", () => {
     test("every v_sub_* variable referenced in supabase/seed.sql is declared and loaded", async () => {
       const fs = await import("node:fs/promises");

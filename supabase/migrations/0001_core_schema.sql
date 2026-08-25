@@ -89,9 +89,9 @@ EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
 
--- 1. Profiles Table (Future-compatible user profile anchor)
+-- 1. Profiles Table (Anchored to Supabase Auth auth.users)
 CREATE TABLE IF NOT EXISTS profiles (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     full_name TEXT NOT NULL,
     email TEXT UNIQUE,
     phone TEXT,
@@ -226,4 +226,15 @@ CREATE INDEX IF NOT EXISTS idx_courses_format ON courses(format);
 CREATE INDEX IF NOT EXISTS idx_course_lessons_course_id ON course_lessons(course_id);
 
 CREATE INDEX IF NOT EXISTS idx_tutor_subjects_subject_id ON tutor_subjects(subject_id);
+
+-- Enable Row Level Security (RLS) on all application tables
+-- Note: Explicit read/write security policies will be added during auth/catalog integration
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE subjects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE materials ENABLE ROW LEVEL SECURITY;
+ALTER TABLE courses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE course_lessons ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tutors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tutor_subjects ENABLE ROW LEVEL SECURITY;
 
