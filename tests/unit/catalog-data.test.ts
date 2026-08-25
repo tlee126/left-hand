@@ -200,5 +200,98 @@ describe("Catalog Seed Integrity & Normalization", () => {
       }
     });
   });
+
+  describe("SQL Schema & Migration Integrity", () => {
+    test("every application table in 0001_core_schema.sql enables row level security", async () => {
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+
+      const schemaPath = path.resolve(process.cwd(), "supabase/migrations/0001_core_schema.sql");
+      const schemaContent = await fs.readFile(schemaPath, "utf-8");
+
+      const expectedTables = [
+        "profiles",
+        "subjects",
+        "products",
+        "materials",
+        "courses",
+        "course_lessons",
+        "tutors",
+        "tutor_subjects"
+      ];
+
+      for (const table of expectedTables) {
+        const rlsPattern = new RegExp(`ALTER\\s+TABLE\\s+${table}\\s+ENABLE\\s+ROW\\s+LEVEL\\s+SECURITY;`, "i");
+        assert.ok(
+          rlsPattern.test(schemaContent),
+          `Table "${table}" must have an ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY; statement`
+        );
+      }
+    });
+
+    test("profiles table references auth.users(id) with ON DELETE CASCADE", async () => {
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+
+      const schemaPath = path.resolve(process.cwd(), "supabase/migrations/0001_core_schema.sql");
+      const schemaContent = await fs.readFile(schemaPath, "utf-8");
+
+      assert.ok(
+        /id\s+UUID\s+PRIMARY\s+KEY\s+REFERENCES\s+auth\.users\s*\(\s*id\s*\)\s+ON\s+DELETE\s+CASCADE/i.test(schemaContent),
+        "profiles.id must reference auth.users(id) ON DELETE CASCADE"
+      );
+    });
+  });
+
+  describe("SQL Seed Integrity", () => {
+    test("every v_sub_* variable referenced in supabase/seed.sql is declared and loaded", async () => {
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+
+      const seedPath = path.resolve(process.cwd(), "supabase/seed.sql");
+      const seedContent = await fs.readFile(seedPath, "utf-8");
+
+      // Extract all DO $$ ... END $$; blocks
+      const doBlocks = seedContent.match(/DO \$\$[\s\S]*?END \$\$;/g) || [];
+      assert.ok(doBlocks.length > 0, "seed.sql must contain at least one DO block");
+
+      for (const block of doBlocks) {
+        // Find DECLARE section
+        const declareMatch = block.match(/DECLARE([\s\S]*?)BEGIN/);
+        assert.ok(declareMatch, "DO block must have a DECLARE section");
+        const declareSection = declareMatch[1];
+
+        const declaredVars = new Set<string>();
+        for (const line of declareSection.split("\n")) {
+          const varMatch = line.trim().match(/^(v_[a-zA-Z0-9_]+)\s+UUID;/);
+          if (varMatch) {
+            declaredVars.add(varMatch[1]);
+          }
+        }
+
+        // Find BEGIN...END section
+        const bodyMatch = block.match(/BEGIN([\s\S]*?)END \$\$;/);
+        assert.ok(bodyMatch, "DO block must have a BEGIN body");
+        const bodySection = bodyMatch[1];
+
+        // Find all v_sub_* usages in the body
+        const usedVars = new Set<string>(bodySection.match(/\bv_sub_[a-zA-Z0-9_]+\b/g) || []);
+
+        for (const usedVar of usedVars) {
+          assert.ok(
+            declaredVars.has(usedVar),
+            `Variable ${usedVar} is used in seed body but not declared in DECLARE block`
+          );
+
+          // Verify it is assigned via SELECT ... INTO
+          const selectPattern = new RegExp(`SELECT\\s+id\\s+INTO\\s+${usedVar}\\s+FROM\\s+subjects`, "i");
+          assert.ok(
+            selectPattern.test(bodySection),
+            `Variable ${usedVar} is declared but not loaded via SELECT id INTO ${usedVar} FROM subjects`
+          );
+        }
+      }
+    });
+  });
 });
 
