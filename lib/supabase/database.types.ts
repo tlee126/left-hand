@@ -1,4 +1,4 @@
-﻿export type Json =
+export type Json =
   | string
   | number
   | boolean
@@ -387,15 +387,15 @@ export type Database = {
     }
     Enums: {
       category_enum:
-        | "Kß║┐ to├ín"
-        | "Kinh tß║┐"
-        | "Thß╗æng k├¬"
+        | "Kế toán"
+        | "Kinh tế"
+        | "Thống kê"
         | "Marketing"
-        | "Quß║ún trß╗ï"
-        | "T├ái ch├¡nh"
+        | "Quản trị"
+        | "Tài chính"
         | "MIS"
-        | "Luß║¡t"
-        | "Ngoß║íi ngß╗»"
+        | "Luật"
+        | "Ngoại ngữ"
       color_theme_enum:
         | "accounting"
         | "economics"
@@ -543,15 +543,15 @@ export const Constants = {
   public: {
     Enums: {
       category_enum: [
-        "Kß║┐ to├ín",
-        "Kinh tß║┐",
-        "Thß╗æng k├¬",
+        "Kế toán",
+        "Kinh tế",
+        "Thống kê",
         "Marketing",
-        "Quß║ún trß╗ï",
-        "T├ái ch├¡nh",
+        "Quản trị",
+        "Tài chính",
         "MIS",
-        "Luß║¡t",
-        "Ngoß║íi ngß╗»",
+        "Luật",
+        "Ngoại ngữ",
       ],
       color_theme_enum: [
         "accounting",

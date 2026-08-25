@@ -297,6 +297,43 @@ describe("Catalog Seed Integrity & Normalization", () => {
         "tutor_subjects policy must check parent tutor product publication_status"
       );
     });
+
+    test("database.types.ts has valid UTF-8 encoding without mojibake characters", async () => {
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+
+      const typesPath = path.resolve(process.cwd(), "lib/supabase/database.types.ts");
+      const typesContent = await fs.readFile(typesPath, "utf-8");
+
+      // Mojibake marker characters commonly introduced by CP1252/Windows-1252 double-encoding
+      const mojibakeMarkers = ["ß", "├", "╗", "┬", "Ã", "Â", "â"];
+      for (const marker of mojibakeMarkers) {
+        assert.ok(
+          !typesContent.includes(marker),
+          `database.types.ts must not contain mojibake marker "${marker}"`
+        );
+      }
+
+      // Verify exact canonical Vietnamese category enum values are present
+      const expectedCategories = [
+        "Kế toán",
+        "Kinh tế",
+        "Thống kê",
+        "Marketing",
+        "Quản trị",
+        "Tài chính",
+        "MIS",
+        "Luật",
+        "Ngoại ngữ"
+      ];
+
+      for (const cat of expectedCategories) {
+        assert.ok(
+          typesContent.includes(`"${cat}"`),
+          `database.types.ts must contain exact UTF-8 category "${cat}"`
+        );
+      }
+    });
   });
 
   describe("SQL Seed Integrity", () => {
