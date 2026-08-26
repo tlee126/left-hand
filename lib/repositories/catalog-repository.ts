@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import type { Database } from "@/lib/supabase/database.types";
-import type { MaterialItem, CourseItem, CourseFormat } from "@/data/catalog";
+import type { MaterialItem, CourseItem, TutorItem, CourseFormat, TutorFormat } from "@/data/catalog";
 import type { Category, ColorTheme } from "@/lib/domain/subjects";
 import type { EnrollmentStatus } from "@/lib/domain/product-types";
 import { formatVND } from "@/lib/domain/product-types";
@@ -15,6 +15,17 @@ interface MaterialJoinedRow extends ProductRow {
 interface CourseJoinedRow extends ProductRow {
   courses: Database["public"]["Tables"]["courses"]["Row"] | null;
   subjects: Database["public"]["Tables"]["subjects"]["Row"] | null;
+}
+
+interface TutorSubjectJoined {
+  is_primary: boolean;
+  subjects: Database["public"]["Tables"]["subjects"]["Row"] | null;
+}
+
+interface TutorJoinedRow extends ProductRow {
+  tutors: Database["public"]["Tables"]["tutors"]["Row"] | null;
+  subjects: Database["public"]["Tables"]["subjects"]["Row"] | null;
+  tutor_subjects: TutorSubjectJoined[];
 }
 
 /**
@@ -77,6 +88,56 @@ export function mapRowToCourseItem(row: CourseJoinedRow): CourseItem {
     curriculum: crs?.curriculum ?? undefined,
     suitableFor: crs?.suitable_for ?? undefined,
     preparation: crs?.preparation ?? undefined
+  };
+}
+
+/**
+ * Maps a raw joined database product + tutor + tutor_subjects record to the frontend TutorItem interface.
+ */
+export function mapRowToTutorItem(row: TutorJoinedRow): TutorItem {
+  const tut = row.tutors;
+  const primarySubject = row.subjects?.name;
+
+  // Collect subjects from tutor_subjects join, sorting primary subject first
+  const subjectList: string[] = [];
+  if (row.tutor_subjects && row.tutor_subjects.length > 0) {
+    const sorted = [...row.tutor_subjects].sort((a, b) => (b.is_primary ? 1 : 0) - (a.is_primary ? 1 : 0));
+    for (const ts of sorted) {
+      if (ts.subjects?.name && !subjectList.includes(ts.subjects.name)) {
+        subjectList.push(ts.subjects.name);
+      }
+    }
+  }
+
+  // Fallback to primary product subject if no tutor_subjects rows were attached
+  if (subjectList.length === 0 && primarySubject) {
+    subjectList.push(primarySubject);
+  }
+
+  // Format tutor price (e.g., "120.000đ / giờ" or "Liên hệ")
+  let priceStr: string;
+  if (row.is_contact_for_price || row.price_vnd === null) {
+    priceStr = "Liên hệ";
+  } else {
+    priceStr = `${formatVND(row.price_vnd)} / giờ`;
+  }
+
+  return {
+    id: row.id,
+    slug: row.slug,
+    name: tut?.name ?? row.title,
+    subjects: subjectList,
+    faculty: tut?.faculty ?? (row.subjects?.faculty_group ?? "UFM"),
+    strengths: tut?.strengths ?? [],
+    format: (tut?.format ?? "1:1 & Online") as TutorFormat,
+    price: priceStr,
+    availability: tut?.availability ?? "",
+    rating: Number(row.rating),
+    shortBio: tut?.short_bio ?? row.description,
+    tags: tut?.tags ?? [],
+    colorTheme: row.color_theme as ColorTheme,
+    suitableFor: tut?.suitable_for ?? undefined,
+    supportMethods: tut?.support_methods ?? undefined
   };
 }
 
@@ -223,4 +284,54 @@ export async function getPublishedCourseBySlug(
   }
 
   return mapRowToCourseItem(data as unknown as CourseJoinedRow);
+}
+
+/**
+ * Lists all published tutors joined with their tutor details, tutor_subjects, and subject metadata.
+ */
+export async function listPublishedTutors(): Promise<TutorItem[]> {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("products")
+    .select("*, tutors!inner(*), subjects(*), tutor_subjects(is_primary, subjects(*))")
+    .eq("publication_status", "published")
+    .eq("kind", "tutor")
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw new Error(`Failed to list published tutors: ${error.message}`);
+  }
+
+  return ((data as unknown as TutorJoinedRow[]) ?? []).map(mapRowToTutorItem);
+}
+
+/**
+ * Retrieves a single published tutor by its slug.
+ * Returns the mapped TutorItem or null if not found.
+ */
+export async function getPublishedTutorBySlug(
+  slug: string
+): Promise<TutorItem | null> {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("products")
+    .select("*, tutors!inner(*), subjects(*), tutor_subjects(is_primary, subjects(*))")
+    .eq("publication_status", "published")
+    .eq("kind", "tutor")
+    .eq("slug", slug)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      `Failed to get published tutor by slug "${slug}": ${error.message}`
+    );
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  return mapRowToTutorItem(data as unknown as TutorJoinedRow);
 }
