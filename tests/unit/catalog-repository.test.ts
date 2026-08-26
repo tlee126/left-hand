@@ -668,4 +668,51 @@ describe("Catalog Repository Contract & Query Intent", () => {
       "courses-catalog-client.tsx must not import static courses"
     );
   });
+
+  test("app/tutor/page.tsx is a Server Component fetching live tutors and does not import static tutors", async () => {
+    const pagePath = path.resolve(process.cwd(), "app/tutor/page.tsx");
+    const pageCode = await fs.readFile(pagePath, "utf-8");
+
+    // Must not be a client component
+    assert.ok(!pageCode.includes('"use client"'), "app/tutor/page.tsx must be a Server Component");
+
+    // Must call listPublishedTutors
+    assert.ok(
+      pageCode.includes("listPublishedTutors"),
+      "app/tutor/page.tsx must call listPublishedTutors from repository"
+    );
+
+    // Must not import static tutors from @/data/catalog
+    assert.ok(
+      !/import\s*\{[^}]*\btutors\b[^}]*\}\s*from\s*["']@\/data\/catalog["']/.test(pageCode),
+      "app/tutor/page.tsx must not import static tutors from @/data/catalog"
+    );
+
+    // Must render TutorsCatalogClient
+    assert.ok(
+      pageCode.includes("<TutorsCatalogClient"),
+      "app/tutor/page.tsx must render TutorsCatalogClient"
+    );
+  });
+
+  test("app/tutor/tutors-catalog-client.tsx is a client component receiving TutorItem[]", async () => {
+    const clientPath = path.resolve(
+      process.cwd(),
+      "app/tutor/tutors-catalog-client.tsx"
+    );
+    const clientCode = await fs.readFile(clientPath, "utf-8");
+
+    assert.ok(
+      clientCode.includes('"use client"'),
+      "tutors-catalog-client.tsx must have 'use client'"
+    );
+    assert.ok(
+      clientCode.includes("initialTutors"),
+      "tutors-catalog-client.tsx must accept initialTutors prop"
+    );
+    assert.ok(
+      !/import\s*\{[^}]*\btutors\b[^}]*\}\s*from\s*["']@\/data\/catalog["']/.test(clientCode),
+      "tutors-catalog-client.tsx must not import static tutors"
+    );
+  });
 });
