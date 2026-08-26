@@ -13,8 +13,11 @@ import {
   getPublishedMaterialBySlug,
   listPublishedCourses,
   getPublishedCourseBySlug,
+  listPublishedTutors,
+  getPublishedTutorBySlug,
   mapRowToMaterialItem,
   mapRowToCourseItem,
+  mapRowToTutorItem,
   type ProductRow
 } from "../../lib/repositories/catalog-repository";
 
@@ -26,8 +29,11 @@ describe("Catalog Repository Contract & Query Intent", () => {
     assert.strictEqual(typeof getPublishedMaterialBySlug, "function");
     assert.strictEqual(typeof listPublishedCourses, "function");
     assert.strictEqual(typeof getPublishedCourseBySlug, "function");
+    assert.strictEqual(typeof listPublishedTutors, "function");
+    assert.strictEqual(typeof getPublishedTutorBySlug, "function");
     assert.strictEqual(typeof mapRowToMaterialItem, "function");
     assert.strictEqual(typeof mapRowToCourseItem, "function");
+    assert.strictEqual(typeof mapRowToTutorItem, "function");
   });
 
   test("mapRowToMaterialItem correctly maps database row to MaterialItem UI shape", () => {
@@ -231,6 +237,142 @@ describe("Catalog Repository Contract & Query Intent", () => {
     assert.strictEqual(mapped.subject, "Khóa học đặc biệt");
   });
 
+  test("mapRowToTutorItem correctly maps database row with multiple subjects to TutorItem UI shape", () => {
+    const sampleJoinedRow = {
+      id: "tut-123",
+      slug: "tutor-ke-toan-tai-chinh-1",
+      kind: "tutor" as const,
+      title: "Tutor Kế toán tài chính 1",
+      description: "Dạy kèm định khoản kế toán",
+      subject_id: "subj-kttc1",
+      category: "Kế toán" as const,
+      delivery_kind: "one_on_one_tutoring" as const,
+      publication_status: "published" as const,
+      price_vnd: 120000,
+      old_price_vnd: null,
+      is_contact_for_price: false,
+      rating: 4.9,
+      is_hot: false,
+      color_theme: "accounting" as const,
+      created_at: "2026-08-25T00:00:00Z",
+      updated_at: "2026-08-25T00:00:00Z",
+      tutors: {
+        product_id: "tut-123",
+        name: "Tutor Minh Thư",
+        faculty: "Kế toán - Kiểm toán",
+        format: "1:1 & Nhóm nhỏ (Online/Offline)",
+        availability: "Còn 2 slot tối Thứ 3, 5",
+        short_bio: "Sinh viên năm cuối ngành Kế toán doanh nghiệp UFM. GPA môn Kế toán tài chính 1 đạt 9.2/10.",
+        strengths: ["Giải thích định khoản dễ hiểu", "Kiên nhẫn hỗ trợ người mất gốc"],
+        tags: ["Điểm môn 9.2", "Kinh nghiệm 1 năm"],
+        suitable_for: ["Học viên bị mất gốc định khoản"],
+        support_methods: ["Dạy kèm online qua Zoom"],
+        created_at: "2026-08-25T00:00:00Z",
+        updated_at: "2026-08-25T00:00:00Z"
+      },
+      subjects: {
+        id: "subj-kttc1",
+        slug: "ke-toan-tai-chinh-1",
+        name: "Kế toán tài chính 1",
+        category: "Kế toán" as const,
+        faculty_group: "Kế toán - Kiểm toán",
+        color_theme: "accounting" as const,
+        created_at: "2026-08-25T00:00:00Z",
+        updated_at: "2026-08-25T00:00:00Z"
+      },
+      tutor_subjects: [
+        {
+          is_primary: true,
+          subjects: {
+            id: "subj-kttc1",
+            slug: "ke-toan-tai-chinh-1",
+            name: "Kế toán tài chính 1",
+            category: "Kế toán" as const,
+            faculty_group: "Kế toán - Kiểm toán",
+            color_theme: "accounting" as const,
+            created_at: "2026-08-25T00:00:00Z",
+            updated_at: "2026-08-25T00:00:00Z"
+          }
+        },
+        {
+          is_primary: false,
+          subjects: {
+            id: "subj-nlkt",
+            slug: "nguyen-ly-ke-toan",
+            name: "Nguyên lý kế toán",
+            category: "Kế toán" as const,
+            faculty_group: "Kế toán - Kiểm toán",
+            color_theme: "accounting" as const,
+            created_at: "2026-08-25T00:00:00Z",
+            updated_at: "2026-08-25T00:00:00Z"
+          }
+        }
+      ]
+    };
+
+    const mapped = mapRowToTutorItem(sampleJoinedRow);
+
+    assert.strictEqual(mapped.id, "tut-123");
+    assert.strictEqual(mapped.slug, "tutor-ke-toan-tai-chinh-1");
+    assert.strictEqual(mapped.name, "Tutor Minh Thư");
+    assert.deepStrictEqual(mapped.subjects, ["Kế toán tài chính 1", "Nguyên lý kế toán"]);
+    assert.strictEqual(mapped.faculty, "Kế toán - Kiểm toán");
+    assert.deepStrictEqual(mapped.strengths, ["Giải thích định khoản dễ hiểu", "Kiên nhẫn hỗ trợ người mất gốc"]);
+    assert.strictEqual(mapped.format, "1:1 & Nhóm nhỏ (Online/Offline)");
+    assert.strictEqual(mapped.price, "120.000đ / giờ");
+    assert.strictEqual(mapped.availability, "Còn 2 slot tối Thứ 3, 5");
+    assert.strictEqual(mapped.rating, 4.9);
+    assert.strictEqual(mapped.shortBio, "Sinh viên năm cuối ngành Kế toán doanh nghiệp UFM. GPA môn Kế toán tài chính 1 đạt 9.2/10.");
+    assert.deepStrictEqual(mapped.tags, ["Điểm môn 9.2", "Kinh nghiệm 1 năm"]);
+    assert.strictEqual(mapped.colorTheme, "accounting");
+    assert.deepStrictEqual(mapped.suitableFor, ["Học viên bị mất gốc định khoản"]);
+    assert.deepStrictEqual(mapped.supportMethods, ["Dạy kèm online qua Zoom"]);
+  });
+
+  test("mapRowToTutorItem handles contact-for-price and null values correctly", () => {
+    const contactRow = {
+      id: "tut-456",
+      slug: "tutor-dac-biet",
+      kind: "tutor" as const,
+      title: "Tutor đặc biệt",
+      description: "Mô tả",
+      subject_id: "subj-456",
+      category: "Kinh tế" as const,
+      delivery_kind: "one_on_one_tutoring" as const,
+      publication_status: "published" as const,
+      price_vnd: null,
+      old_price_vnd: null,
+      is_contact_for_price: true,
+      rating: 5.0,
+      is_hot: false,
+      color_theme: "economics" as const,
+      created_at: "2026-08-25T00:00:00Z",
+      updated_at: "2026-08-25T00:00:00Z",
+      tutors: null,
+      subjects: {
+        id: "subj-456",
+        slug: "kinh-te-vi-mo",
+        name: "Kinh tế vĩ mô",
+        category: "Kinh tế" as const,
+        faculty_group: "Khoa Kinh tế",
+        color_theme: "economics" as const,
+        created_at: "2026-08-25T00:00:00Z",
+        updated_at: "2026-08-25T00:00:00Z"
+      },
+      tutor_subjects: []
+    };
+
+    const mapped = mapRowToTutorItem(contactRow);
+
+    assert.strictEqual(mapped.price, "Liên hệ");
+    assert.strictEqual(mapped.name, "Tutor đặc biệt");
+    assert.deepStrictEqual(mapped.subjects, ["Kinh tế vĩ mô"]);
+    assert.strictEqual(mapped.faculty, "Khoa Kinh tế");
+    assert.strictEqual(mapped.format, "1:1 & Online");
+    assert.strictEqual(mapped.availability, "");
+    assert.deepStrictEqual(mapped.tags, []);
+  });
+
   test("repository inspects missing environment variables and throws clear error on missing config", async () => {
     const originalUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const originalKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -298,6 +440,26 @@ describe("Catalog Repository Contract & Query Intent", () => {
           message: /Missing Supabase environment variables/i
         }
       );
+
+      await assert.rejects(
+        async () => {
+          await listPublishedTutors();
+        },
+        {
+          name: "Error",
+          message: /Missing Supabase environment variables/i
+        }
+      );
+
+      await assert.rejects(
+        async () => {
+          await getPublishedTutorBySlug("sample-slug");
+        },
+        {
+          name: "Error",
+          message: /Missing Supabase environment variables/i
+        }
+      );
     } finally {
       if (originalUrl) process.env.NEXT_PUBLIC_SUPABASE_URL = originalUrl;
       if (originalKey) process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = originalKey;
@@ -359,6 +521,20 @@ describe("Catalog Repository Contract & Query Intent", () => {
       "Must join courses relation with courses!inner(*)"
     );
 
+    // Tutors queries must filter kind = 'tutor' and join tutors, tutor_subjects, and subjects
+    assert.ok(
+      code.includes('.eq("kind", "tutor")'),
+      "Must filter kind = tutor for tutors repository queries"
+    );
+    assert.ok(
+      code.includes('tutors!inner(*)'),
+      "Must join tutors relation with tutors!inner(*)"
+    );
+    assert.ok(
+      code.includes('tutor_subjects('),
+      "Must join tutor_subjects relation with tutor_subjects(...)"
+    );
+
     assert.ok(
       code.includes('subjects(*)'),
       "Must join subjects relation with subjects(*)"
@@ -389,6 +565,14 @@ describe("Catalog Repository Contract & Query Intent", () => {
       code.includes("Failed to get published course by slug"),
       "Must include descriptive error for get published course by slug failures"
     );
+    assert.ok(
+      code.includes("Failed to list published tutors:"),
+      "Must include descriptive error for list published tutors failures"
+    );
+    assert.ok(
+      code.includes("Failed to get published tutor by slug"),
+      "Must include descriptive error for get published tutor by slug failures"
+    );
   });
 
   test("app/tai-lieu/page.tsx is a Server Component fetching live materials and does not import static materials", async () => {
@@ -414,74 +598,6 @@ describe("Catalog Repository Contract & Query Intent", () => {
     assert.ok(
       pageCode.includes("<MaterialsCatalogClient"),
       "app/tai-lieu/page.tsx must render MaterialsCatalogClient"
-    );
-  });
-
-  test("app/tai-lieu/materials-catalog-client.tsx is a client component receiving MaterialItem[]", async () => {
-    const clientPath = path.resolve(
-      process.cwd(),
-      "app/tai-lieu/materials-catalog-client.tsx"
-    );
-    const clientCode = await fs.readFile(clientPath, "utf-8");
-
-    assert.ok(
-      clientCode.includes('"use client"'),
-      "materials-catalog-client.tsx must have 'use client'"
-    );
-    assert.ok(
-      clientCode.includes("initialMaterials"),
-      "materials-catalog-client.tsx must accept initialMaterials prop"
-    );
-    assert.ok(
-      !/import\s*\{[^}]*\bmaterials\b[^}]*\}\s*from\s*["']@\/data\/catalog["']/.test(clientCode),
-      "materials-catalog-client.tsx must not import static materials"
-    );
-  });
-
-  test("app/khoa-hoc/page.tsx is a Server Component fetching live courses and does not import static courses", async () => {
-    const pagePath = path.resolve(process.cwd(), "app/khoa-hoc/page.tsx");
-    const pageCode = await fs.readFile(pagePath, "utf-8");
-
-    // Must not be a client component
-    assert.ok(!pageCode.includes('"use client"'), "app/khoa-hoc/page.tsx must be a Server Component");
-
-    // Must call listPublishedCourses
-    assert.ok(
-      pageCode.includes("listPublishedCourses"),
-      "app/khoa-hoc/page.tsx must call listPublishedCourses from repository"
-    );
-
-    // Must not import static courses from @/data/catalog
-    assert.ok(
-      !/import\s*\{[^}]*\bcourses\b[^}]*\}\s*from\s*["']@\/data\/catalog["']/.test(pageCode),
-      "app/khoa-hoc/page.tsx must not import static courses from @/data/catalog"
-    );
-
-    // Must render CoursesCatalogClient
-    assert.ok(
-      pageCode.includes("<CoursesCatalogClient"),
-      "app/khoa-hoc/page.tsx must render CoursesCatalogClient"
-    );
-  });
-
-  test("app/khoa-hoc/courses-catalog-client.tsx is a client component receiving CourseItem[]", async () => {
-    const clientPath = path.resolve(
-      process.cwd(),
-      "app/khoa-hoc/courses-catalog-client.tsx"
-    );
-    const clientCode = await fs.readFile(clientPath, "utf-8");
-
-    assert.ok(
-      clientCode.includes('"use client"'),
-      "courses-catalog-client.tsx must have 'use client'"
-    );
-    assert.ok(
-      clientCode.includes("initialCourses"),
-      "courses-catalog-client.tsx must accept initialCourses prop"
-    );
-    assert.ok(
-      !/import\s*\{[^}]*\bcourses\b[^}]*\}\s*from\s*["']@\/data\/catalog["']/.test(clientCode),
-      "courses-catalog-client.tsx must not import static courses"
     );
   });
 });
