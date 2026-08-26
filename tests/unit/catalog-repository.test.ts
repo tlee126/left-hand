@@ -437,4 +437,51 @@ describe("Catalog Repository Contract & Query Intent", () => {
       "materials-catalog-client.tsx must not import static materials"
     );
   });
+
+  test("app/khoa-hoc/page.tsx is a Server Component fetching live courses and does not import static courses", async () => {
+    const pagePath = path.resolve(process.cwd(), "app/khoa-hoc/page.tsx");
+    const pageCode = await fs.readFile(pagePath, "utf-8");
+
+    // Must not be a client component
+    assert.ok(!pageCode.includes('"use client"'), "app/khoa-hoc/page.tsx must be a Server Component");
+
+    // Must call listPublishedCourses
+    assert.ok(
+      pageCode.includes("listPublishedCourses"),
+      "app/khoa-hoc/page.tsx must call listPublishedCourses from repository"
+    );
+
+    // Must not import static courses from @/data/catalog
+    assert.ok(
+      !/import\s*\{[^}]*\bcourses\b[^}]*\}\s*from\s*["']@\/data\/catalog["']/.test(pageCode),
+      "app/khoa-hoc/page.tsx must not import static courses from @/data/catalog"
+    );
+
+    // Must render CoursesCatalogClient
+    assert.ok(
+      pageCode.includes("<CoursesCatalogClient"),
+      "app/khoa-hoc/page.tsx must render CoursesCatalogClient"
+    );
+  });
+
+  test("app/khoa-hoc/courses-catalog-client.tsx is a client component receiving CourseItem[]", async () => {
+    const clientPath = path.resolve(
+      process.cwd(),
+      "app/khoa-hoc/courses-catalog-client.tsx"
+    );
+    const clientCode = await fs.readFile(clientPath, "utf-8");
+
+    assert.ok(
+      clientCode.includes('"use client"'),
+      "courses-catalog-client.tsx must have 'use client'"
+    );
+    assert.ok(
+      clientCode.includes("initialCourses"),
+      "courses-catalog-client.tsx must accept initialCourses prop"
+    );
+    assert.ok(
+      !/import\s*\{[^}]*\bcourses\b[^}]*\}\s*from\s*["']@\/data\/catalog["']/.test(clientCode),
+      "courses-catalog-client.tsx must not import static courses"
+    );
+  });
 });
