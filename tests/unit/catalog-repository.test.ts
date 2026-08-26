@@ -238,4 +238,51 @@ describe("Catalog Repository Contract & Query Intent", () => {
       "Must include descriptive error for get published material by slug failures"
     );
   });
+
+  test("app/tai-lieu/page.tsx is a Server Component fetching live materials and does not import static materials", async () => {
+    const pagePath = path.resolve(process.cwd(), "app/tai-lieu/page.tsx");
+    const pageCode = await fs.readFile(pagePath, "utf-8");
+
+    // Must not be a client component
+    assert.ok(!pageCode.includes('"use client"'), "app/tai-lieu/page.tsx must be a Server Component");
+
+    // Must call listPublishedMaterials
+    assert.ok(
+      pageCode.includes("listPublishedMaterials"),
+      "app/tai-lieu/page.tsx must call listPublishedMaterials from repository"
+    );
+
+    // Must not import static materials from @/data/catalog
+    assert.ok(
+      !/import\s*\{[^}]*\bmaterials\b[^}]*\}\s*from\s*["']@\/data\/catalog["']/.test(pageCode),
+      "app/tai-lieu/page.tsx must not import static materials from @/data/catalog"
+    );
+
+    // Must render MaterialsCatalogClient
+    assert.ok(
+      pageCode.includes("<MaterialsCatalogClient"),
+      "app/tai-lieu/page.tsx must render MaterialsCatalogClient"
+    );
+  });
+
+  test("app/tai-lieu/materials-catalog-client.tsx is a client component receiving MaterialItem[]", async () => {
+    const clientPath = path.resolve(
+      process.cwd(),
+      "app/tai-lieu/materials-catalog-client.tsx"
+    );
+    const clientCode = await fs.readFile(clientPath, "utf-8");
+
+    assert.ok(
+      clientCode.includes('"use client"'),
+      "materials-catalog-client.tsx must have 'use client'"
+    );
+    assert.ok(
+      clientCode.includes("initialMaterials"),
+      "materials-catalog-client.tsx must accept initialMaterials prop"
+    );
+    assert.ok(
+      !/import\s*\{[^}]*\bmaterials\b[^}]*\}\s*from\s*["']@\/data\/catalog["']/.test(clientCode),
+      "materials-catalog-client.tsx must not import static materials"
+    );
+  });
 });
