@@ -22,10 +22,16 @@ interface TutorSubjectJoined {
   subjects: Database["public"]["Tables"]["subjects"]["Row"] | null;
 }
 
+type TutorRow = Database["public"]["Tables"]["tutors"]["Row"];
+
+type TutorNestedDetails = TutorRow & {
+  tutor_subjects?: TutorSubjectJoined[];
+};
+
 interface TutorJoinedRow extends ProductRow {
-  tutors: Database["public"]["Tables"]["tutors"]["Row"] | null;
+  tutors: TutorNestedDetails | null;
   subjects: Database["public"]["Tables"]["subjects"]["Row"] | null;
-  tutor_subjects: TutorSubjectJoined[];
+  tutor_subjects?: TutorSubjectJoined[];
 }
 
 /**
@@ -98,10 +104,13 @@ export function mapRowToTutorItem(row: TutorJoinedRow): TutorItem {
   const tut = row.tutors;
   const primarySubject = row.subjects?.name;
 
-  // Collect subjects from tutor_subjects join, sorting primary subject first
+  // Collect subjects from tutor_subjects join (nested under tutors or top-level row), sorting primary subject first
+  const tutorSubjects = tut?.tutor_subjects ?? row.tutor_subjects ?? [];
   const subjectList: string[] = [];
-  if (row.tutor_subjects && row.tutor_subjects.length > 0) {
-    const sorted = [...row.tutor_subjects].sort((a, b) => (b.is_primary ? 1 : 0) - (a.is_primary ? 1 : 0));
+  if (tutorSubjects.length > 0) {
+    const sorted = [...tutorSubjects].sort(
+      (a, b) => (b.is_primary ? 1 : 0) - (a.is_primary ? 1 : 0)
+    );
     for (const ts of sorted) {
       if (ts.subjects?.name && !subjectList.includes(ts.subjects.name)) {
         subjectList.push(ts.subjects.name);
@@ -294,7 +303,9 @@ export async function listPublishedTutors(): Promise<TutorItem[]> {
 
   const { data, error } = await supabase
     .from("products")
-    .select("*, tutors!inner(*), subjects(*), tutor_subjects(is_primary, subjects(*))")
+    .select(
+      "*, tutors!inner(*, tutor_subjects(is_primary, subjects(*))), subjects(*)"
+    )
     .eq("publication_status", "published")
     .eq("kind", "tutor")
     .order("created_at", { ascending: false });
@@ -317,7 +328,9 @@ export async function getPublishedTutorBySlug(
 
   const { data, error } = await supabase
     .from("products")
-    .select("*, tutors!inner(*), subjects(*), tutor_subjects(is_primary, subjects(*))")
+    .select(
+      "*, tutors!inner(*, tutor_subjects(is_primary, subjects(*))), subjects(*)"
+    )
     .eq("publication_status", "published")
     .eq("kind", "tutor")
     .eq("slug", slug)
