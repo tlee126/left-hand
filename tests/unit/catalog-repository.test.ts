@@ -268,7 +268,35 @@ describe("Catalog Repository Contract & Query Intent", () => {
         suitable_for: ["Học viên bị mất gốc định khoản"],
         support_methods: ["Dạy kèm online qua Zoom"],
         created_at: "2026-08-25T00:00:00Z",
-        updated_at: "2026-08-25T00:00:00Z"
+        updated_at: "2026-08-25T00:00:00Z",
+        tutor_subjects: [
+          {
+            is_primary: true,
+            subjects: {
+              id: "subj-kttc1",
+              slug: "ke-toan-tai-chinh-1",
+              name: "Kế toán tài chính 1",
+              category: "Kế toán" as const,
+              faculty_group: "Kế toán - Kiểm toán",
+              color_theme: "accounting" as const,
+              created_at: "2026-08-25T00:00:00Z",
+              updated_at: "2026-08-25T00:00:00Z"
+            }
+          },
+          {
+            is_primary: false,
+            subjects: {
+              id: "subj-nlkt",
+              slug: "nguyen-ly-ke-toan",
+              name: "Nguyên lý kế toán",
+              category: "Kế toán" as const,
+              faculty_group: "Kế toán - Kiểm toán",
+              color_theme: "accounting" as const,
+              created_at: "2026-08-25T00:00:00Z",
+              updated_at: "2026-08-25T00:00:00Z"
+            }
+          }
+        ]
       },
       subjects: {
         id: "subj-kttc1",
@@ -279,35 +307,7 @@ describe("Catalog Repository Contract & Query Intent", () => {
         color_theme: "accounting" as const,
         created_at: "2026-08-25T00:00:00Z",
         updated_at: "2026-08-25T00:00:00Z"
-      },
-      tutor_subjects: [
-        {
-          is_primary: true,
-          subjects: {
-            id: "subj-kttc1",
-            slug: "ke-toan-tai-chinh-1",
-            name: "Kế toán tài chính 1",
-            category: "Kế toán" as const,
-            faculty_group: "Kế toán - Kiểm toán",
-            color_theme: "accounting" as const,
-            created_at: "2026-08-25T00:00:00Z",
-            updated_at: "2026-08-25T00:00:00Z"
-          }
-        },
-        {
-          is_primary: false,
-          subjects: {
-            id: "subj-nlkt",
-            slug: "nguyen-ly-ke-toan",
-            name: "Nguyên lý kế toán",
-            category: "Kế toán" as const,
-            faculty_group: "Kế toán - Kiểm toán",
-            color_theme: "accounting" as const,
-            created_at: "2026-08-25T00:00:00Z",
-            updated_at: "2026-08-25T00:00:00Z"
-          }
-        }
-      ]
+      }
     };
 
     const mapped = mapRowToTutorItem(sampleJoinedRow);
@@ -521,23 +521,18 @@ describe("Catalog Repository Contract & Query Intent", () => {
       "Must join courses relation with courses!inner(*)"
     );
 
-    // Tutors queries must filter kind = 'tutor' and join tutors, tutor_subjects, and subjects
+    // Tutors queries must filter kind = 'tutor' and join tutors with nested tutor_subjects and subjects
     assert.ok(
       code.includes('.eq("kind", "tutor")'),
       "Must filter kind = tutor for tutors repository queries"
     );
     assert.ok(
-      code.includes('tutors!inner(*)'),
-      "Must join tutors relation with tutors!inner(*)"
+      code.includes("tutors!inner(*, tutor_subjects(is_primary, subjects(*))), subjects(*)"),
+      "Must join tutors with nested tutor_subjects and subjects"
     );
     assert.ok(
-      code.includes('tutor_subjects('),
-      "Must join tutor_subjects relation with tutor_subjects(...)"
-    );
-
-    assert.ok(
-      code.includes('subjects(*)'),
-      "Must join subjects relation with subjects(*)"
+      !code.includes("tutors!inner(*), subjects(*), tutor_subjects"),
+      "Must not query tutor_subjects directly on products"
     );
 
     // Surfaces errors with clear prefix
