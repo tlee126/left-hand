@@ -11,7 +11,10 @@ import {
   getPublishedProductBySlug,
   listPublishedMaterials,
   getPublishedMaterialBySlug,
+  listPublishedCourses,
+  getPublishedCourseBySlug,
   mapRowToMaterialItem,
+  mapRowToCourseItem,
   type ProductRow
 } from "../../lib/repositories/catalog-repository";
 
@@ -21,7 +24,10 @@ describe("Catalog Repository Contract & Query Intent", () => {
     assert.strictEqual(typeof getPublishedProductBySlug, "function");
     assert.strictEqual(typeof listPublishedMaterials, "function");
     assert.strictEqual(typeof getPublishedMaterialBySlug, "function");
+    assert.strictEqual(typeof listPublishedCourses, "function");
+    assert.strictEqual(typeof getPublishedCourseBySlug, "function");
     assert.strictEqual(typeof mapRowToMaterialItem, "function");
+    assert.strictEqual(typeof mapRowToCourseItem, "function");
   });
 
   test("mapRowToMaterialItem correctly maps database row to MaterialItem UI shape", () => {
@@ -118,6 +124,113 @@ describe("Catalog Repository Contract & Query Intent", () => {
     assert.strictEqual(mapped.facultyGroup, "UFM");
   });
 
+  test("mapRowToCourseItem correctly maps database row to CourseItem UI shape", () => {
+    const sampleJoinedRow = {
+      id: "crs-123",
+      slug: "lop-on-thi-cuoi-ky-marketing",
+      kind: "course" as const,
+      title: "Lớp ôn thi cuối kỳ Marketing căn bản UFM",
+      description: "Hệ thống hóa lý thuyết cốt lõi",
+      subject_id: "subj-mkt",
+      category: "Marketing" as const,
+      delivery_kind: "live_session" as const,
+      publication_status: "published" as const,
+      price_vnd: 129000,
+      old_price_vnd: 250000,
+      is_contact_for_price: false,
+      rating: 4.9,
+      is_hot: false,
+      color_theme: "marketing" as const,
+      created_at: "2026-08-25T00:00:00Z",
+      updated_at: "2026-08-25T00:00:00Z",
+      courses: {
+        product_id: "crs-123",
+        format: "zoom" as const,
+        sessions: 4,
+        duration: "8 giờ học + tài liệu ôn tập",
+        schedule: "Tối Thứ 4 & Thứ 6 (19:30 - 21:30)",
+        enrollment_status: "open" as const,
+        mentor: "Chị Minh Thư (Cựu SV Marketing xuất sắc UFM)",
+        tags: ["Cam kết qua môn", "Live Zoom tương tác"],
+        curriculum: ["Buổi 1: Hệ thống lý thuyết cốt lõi"],
+        suitable_for: ["Sinh viên UFM chuẩn bị thi"],
+        preparation: ["Xem trước đề cương"],
+        created_at: "2026-08-25T00:00:00Z",
+        updated_at: "2026-08-25T00:00:00Z"
+      },
+      subjects: {
+        id: "subj-mkt",
+        slug: "marketing-can-ban",
+        name: "Marketing căn bản",
+        category: "Marketing" as const,
+        faculty_group: "Marketing - Quản trị",
+        color_theme: "marketing" as const,
+        created_at: "2026-08-25T00:00:00Z",
+        updated_at: "2026-08-25T00:00:00Z"
+      }
+    };
+
+    const mapped = mapRowToCourseItem(sampleJoinedRow);
+
+    assert.strictEqual(mapped.id, "crs-123");
+    assert.strictEqual(mapped.slug, "lop-on-thi-cuoi-ky-marketing");
+    assert.strictEqual(mapped.title, "Lớp ôn thi cuối kỳ Marketing căn bản UFM");
+    assert.strictEqual(mapped.subject, "Marketing căn bản");
+    assert.strictEqual(mapped.category, "Marketing");
+    assert.strictEqual(mapped.format, "zoom");
+    assert.strictEqual(mapped.sessions, 4);
+    assert.strictEqual(mapped.duration, "8 giờ học + tài liệu ôn tập");
+    assert.strictEqual(mapped.schedule, "Tối Thứ 4 & Thứ 6 (19:30 - 21:30)");
+    assert.strictEqual(mapped.description, "Hệ thống hóa lý thuyết cốt lõi");
+    assert.strictEqual(mapped.price, "129.000đ");
+    assert.strictEqual(mapped.oldPrice, "250.000đ");
+    assert.strictEqual(mapped.status, "open");
+    assert.strictEqual(mapped.mentor, "Chị Minh Thư (Cựu SV Marketing xuất sắc UFM)");
+    assert.deepStrictEqual(mapped.tags, ["Cam kết qua môn", "Live Zoom tương tác"]);
+    assert.strictEqual(mapped.rating, 4.9);
+    assert.strictEqual(mapped.colorTheme, "marketing");
+    assert.deepStrictEqual(mapped.curriculum, ["Buổi 1: Hệ thống lý thuyết cốt lõi"]);
+    assert.deepStrictEqual(mapped.suitableFor, ["Sinh viên UFM chuẩn bị thi"]);
+    assert.deepStrictEqual(mapped.preparation, ["Xem trước đề cương"]);
+  });
+
+  test("mapRowToCourseItem handles contact-for-price and null values correctly", () => {
+    const contactRow = {
+      id: "crs-456",
+      slug: "khoa-hoc-dac-biet",
+      kind: "course" as const,
+      title: "Khóa học đặc biệt",
+      description: "Mô tả",
+      subject_id: "subj-456",
+      category: "Kinh tế" as const,
+      delivery_kind: "live_session" as const,
+      publication_status: "published" as const,
+      price_vnd: null,
+      old_price_vnd: null,
+      is_contact_for_price: true,
+      rating: 5.0,
+      is_hot: false,
+      color_theme: "economics" as const,
+      created_at: "2026-08-25T00:00:00Z",
+      updated_at: "2026-08-25T00:00:00Z",
+      courses: null,
+      subjects: null
+    };
+
+    const mapped = mapRowToCourseItem(contactRow);
+
+    assert.strictEqual(mapped.price, "Liên hệ");
+    assert.strictEqual(mapped.oldPrice, undefined);
+    assert.strictEqual(mapped.sessions, 0);
+    assert.strictEqual(mapped.format, "online");
+    assert.strictEqual(mapped.status, "open");
+    assert.strictEqual(mapped.mentor, "");
+    assert.strictEqual(mapped.duration, "");
+    assert.strictEqual(mapped.schedule, "");
+    assert.deepStrictEqual(mapped.tags, []);
+    assert.strictEqual(mapped.subject, "Khóa học đặc biệt");
+  });
+
   test("repository inspects missing environment variables and throws clear error on missing config", async () => {
     const originalUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const originalKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -159,6 +272,26 @@ describe("Catalog Repository Contract & Query Intent", () => {
       await assert.rejects(
         async () => {
           await getPublishedMaterialBySlug("sample-slug");
+        },
+        {
+          name: "Error",
+          message: /Missing Supabase environment variables/i
+        }
+      );
+
+      await assert.rejects(
+        async () => {
+          await listPublishedCourses();
+        },
+        {
+          name: "Error",
+          message: /Missing Supabase environment variables/i
+        }
+      );
+
+      await assert.rejects(
+        async () => {
+          await getPublishedCourseBySlug("sample-slug");
         },
         {
           name: "Error",
@@ -215,6 +348,17 @@ describe("Catalog Repository Contract & Query Intent", () => {
       code.includes('materials!inner(*)'),
       "Must join materials relation with materials!inner(*)"
     );
+
+    // Courses queries must filter kind = 'course' and join courses and subjects
+    assert.ok(
+      code.includes('.eq("kind", "course")'),
+      "Must filter kind = course for courses repository queries"
+    );
+    assert.ok(
+      code.includes('courses!inner(*)'),
+      "Must join courses relation with courses!inner(*)"
+    );
+
     assert.ok(
       code.includes('subjects(*)'),
       "Must join subjects relation with subjects(*)"
@@ -236,6 +380,14 @@ describe("Catalog Repository Contract & Query Intent", () => {
     assert.ok(
       code.includes("Failed to get published material by slug"),
       "Must include descriptive error for get published material by slug failures"
+    );
+    assert.ok(
+      code.includes("Failed to list published courses:"),
+      "Must include descriptive error for list published courses failures"
+    );
+    assert.ok(
+      code.includes("Failed to get published course by slug"),
+      "Must include descriptive error for get published course by slug failures"
     );
   });
 
