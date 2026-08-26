@@ -710,4 +710,30 @@ describe("Catalog Repository Contract & Query Intent", () => {
       "tutors-catalog-client.tsx must not import static tutors"
     );
   });
+
+  test("app/tai-lieu/[slug]/page.tsx is a Server Component fetching live material by slug and does not import static materials", async () => {
+    const pagePath = path.resolve(process.cwd(), "app/tai-lieu/[slug]/page.tsx");
+    const pageCode = await fs.readFile(pagePath, "utf-8");
+
+    // Must not be a client component
+    assert.ok(!pageCode.includes('"use client"'), "app/tai-lieu/[slug]/page.tsx must be a Server Component");
+
+    // Must call getPublishedMaterialBySlug
+    assert.ok(
+      pageCode.includes("getPublishedMaterialBySlug"),
+      "app/tai-lieu/[slug]/page.tsx must call getPublishedMaterialBySlug from repository"
+    );
+
+    // Must not import static materials from @/data/catalog
+    assert.ok(
+      !/import\s*\{[^}]*\bmaterials\b[^}]*\}\s*from\s*["']@\/data\/catalog["']/.test(pageCode),
+      "app/tai-lieu/[slug]/page.tsx must not import static materials from @/data/catalog"
+    );
+
+    // Must call notFound() when material is not found
+    assert.ok(
+      pageCode.includes("notFound()"),
+      "app/tai-lieu/[slug]/page.tsx must call notFound() for missing material"
+    );
+  });
 });
