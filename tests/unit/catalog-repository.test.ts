@@ -9,6 +9,9 @@ import * as path from "node:path";
 import {
   listPublishedProducts,
   getPublishedProductBySlug,
+  listPublishedMaterials,
+  getPublishedMaterialBySlug,
+  mapRowToMaterialItem,
   type ProductRow
 } from "../../lib/repositories/catalog-repository";
 
@@ -16,6 +19,103 @@ describe("Catalog Repository Contract & Query Intent", () => {
   test("repository file exports required functions and types", () => {
     assert.strictEqual(typeof listPublishedProducts, "function");
     assert.strictEqual(typeof getPublishedProductBySlug, "function");
+    assert.strictEqual(typeof listPublishedMaterials, "function");
+    assert.strictEqual(typeof getPublishedMaterialBySlug, "function");
+    assert.strictEqual(typeof mapRowToMaterialItem, "function");
+  });
+
+  test("mapRowToMaterialItem correctly maps database row to MaterialItem UI shape", () => {
+    const sampleJoinedRow = {
+      id: "prod-123",
+      slug: "ke-toan-tai-chinh-1",
+      kind: "material" as const,
+      title: "Tóm tắt & Bài giải Kế toán tài chính 1",
+      description: "Tóm tắt lý thuyết chi tiết",
+      subject_id: "subj-123",
+      category: "Kế toán" as const,
+      delivery_kind: "digital_download" as const,
+      publication_status: "published" as const,
+      price_vnd: 29000,
+      old_price_vnd: 59000,
+      is_contact_for_price: false,
+      rating: 4.9,
+      is_hot: true,
+      color_theme: "accounting" as const,
+      created_at: "2026-08-25T00:00:00Z",
+      updated_at: "2026-08-25T00:00:00Z",
+      materials: {
+        product_id: "prod-123",
+        pages: 48,
+        tags: ["Lý thuyết", "Bài tập"],
+        includes: ["48 trang PDF"],
+        suitable_for: ["Sinh viên UFM"],
+        created_at: "2026-08-25T00:00:00Z",
+        updated_at: "2026-08-25T00:00:00Z"
+      },
+      subjects: {
+        id: "subj-123",
+        slug: "ke-toan-tai-chinh-1",
+        name: "Kế toán tài chính 1",
+        category: "Kế toán" as const,
+        faculty_group: "Kế toán - Kiểm toán",
+        color_theme: "accounting" as const,
+        created_at: "2026-08-25T00:00:00Z",
+        updated_at: "2026-08-25T00:00:00Z"
+      }
+    };
+
+    const mapped = mapRowToMaterialItem(sampleJoinedRow);
+
+    assert.strictEqual(mapped.id, "prod-123");
+    assert.strictEqual(mapped.slug, "ke-toan-tai-chinh-1");
+    assert.strictEqual(mapped.title, "Tóm tắt & Bài giải Kế toán tài chính 1");
+    assert.strictEqual(mapped.subject, "Kế toán tài chính 1");
+    assert.strictEqual(mapped.facultyGroup, "Kế toán - Kiểm toán");
+    assert.strictEqual(mapped.category, "Kế toán");
+    assert.strictEqual(mapped.type, "TÀI LIỆU");
+    assert.strictEqual(mapped.description, "Tóm tắt lý thuyết chi tiết");
+    assert.strictEqual(mapped.price, "29.000đ");
+    assert.strictEqual(mapped.oldPrice, "59.000đ");
+    assert.strictEqual(mapped.pages, 48);
+    assert.deepStrictEqual(mapped.tags, ["Lý thuyết", "Bài tập"]);
+    assert.strictEqual(mapped.rating, 4.9);
+    assert.strictEqual(mapped.isHot, true);
+    assert.strictEqual(mapped.colorTheme, "accounting");
+    assert.deepStrictEqual(mapped.includes, ["48 trang PDF"]);
+    assert.deepStrictEqual(mapped.suitableFor, ["Sinh viên UFM"]);
+  });
+
+  test("mapRowToMaterialItem handles contact-for-price and null values correctly", () => {
+    const contactRow = {
+      id: "prod-456",
+      slug: "tai-lieu-dac-biet",
+      kind: "material" as const,
+      title: "Tài liệu đặc biệt",
+      description: "Mô tả",
+      subject_id: "subj-456",
+      category: "Kinh tế" as const,
+      delivery_kind: "digital_download" as const,
+      publication_status: "published" as const,
+      price_vnd: null,
+      old_price_vnd: null,
+      is_contact_for_price: true,
+      rating: 5.0,
+      is_hot: false,
+      color_theme: "economics" as const,
+      created_at: "2026-08-25T00:00:00Z",
+      updated_at: "2026-08-25T00:00:00Z",
+      materials: null,
+      subjects: null
+    };
+
+    const mapped = mapRowToMaterialItem(contactRow);
+
+    assert.strictEqual(mapped.price, "Liên hệ");
+    assert.strictEqual(mapped.oldPrice, undefined);
+    assert.strictEqual(mapped.pages, 0);
+    assert.deepStrictEqual(mapped.tags, []);
+    assert.strictEqual(mapped.subject, "Tài liệu đặc biệt");
+    assert.strictEqual(mapped.facultyGroup, "UFM");
   });
 
   test("repository inspects missing environment variables and throws clear error on missing config", async () => {
@@ -39,6 +139,26 @@ describe("Catalog Repository Contract & Query Intent", () => {
       await assert.rejects(
         async () => {
           await getPublishedProductBySlug("sample-slug");
+        },
+        {
+          name: "Error",
+          message: /Missing Supabase environment variables/i
+        }
+      );
+
+      await assert.rejects(
+        async () => {
+          await listPublishedMaterials();
+        },
+        {
+          name: "Error",
+          message: /Missing Supabase environment variables/i
+        }
+      );
+
+      await assert.rejects(
+        async () => {
+          await getPublishedMaterialBySlug("sample-slug");
         },
         {
           name: "Error",
@@ -86,6 +206,20 @@ describe("Catalog Repository Contract & Query Intent", () => {
       "Must use .maybeSingle() to return one record or null"
     );
 
+    // Materials queries must filter kind = 'material' and join materials and subjects
+    assert.ok(
+      code.includes('.eq("kind", "material")'),
+      "Must filter kind = material for materials repository queries"
+    );
+    assert.ok(
+      code.includes('materials!inner(*)'),
+      "Must join materials relation with materials!inner(*)"
+    );
+    assert.ok(
+      code.includes('subjects(*)'),
+      "Must join subjects relation with subjects(*)"
+    );
+
     // Surfaces errors with clear prefix
     assert.ok(
       code.includes("Failed to list published products:"),
@@ -94,6 +228,14 @@ describe("Catalog Repository Contract & Query Intent", () => {
     assert.ok(
       code.includes("Failed to get published product by slug"),
       "Must include descriptive error for slug lookup failures"
+    );
+    assert.ok(
+      code.includes("Failed to list published materials:"),
+      "Must include descriptive error for list published materials failures"
+    );
+    assert.ok(
+      code.includes("Failed to get published material by slug"),
+      "Must include descriptive error for get published material by slug failures"
     );
   });
 });
