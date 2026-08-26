@@ -116,12 +116,13 @@ erDiagram
 
 - **Supabase Auth Integration:** `profiles.id` is explicitly anchored to `auth.users(id)` with `ON DELETE CASCADE`. No detached or unauthenticated profile records can exist.
 - **RLS Enabled:** All 8 application tables (`profiles`, `subjects`, `products`, `materials`, `courses`, `course_lessons`, `tutors`, `tutor_subjects`) have `ROW LEVEL SECURITY` enabled by default.
-- **Public Catalog Read Access (`0002_public_catalog_read_policies.sql`):**
-  - Public anonymous (`anon`) and authenticated (`authenticated`) users can query catalog items using safe SELECT policies.
+- **Public Catalog Read Access (`0002_public_catalog_read_policies.sql` & `0003_public_catalog_table_grants.sql`):**
+  - Schema `USAGE` on `public` and table-level `SELECT` privileges are granted to `anon` and `authenticated` roles for catalog tables (`subjects`, `products`, `materials`, `courses`, `course_lessons`, `tutors`, `tutor_subjects`).
+  - Public anonymous (`anon`) and authenticated (`authenticated`) users can query catalog items through Row Level Security.
   - Public users may read only published content (`publication_status = 'published'`).
   - Child tables (`materials`, `courses`, `course_lessons`, `tutors`, `tutor_subjects`) restrict reads to items whose parent product is published.
-  - User profiles remain strictly private and protected under default RLS denial until authenticated profile policies are added.
-  - No public mutation (INSERT, UPDATE, DELETE) policies are permitted.
+  - User profiles remain strictly private with no public table grants or policies.
+  - No public mutation (INSERT, UPDATE, DELETE) grants or policies are permitted.
 
 ---
 
@@ -145,6 +146,7 @@ npx supabase db reset # (or run psql against supabase/seed.sql)
 ```bash
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0001_core_schema.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0002_public_catalog_read_policies.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0003_public_catalog_table_grants.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/seed.sql
 ```
 

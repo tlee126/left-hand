@@ -334,6 +334,51 @@ describe("Catalog Seed Integrity & Normalization", () => {
         );
       }
     });
+
+    test("0003_public_catalog_table_grants.sql grants USAGE on schema and SELECT on all 7 catalog tables without mutation grants", async () => {
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+
+      const grantsPath = path.resolve(process.cwd(), "supabase/migrations/0003_public_catalog_table_grants.sql");
+      const grantsContent = await fs.readFile(grantsPath, "utf-8");
+
+      // Verify USAGE grant on public schema
+      assert.ok(
+        /GRANT\s+USAGE\s+ON\s+SCHEMA\s+public\s+TO\s+anon,\s*authenticated;/i.test(grantsContent),
+        "Must grant USAGE ON SCHEMA public TO anon, authenticated"
+      );
+
+      // Verify SELECT grant on all 7 catalog tables
+      const expectedCatalogTables = [
+        "subjects",
+        "products",
+        "materials",
+        "courses",
+        "course_lessons",
+        "tutors",
+        "tutor_subjects"
+      ];
+
+      for (const table of expectedCatalogTables) {
+        const grantPattern = new RegExp(`GRANT\\s+SELECT\\s+ON\\s+TABLE\\s+${table}\\s+TO\\s+anon,\\s*authenticated;`, "i");
+        assert.ok(
+          grantPattern.test(grantsContent),
+          `Must grant SELECT ON TABLE ${table} TO anon, authenticated`
+        );
+      }
+
+      // Verify profiles table is NOT granted to anon/public
+      assert.ok(
+        !/GRANT\s+.*ON\s+(TABLE\s+)?profiles/i.test(grantsContent),
+        "Must NOT grant access on profiles table to public"
+      );
+
+      // Verify no mutation grants (INSERT, UPDATE, DELETE, ALL)
+      assert.ok(
+        !/GRANT\s+(INSERT|UPDATE|DELETE|ALL)/i.test(grantsContent),
+        "Must NOT contain any mutation (INSERT, UPDATE, DELETE, ALL) grants"
+      );
+    });
   });
 
   describe("SQL Seed Integrity", () => {
