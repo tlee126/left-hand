@@ -325,4 +325,165 @@ describe("Auth Session Helpers Contract & Intent", () => {
       );
     });
   });
+
+  describe("Task 3.1C-A: Server-Side Middleware Session Refresh & Route Protection", () => {
+    let handleMiddleware: (request: any, customUpdateSession?: any) => Promise<any>;
+    let updateSession: (request: any, customSupabaseClient?: any) => Promise<any>;
+
+    test("load middleware functions", async () => {
+      const middlewareModule = await import("../../middleware");
+      const supabaseMiddlewareModule = await import("../../lib/supabase/middleware");
+
+      handleMiddleware = middlewareModule.handleMiddleware;
+      updateSession = supabaseMiddlewareModule.updateSession;
+
+      assert.strictEqual(typeof handleMiddleware, "function");
+      assert.strictEqual(typeof updateSession, "function");
+    });
+
+    test("middleware source does not import cookies() from next/headers", async () => {
+      const middlewarePath = path.resolve(process.cwd(), "middleware.ts");
+      const middlewareCode = await fs.readFile(middlewarePath, "utf-8");
+
+      const helperPath = path.resolve(process.cwd(), "lib/supabase/middleware.ts");
+      const helperCode = await fs.readFile(helperPath, "utf-8");
+
+      assert.ok(
+        !middlewareCode.includes('from "next/headers"'),
+        "middleware.ts must not import from next/headers"
+      );
+      assert.ok(
+        !helperCode.includes('from "next/headers"'),
+        "lib/supabase/middleware.ts must not import from next/headers"
+      );
+    });
+
+    test("anonymous /ca-nhan redirects to /dang-nhap?next=%2Fca-nhan", async () => {
+      const { NextRequest } = await import("next/server");
+      const request = new NextRequest(new URL("http://localhost:3000/ca-nhan"));
+
+      const mockSessionUpdater = async () => ({
+        response: new Response(),
+        user: null
+      });
+
+      const response = await handleMiddleware(request, mockSessionUpdater);
+      assert.strictEqual(response.status, 307);
+
+      const location = response.headers.get("location");
+      assert.strictEqual(
+        location,
+        "http://localhost:3000/dang-nhap?next=%2Fca-nhan"
+      );
+    });
+
+    test("redirect contains the original internal next path and query parameters", async () => {
+      const { NextRequest } = await import("next/server");
+      const request = new NextRequest(
+        new URL("http://localhost:3000/ca-nhan/cai-dat?tab=security&page=1")
+      );
+
+      const mockSessionUpdater = async () => ({
+        response: new Response(),
+        user: null
+      });
+
+      const response = await handleMiddleware(request, mockSessionUpdater);
+      assert.strictEqual(response.status, 307);
+
+      const location = response.headers.get("location");
+      assert.strictEqual(
+        location,
+        "http://localhost:3000/dang-nhap?next=%2Fca-nhan%2Fcai-dat%3Ftab%3Dsecurity%26page%3D1"
+      );
+    });
+
+    test("anonymous /ca-nhan/mon/example redirects correctly", async () => {
+      const { NextRequest } = await import("next/server");
+      const request = new NextRequest(
+        new URL("http://localhost:3000/ca-nhan/mon/ke-toan-tai-chinh-1")
+      );
+
+      const mockSessionUpdater = async () => ({
+        response: new Response(),
+        user: null
+      });
+
+      const response = await handleMiddleware(request, mockSessionUpdater);
+      assert.strictEqual(response.status, 307);
+
+      const location = response.headers.get("location");
+      assert.strictEqual(
+        location,
+        "http://localhost:3000/dang-nhap?next=%2Fca-nhan%2Fmon%2Fke-toan-tai-chinh-1"
+      );
+    });
+
+    test("authenticated /ca-nhan request continues without redirection", async () => {
+      const { NextRequest } = await import("next/server");
+      const request = new NextRequest(new URL("http://localhost:3000/ca-nhan"));
+
+      const mockSessionUpdater = async () => ({
+        response: new Response("mock-response-content"),
+        user: { id: "user-123", email: "student@example.com" }
+      });
+
+      const response = await handleMiddleware(request, mockSessionUpdater);
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(response.headers.get("location"), null);
+    });
+
+    test("public /, /tai-lieu, /khoa-hoc, and /tutor remain accessible without redirection", async () => {
+      const { NextRequest } = await import("next/server");
+      const publicPaths = ["/", "/tai-lieu", "/khoa-hoc", "/tutor", "/tai-lieu/ke-toan-tai-chinh-1"];
+
+      const mockSessionUpdater = async () => ({
+        response: new Response("mock-public-content"),
+        user: null
+      });
+
+      for (const p of publicPaths) {
+        const request = new NextRequest(new URL(`http://localhost:3000${p}`));
+        const response = await handleMiddleware(request, mockSessionUpdater);
+
+        assert.strictEqual(response.status, 200, `Public path ${p} should not redirect`);
+        assert.strictEqual(response.headers.get("location"), null);
+      }
+    });
+
+    test("middleware does not create a redirect loop for /dang-nhap", async () => {
+      const { NextRequest } = await import("next/server");
+      const request = new NextRequest(new URL("http://localhost:3000/dang-nhap"));
+
+      const mockSessionUpdater = async () => ({
+        response: new Response("login-page"),
+        user: null
+      });
+
+      const response = await handleMiddleware(request, mockSessionUpdater);
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(response.headers.get("location"), null);
+    });
+
+    test("external redirect targets are never accepted as next destinations", async () => {
+      const { NextRequest } = await import("next/server");
+      const request = new NextRequest(new URL("http://localhost:3000/ca-nhan"));
+
+      const mockSessionUpdater = async () => ({
+        response: new Response(),
+        user: null
+      });
+
+      const response = await handleMiddleware(request, mockSessionUpdater);
+      const location = response.headers.get("location") || "";
+      const parsedUrl = new URL(location);
+
+      assert.strictEqual(parsedUrl.pathname, "/dang-nhap");
+      const nextParam = parsedUrl.searchParams.get("next");
+      assert.ok(
+        nextParam?.startsWith("/") && !nextParam?.startsWith("//"),
+        "Next param must only be an internal relative path"
+      );
+    });
+  });
 });

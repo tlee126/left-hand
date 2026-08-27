@@ -23,6 +23,7 @@ Previous iterations relied on demo client-side mock authentication. Phase 3 repl
 
 ### 3. Server-Side Authorization as the Primary Security Boundary
 - Entitlement checks and protected routes verify user ID and roles strictly on the server (Server Components and Route Handlers).
+- `middleware.ts` and `lib/supabase/middleware.ts` refresh Supabase sessions across incoming requests and intercept unauthenticated access to `/ca-nhan` and its subpaths, redirecting to `/dang-nhap?next=<internal-path>`.
 - Client state is treated as purely presentational and never trusted for access control or entitlement verification.
 
 ### 4. Zero Service-Role Key Exposure
