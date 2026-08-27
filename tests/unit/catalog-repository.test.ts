@@ -762,4 +762,30 @@ describe("Catalog Repository Contract & Query Intent", () => {
       "app/khoa-hoc/[slug]/page.tsx must call notFound() for missing course"
     );
   });
+
+  test("app/tutor/[slug]/page.tsx is a Server Component fetching live tutor by slug and does not import static tutors", async () => {
+    const pagePath = path.resolve(process.cwd(), "app/tutor/[slug]/page.tsx");
+    const pageCode = await fs.readFile(pagePath, "utf-8");
+
+    // Must not be a client component
+    assert.ok(!pageCode.includes('"use client"'), "app/tutor/[slug]/page.tsx must be a Server Component");
+
+    // Must call getPublishedTutorBySlug
+    assert.ok(
+      pageCode.includes("getPublishedTutorBySlug"),
+      "app/tutor/[slug]/page.tsx must call getPublishedTutorBySlug from repository"
+    );
+
+    // Must not import static tutors from @/data/catalog
+    assert.ok(
+      !/import\s*\{[^}]*\btutors\b[^}]*\}\s*from\s*["']@\/data\/catalog["']/.test(pageCode),
+      "app/tutor/[slug]/page.tsx must not import static tutors from @/data/catalog"
+    );
+
+    // Must call notFound() when tutor is not found
+    assert.ok(
+      pageCode.includes("notFound()"),
+      "app/tutor/[slug]/page.tsx must call notFound() for missing tutor"
+    );
+  });
 });
