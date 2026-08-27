@@ -231,7 +231,10 @@ describe("Auth Session Helpers Contract & Intent", () => {
       "lib/supabase/browser.ts",
       "lib/supabase/server.ts",
       "lib/auth/session.ts",
-      "app/auth/callback/route.ts"
+      "app/auth/callback/route.ts",
+      "hooks/use-demo-auth.ts",
+      "app/dang-nhap/page.tsx",
+      "components/site/header.tsx"
     ];
 
     for (const relPath of filesToScan) {
@@ -247,5 +250,79 @@ describe("Auth Session Helpers Contract & Intent", () => {
         `${relPath} must not reference service_role key`
       );
     }
+  });
+
+  describe("Task 3.1B: Login & Logout Flow UI Contracts", () => {
+    test("app/dang-nhap/page.tsx does not contain hardcoded credentials in production flow and uses signInWithPassword", async () => {
+      const loginPath = path.resolve(process.cwd(), "app/dang-nhap/page.tsx");
+      const loginCode = await fs.readFile(loginPath, "utf-8");
+
+      // Must be a client component
+      assert.ok(loginCode.includes('"use client"'), "LoginPage must have 'use client'");
+
+      // Must use useDemoAuth hook
+      assert.ok(loginCode.includes("useDemoAuth"), "LoginPage must use auth hook");
+
+      // Must disable input / submit button while submitting
+      assert.ok(loginCode.includes("disabled={isSubmitting}"), "Inputs and button must disable during submission");
+
+      // Demo box must be conditionally rendered only when isDemoMode is true
+      assert.ok(
+        loginCode.includes("{isDemoMode &&"),
+        "Demo helper box must only render when isDemoMode is true"
+      );
+    });
+
+    test("hooks/use-demo-auth.ts uses Supabase Auth signInWithPassword and signOut", async () => {
+      const hookPath = path.resolve(process.cwd(), "hooks/use-demo-auth.ts");
+      const hookCode = await fs.readFile(hookPath, "utf-8");
+
+      // Must call signInWithPassword
+      assert.ok(
+        hookCode.includes("signInWithPassword"),
+        "useDemoAuth must call signInWithPassword"
+      );
+
+      // Must call signOut
+      assert.ok(
+        hookCode.includes("signOut()"),
+        "useDemoAuth must call signOut()"
+      );
+
+      // Must call onAuthStateChange
+      assert.ok(
+        hookCode.includes("onAuthStateChange"),
+        "useDemoAuth must subscribe to onAuthStateChange"
+      );
+
+      // Must check NEXT_PUBLIC_DEMO_MODE for fallback
+      assert.ok(
+        hookCode.includes('process.env.NEXT_PUBLIC_DEMO_MODE === "true"'),
+        "useDemoAuth must strictly guard demo authentication with NEXT_PUBLIC_DEMO_MODE"
+      );
+    });
+
+    test("components/site/header.tsx renders login CTA for anonymous users and account info + logout for authenticated users", async () => {
+      const headerPath = path.resolve(process.cwd(), "components/site/header.tsx");
+      const headerCode = await fs.readFile(headerPath, "utf-8");
+
+      // Must show login link for anonymous users
+      assert.ok(
+        headerCode.includes('href="/dang-nhap"'),
+        "Header must link to /dang-nhap for anonymous users"
+      );
+
+      // Must render account link for authenticated users
+      assert.ok(
+        headerCode.includes('href="/ca-nhan"'),
+        "Header must link to /ca-nhan for authenticated users"
+      );
+
+      // Must have logout action
+      assert.ok(
+        headerCode.includes("logout()"),
+        "Header must invoke logout() on logout button click"
+      );
+    });
   });
 });

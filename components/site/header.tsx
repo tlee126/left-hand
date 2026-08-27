@@ -138,9 +138,10 @@ export function Header() {
                   </Link>
                   <button
                     type="button"
-                    onClick={() => {
-                      logout();
+                    onClick={async () => {
+                      await logout();
                       router.push("/");
+                      router.refresh();
                     }}
                     className="text-xs font-bold text-[#8091b8] hover:text-red-500 transition px-2.5 py-1.5 rounded-lg hover:bg-red-50"
                   >
@@ -238,10 +239,11 @@ export function Header() {
                         </div>
                         <button
                           type="button"
-                          onClick={() => {
-                            logout();
+                          onClick={async () => {
+                            await logout();
                             setOpen(false);
                             router.push("/");
+                            router.refresh();
                           }}
                           className="mt-4 w-full h-[40px] inline-flex items-center justify-center rounded-full bg-red-50 border border-red-100 text-red-600 text-xs font-extrabold hover:bg-red-100 transition active:scale-[0.98]"
                         >
