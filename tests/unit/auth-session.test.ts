@@ -325,4 +325,173 @@ describe("Auth Session Helpers Contract & Intent", () => {
       );
     });
   });
+
+  describe("Task 3.1C-B: Defense-in-depth Server-side Auth Guards for Student Pages", () => {
+    test("app/ca-nhan/page.tsx is a Server Component and uses getAuthUser server check", async () => {
+      const pagePath = path.resolve(process.cwd(), "app/ca-nhan/page.tsx");
+      const pageCode = await fs.readFile(pagePath, "utf-8");
+
+      // Must NOT be a client component
+      assert.ok(
+        !pageCode.includes('"use client"'),
+        "app/ca-nhan/page.tsx must be a Server Component"
+      );
+
+      // Must import getAuthUser from @/lib/auth/session
+      assert.ok(
+        pageCode.includes("getAuthUser"),
+        "app/ca-nhan/page.tsx must import getAuthUser"
+      );
+      assert.ok(
+        pageCode.includes("@/lib/auth/session"),
+        "app/ca-nhan/page.tsx must import from @/lib/auth/session"
+      );
+
+      // Must use redirect from next/navigation
+      assert.ok(
+        pageCode.includes("redirect("),
+        "app/ca-nhan/page.tsx must call redirect() when user is not authenticated"
+      );
+
+      // Must redirect to /dang-nhap?next=...
+      assert.ok(
+        pageCode.includes("/dang-nhap?next="),
+        "app/ca-nhan/page.tsx must redirect to /dang-nhap with next param"
+      );
+
+      // Must NOT use localStorage or client auth hooks as its security check
+      assert.ok(
+        !pageCode.includes("localStorage"),
+        "app/ca-nhan/page.tsx must not use localStorage"
+      );
+      assert.ok(
+        !pageCode.includes("useDemoAuth"),
+        "app/ca-nhan/page.tsx must not use useDemoAuth"
+      );
+    });
+
+    test("app/ca-nhan/mon/[slug]/page.tsx is a Server Component and uses getAuthUser server check", async () => {
+      const pagePath = path.resolve(process.cwd(), "app/ca-nhan/mon/[slug]/page.tsx");
+      const pageCode = await fs.readFile(pagePath, "utf-8");
+
+      // Must NOT be a client component
+      assert.ok(
+        !pageCode.includes('"use client"'),
+        "app/ca-nhan/mon/[slug]/page.tsx must be a Server Component"
+      );
+
+      // Must import getAuthUser from @/lib/auth/session
+      assert.ok(
+        pageCode.includes("getAuthUser"),
+        "app/ca-nhan/mon/[slug]/page.tsx must import getAuthUser"
+      );
+      assert.ok(
+        pageCode.includes("@/lib/auth/session"),
+        "app/ca-nhan/mon/[slug]/page.tsx must import from @/lib/auth/session"
+      );
+
+      // Must use redirect from next/navigation
+      assert.ok(
+        pageCode.includes("redirect("),
+        "app/ca-nhan/mon/[slug]/page.tsx must call redirect() when user is not authenticated"
+      );
+
+      // Must redirect to /dang-nhap?next=...
+      assert.ok(
+        pageCode.includes("/dang-nhap?next="),
+        "app/ca-nhan/mon/[slug]/page.tsx must redirect to /dang-nhap with next param"
+      );
+
+      // Must preserve the slug in next path
+      assert.ok(
+        pageCode.includes("/ca-nhan/mon/${slug}"),
+        "app/ca-nhan/mon/[slug]/page.tsx must preserve subject slug in redirect path"
+      );
+
+      // Must NOT use localStorage or client auth hooks as its security check
+      assert.ok(
+        !pageCode.includes("localStorage"),
+        "app/ca-nhan/mon/[slug]/page.tsx must not use localStorage"
+      );
+      assert.ok(
+        !pageCode.includes("useDemoAuth"),
+        "app/ca-nhan/mon/[slug]/page.tsx must not use useDemoAuth"
+      );
+    });
+
+    test("app/ca-nhan/page.tsx redirects anonymous user to /dang-nhap?next=%2Fca-nhan", async () => {
+      const pageModule = await import("../../app/ca-nhan/page");
+      const StudentDashboardPage = pageModule.default;
+
+      const originalUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const originalKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+      try {
+        // Without Supabase credentials or session, getAuthUser returns null
+        delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+        delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+        let redirectedUrl: string | null = null;
+        try {
+          await StudentDashboardPage({
+            searchParams: Promise.resolve({ tab: "settings", page: "1" })
+          });
+        } catch (err: any) {
+          // Next.js redirect() throws a NEXT_REDIRECT digest
+          if (err.digest?.startsWith("NEXT_REDIRECT;")) {
+            const parts = err.digest.split(";");
+            redirectedUrl = parts[2];
+          } else {
+            throw err;
+          }
+        }
+
+        assert.ok(redirectedUrl, "StudentDashboardPage must throw a NEXT_REDIRECT for unauthenticated users");
+        assert.strictEqual(
+          redirectedUrl,
+          "/dang-nhap?next=%2Fca-nhan%3Ftab%3Dsettings%26page%3D1"
+        );
+      } finally {
+        if (originalUrl) process.env.NEXT_PUBLIC_SUPABASE_URL = originalUrl;
+        if (originalKey) process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = originalKey;
+      }
+    });
+
+    test("app/ca-nhan/mon/[slug]/page.tsx redirects anonymous user and preserves slug & query", async () => {
+      const pageModule = await import("../../app/ca-nhan/mon/[slug]/page");
+      const SubjectWorkspacePage = pageModule.default;
+
+      const originalUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const originalKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+      try {
+        delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+        delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+        let redirectedUrl: string | null = null;
+        try {
+          await SubjectWorkspacePage({
+            params: Promise.resolve({ slug: "ke-toan-tai-chinh-1" }),
+            searchParams: Promise.resolve({ tab: "documents", view: "grid" })
+          });
+        } catch (err: any) {
+          if (err.digest?.startsWith("NEXT_REDIRECT;")) {
+            const parts = err.digest.split(";");
+            redirectedUrl = parts[2];
+          } else {
+            throw err;
+          }
+        }
+
+        assert.ok(redirectedUrl, "SubjectWorkspacePage must throw a NEXT_REDIRECT for unauthenticated users");
+        assert.strictEqual(
+          redirectedUrl,
+          "/dang-nhap?next=%2Fca-nhan%2Fmon%2Fke-toan-tai-chinh-1%3Ftab%3Ddocuments%26view%3Dgrid"
+        );
+      } finally {
+        if (originalUrl) process.env.NEXT_PUBLIC_SUPABASE_URL = originalUrl;
+        if (originalKey) process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = originalKey;
+      }
+    });
+  });
 });
