@@ -494,4 +494,131 @@ describe("Auth Session Helpers Contract & Intent", () => {
       }
     });
   });
+
+  describe("Task 3.2: Protected Student Profiles & Settings", () => {
+    test("validateProfileInput rejects privileged and unknown fields", async () => {
+      const { validateProfileInput } = await import("../../lib/repositories/profile-repository");
+
+      // Attempting to overwrite role or id
+      const maliciousInput = {
+        fullName: "Hacker",
+        role: "admin",
+        owner_id: "victim-id",
+        payment_status: "paid"
+      };
+
+      const result = validateProfileInput(maliciousInput);
+      assert.strictEqual(result.valid, false);
+      assert.ok(result.errors.role, "Must reject role modification");
+      assert.ok(result.errors.owner_id, "Must reject owner_id modification");
+      assert.ok(result.errors.payment_status, "Must reject payment_status modification");
+    });
+
+    test("validateProfileInput validates GPA boundaries strictly [0.0 - 4.0]", async () => {
+      const { validateProfileInput } = await import("../../lib/repositories/profile-repository");
+
+      // Negative GPA
+      const resNeg = validateProfileInput({ gpaGoal: -1.0 });
+      assert.strictEqual(resNeg.valid, false);
+      assert.ok(resNeg.errors.gpaGoal);
+
+      // GPA > 4.0
+      const resHigh = validateProfileInput({ gpaGoal: 4.5 });
+      assert.strictEqual(resHigh.valid, false);
+      assert.ok(resHigh.errors.gpaGoal);
+
+      // Non-numeric GPA
+      const resNaN = validateProfileInput({ gpaGoal: "not-a-number" });
+      assert.strictEqual(resNaN.valid, false);
+      assert.ok(resNaN.errors.gpaGoal);
+
+      // Valid GPA
+      const resValid = validateProfileInput({
+        fullName: "Minh Anh",
+        faculty: "Kế toán",
+        major: "Kiểm toán",
+        gpaGoal: 3.75
+      });
+      assert.strictEqual(resValid.valid, true);
+      assert.strictEqual(resValid.sanitized?.gpaGoal, 3.75);
+      assert.strictEqual(resValid.sanitized?.fullName, "Minh Anh");
+    });
+
+    test("app/ca-nhan/cai-dat/page.tsx is a Server Component and redirects unauthenticated users", async () => {
+      const pagePath = path.resolve(process.cwd(), "app/ca-nhan/cai-dat/page.tsx");
+      const pageCode = await fs.readFile(pagePath, "utf-8");
+
+      assert.ok(
+        !pageCode.includes('"use client"'),
+        "app/ca-nhan/cai-dat/page.tsx must be a Server Component"
+      );
+      assert.ok(
+        pageCode.includes("getAuthUser"),
+        "app/ca-nhan/cai-dat/page.tsx must check getAuthUser"
+      );
+      assert.ok(
+        pageCode.includes("redirect("),
+        "app/ca-nhan/cai-dat/page.tsx must call redirect()"
+      );
+      assert.ok(
+        pageCode.includes("/dang-nhap?next="),
+        "app/ca-nhan/cai-dat/page.tsx must redirect to /dang-nhap with next param"
+      );
+
+      const pageModule = await import("../../app/ca-nhan/cai-dat/page");
+      const ProfileSettingsPage = pageModule.default;
+
+      const originalUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const originalKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+      try {
+        delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+        delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+        let redirectedUrl: string | null = null;
+        try {
+          await ProfileSettingsPage();
+        } catch (err: any) {
+          if (err.digest?.startsWith("NEXT_REDIRECT;")) {
+            const parts = err.digest.split(";");
+            redirectedUrl = parts[2];
+          } else {
+            throw err;
+          }
+        }
+
+        assert.ok(redirectedUrl, "ProfileSettingsPage must throw NEXT_REDIRECT for unauthenticated user");
+        assert.strictEqual(redirectedUrl, "/dang-nhap?next=%2Fca-nhan%2Fcai-dat");
+      } finally {
+        if (originalUrl) process.env.NEXT_PUBLIC_SUPABASE_URL = originalUrl;
+        if (originalKey) process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = originalKey;
+      }
+    });
+
+    test("0004_profiles_schema_and_policies.sql defines strict RLS per auth.uid()", async () => {
+      const migrationPath = path.resolve(
+        process.cwd(),
+        "supabase/migrations/0004_profiles_schema_and_policies.sql"
+      );
+      const sql = await fs.readFile(migrationPath, "utf-8");
+
+      // Must enforce auth.uid() = id for SELECT and UPDATE
+      assert.ok(
+        sql.includes("auth.uid() = id"),
+        "Migration must enforce auth.uid() = id for profiles RLS"
+      );
+      assert.ok(
+        sql.includes("CREATE POLICY \"Allow individual read access on own profile\""),
+        "Migration must define read policy"
+      );
+      assert.ok(
+        sql.includes("CREATE POLICY \"Allow individual update access on own profile\""),
+        "Migration must define update policy"
+      );
+      assert.ok(
+        sql.includes("TO authenticated"),
+        "Migration policies must target authenticated role"
+      );
+    });
+  });
 });

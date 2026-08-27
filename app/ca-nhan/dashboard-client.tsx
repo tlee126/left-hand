@@ -1,12 +1,14 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
+import Link from "next/link";
 import { Header } from "@/components/site/header";
 import { Footer } from "@/components/site/footer";
 import { FloatingActions } from "@/components/site/floating-actions";
-import { purchasedSubjects, studentStats, todayPlan, demoStudent, TaskItem } from "@/data/student-demo";
+import { purchasedSubjects, studentStats, todayPlan, demoStudent, TaskItem, DemoStudent } from "@/data/student-demo";
+import { StudentProfile } from "@/lib/repositories/profile-repository";
 import { MotionReveal } from "@/components/site/motion-reveal";
-import { Clock, Trophy, TrendingUp, BookOpen, Flame, Calendar } from "lucide-react";
+import { Clock, Trophy, TrendingUp, BookOpen, Flame, Calendar, Settings, User } from "lucide-react";
 
 // Import custom student components
 import { DashboardHero } from "@/components/student/dashboard-hero";
@@ -15,7 +17,15 @@ import { TodayPlannerCard } from "@/components/student/today-planner-card";
 import { SubjectFolderCard } from "@/components/student/subject-folder-card";
 import { DashboardSidebar } from "@/components/student/dashboard-sidebar";
 
-export function StudentDashboardClient() {
+interface StudentDashboardClientProps {
+  initialProfile?: StudentProfile | null;
+  authUserEmail?: string | null;
+}
+
+export function StudentDashboardClient({
+  initialProfile,
+  authUserEmail
+}: StudentDashboardClientProps) {
   const [mounted, setMounted] = useState(false);
   
   // Interactive checklist state
@@ -24,6 +34,30 @@ export function StudentDashboardClient() {
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // Compute active student identity from authenticated profile or fallback
+  const currentStudent: DemoStudent = useMemo(() => {
+    const fullName = initialProfile?.fullName || (authUserEmail ? authUserEmail.split("@")[0] : demoStudent.name);
+    const initials = fullName
+      .split(" ")
+      .filter(Boolean)
+      .map((part) => part[0])
+      .slice(-2)
+      .join("")
+      .toUpperCase() || "HV";
+
+    return {
+      name: fullName,
+      email: initialProfile?.email || authUserEmail || demoStudent.email,
+      faculty: initialProfile?.faculty || demoStudent.faculty,
+      major: initialProfile?.major || demoStudent.major,
+      gpaGoal: initialProfile?.gpaGoal ? Number(initialProfile.gpaGoal) : demoStudent.gpaGoal,
+      avatarInitials: initials,
+      currentGpa: demoStudent.currentGpa,
+      streakDays: demoStudent.streakDays,
+      nextExamDays: demoStudent.nextExamDays
+    };
+  }, [initialProfile, authUserEmail]);
 
   // Toggle task checkbox status (done / todo)
   const handleToggleTask = (taskId: string) => {
@@ -50,8 +84,8 @@ export function StudentDashboardClient() {
 
   // Compute dynamic quote based on data
   const dynamicQuote = useMemo(() => {
-    if (demoStudent.nextExamDays <= 14) {
-      return `Còn ${demoStudent.nextExamDays} ngày tới kỳ thi gần nhất — học các phần yếu trước sẽ hiệu quả hơn học dàn trải.`;
+    if (currentStudent.nextExamDays <= 14) {
+      return `Còn ${currentStudent.nextExamDays} ngày tới kỳ thi gần nhất — học các phần yếu trước sẽ hiệu quả hơn học dàn trải.`;
     }
     
     if (lowestProgressSubject && lowestProgressSubject.progressPercent < 45) {
@@ -62,8 +96,8 @@ export function StudentDashboardClient() {
       return `Bạn đã hoàn thành ${studentStats.weeklyProgress}% kế hoạch tuần này. Một phiên học ngắn nữa thôi là rất tốt!`;
     }
 
-    return `Mỗi buổi học nhỏ hôm nay đang kéo GPA của bạn gần hơn mục tiêu ${demoStudent.gpaGoal}. Bắt đầu ngay nhé!`;
-  }, [lowestProgressSubject]);
+    return `Mỗi buổi học nhỏ hôm nay đang kéo GPA của bạn gần hơn mục tiêu ${currentStudent.gpaGoal}. Bắt đầu ngay nhé!`;
+  }, [currentStudent, lowestProgressSubject]);
 
   // Stat Card configurations mapped to data
   const statsConfig = useMemo(() => [
@@ -78,8 +112,8 @@ export function StudentDashboardClient() {
     },
     {
       label: "Mục tiêu GPA",
-      value: studentStats.targetGpa,
-      microcopy: `Đang từ ${demoStudent.currentGpa} → ${studentStats.targetGpa}`,
+      value: currentStudent.gpaGoal,
+      microcopy: `Đang từ ${currentStudent.currentGpa} → ${currentStudent.gpaGoal}`,
       icon: Trophy,
       iconColor: "text-amber-500",
       borderColor: "border-amber-100",
@@ -105,7 +139,7 @@ export function StudentDashboardClient() {
     },
     {
       label: "Streak học tập",
-      value: `${demoStudent.streakDays} ngày`,
+      value: `${currentStudent.streakDays} ngày`,
       microcopy: "Đừng để đứt mạch hôm nay",
       icon: Flame,
       iconColor: "text-orange-500",
@@ -114,14 +148,14 @@ export function StudentDashboardClient() {
     },
     {
       label: "Kỳ thi gần nhất",
-      value: `${demoStudent.nextExamDays} ngày`,
+      value: `${currentStudent.nextExamDays} ngày`,
       microcopy: "Ưu tiên phần yếu trước",
       icon: Calendar,
       iconColor: "text-fuchsia-500",
       borderColor: "border-fuchsia-100",
       bgColor: "bg-fuchsia-50/20"
     }
-  ], []);
+  ], [currentStudent]);
 
   if (!mounted) {
     return (
@@ -144,11 +178,26 @@ export function StudentDashboardClient() {
 
       <main className="mx-auto px-4 py-8 md:py-12 max-w-[1200px]">
         
+        {/* Profile Settings Quick Link Bar */}
+        <div className="mb-6 flex items-center justify-between rounded-2xl border border-[#13245d]/10 bg-white/80 p-3.5 px-5 shadow-sm backdrop-blur-sm">
+          <div className="flex items-center gap-2.5 text-xs font-bold text-[#13245d]">
+            <User className="h-4 w-4 text-[#1765e9]" />
+            <span>Khu học tập cá nhân &middot; {currentStudent.name}</span>
+          </div>
+          <Link
+            href="/ca-nhan/cai-dat"
+            className="inline-flex items-center gap-1.5 rounded-full bg-slate-50 border border-slate-200/80 px-3 py-1.5 text-xs font-black text-[#13245d] transition hover:bg-[#13245d] hover:text-white"
+          >
+            <Settings className="h-3.5 w-3.5" />
+            Cài đặt hồ sơ
+          </Link>
+        </div>
+
         {/* 1. Welcome Hero */}
         <MotionReveal className="mb-8">
-          <DashboardHero 
-            student={demoStudent} 
-            stats={studentStats} 
+          <DashboardHero
+            student={currentStudent}
+            stats={studentStats}
             tasks={tasks}
             lowestProgressSlug={lowestProgressSlug}
           />
@@ -213,9 +262,9 @@ export function StudentDashboardClient() {
           {/* Right column (Widgets & mini profile) */}
           <div className="min-w-0">
             <MotionReveal>
-              <DashboardSidebar 
-                student={demoStudent} 
-                stats={studentStats} 
+              <DashboardSidebar
+                student={currentStudent}
+                stats={studentStats}
                 lowestProgressSubject={lowestProgressSubject}
                 dynamicQuote={dynamicQuote}
               />

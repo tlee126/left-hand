@@ -224,9 +224,11 @@ export type Database = {
           email: string | null
           faculty: string | null
           full_name: string
+          gpa_goal: number | null
           id: string
           major: string | null
           phone: string | null
+          role: string
           student_code: string | null
           updated_at: string
         }
@@ -236,9 +238,11 @@ export type Database = {
           email?: string | null
           faculty?: string | null
           full_name: string
+          gpa_goal?: number | null
           id: string
           major?: string | null
           phone?: string | null
+          role?: string
           student_code?: string | null
           updated_at?: string
         }
@@ -248,9 +252,11 @@ export type Database = {
           email?: string | null
           faculty?: string | null
           full_name?: string
+          gpa_goal?: number | null
           id?: string
           major?: string | null
           phone?: string | null
+          role?: string
           student_code?: string | null
           updated_at?: string
         }

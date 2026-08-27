@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getAuthUser } from "@/lib/auth/session";
+import { getProfileByUserId } from "@/lib/repositories/profile-repository";
 import { StudentDashboardClient } from "./dashboard-client";
 
 /**
@@ -43,5 +44,8 @@ export default async function StudentDashboardPage({
     redirect(`/dang-nhap?next=${encodeURIComponent(safeNext)}`);
   }
 
-  return <StudentDashboardClient />;
+  // Load server-side authenticated user profile
+  const profile = await getProfileByUserId(user.id);
+
+  return <StudentDashboardClient initialProfile={profile} authUserEmail={user.email ?? null} />;
 }
