@@ -1,5 +1,5 @@
 -- 0004_profiles_schema_and_policies.sql
--- Add missing profile columns and security policies for protected student profiles
+-- Add missing profile columns and strict column-level security policies for protected student profiles
 
 -- 1. Add gpa_goal and role columns to profiles table if not present
 ALTER TABLE profiles 
@@ -9,7 +9,22 @@ ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'student' CHECK (role IN ('s
 -- 2. Performance index on profile lookup
 CREATE INDEX IF NOT EXISTS idx_profiles_id ON profiles(id);
 
--- 3. Row Level Security Policies for profiles
+-- 3. Automatic updated_at trigger function
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = timezone('utc'::text, now());
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+DROP TRIGGER IF EXISTS trg_profiles_updated_at ON profiles;
+CREATE TRIGGER trg_profiles_updated_at
+    BEFORE UPDATE ON profiles
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- 4. Row Level Security Policies for profiles
 
 -- Drop old policies if any exist
 DROP POLICY IF EXISTS "Allow individual read access on own profile" ON profiles;
@@ -38,5 +53,15 @@ TO authenticated
 USING (auth.uid() = id)
 WITH CHECK (auth.uid() = id);
 
--- 4. Grant table privileges on profiles
-GRANT SELECT, INSERT, UPDATE ON TABLE profiles TO authenticated;
+-- 5. Strict Column-Level Permissions for authenticated users
+-- Revoke broad table-level write permissions first
+REVOKE INSERT, UPDATE ON TABLE profiles FROM authenticated;
+
+-- Grant SELECT on all columns of own profile
+GRANT SELECT ON TABLE profiles TO authenticated;
+
+-- Grant INSERT only on allowed non-privileged columns (role/email/phone/updated_at are forbidden)
+GRANT INSERT (id, full_name, faculty, major, gpa_goal) ON TABLE profiles TO authenticated;
+
+-- Grant UPDATE only on user-editable non-privileged columns (id/role/email/phone/updated_at are forbidden)
+GRANT UPDATE (full_name, faculty, major, gpa_goal) ON TABLE profiles TO authenticated;

@@ -33,14 +33,16 @@ export interface ProfileValidationResult {
   };
 }
 
+const ALLOWED_INPUT_KEYS = new Set(["fullName", "faculty", "major", "gpaGoal"]);
+
 /**
  * Validates editable profile input fields.
- * Rejects invalid GPA values, negative numbers, numbers > 4.0, or oversized text.
+ * Rejects any unknown fields, privileged fields, invalid GPA values, negative numbers, numbers > 4.0, or oversized text.
  */
 export function validateProfileInput(input: unknown): ProfileValidationResult {
   const errors: Record<string, string> = {};
 
-  if (!input || typeof input !== "object") {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
     return {
       valid: false,
       errors: { _form: "Dữ liệu cập nhật không hợp lệ." }
@@ -48,29 +50,18 @@ export function validateProfileInput(input: unknown): ProfileValidationResult {
   }
 
   const record = input as Record<string, unknown>;
+  const keys = Object.keys(record);
 
-  // Check for rejected privileged keys
-  const forbiddenKeys = [
-    "id",
-    "role",
-    "email",
-    "payment_status",
-    "entitlement_status",
-    "owner_id",
-    "is_admin",
-    "created_at",
-    "updated_at"
-  ];
-
-  for (const key of forbiddenKeys) {
-    if (key in record) {
-      errors[key] = `Trường ${key} không được phép cập nhật bởi người dùng.`;
+  // Strictly reject any unknown keys
+  for (const key of keys) {
+    if (!ALLOWED_INPUT_KEYS.has(key)) {
+      errors[key] = `Trường "${key}" không được phép cập nhật hoặc không tồn tại.`;
     }
   }
 
   let sanitizedFullName: string | undefined;
-  if ("fullName" in record || "full_name" in record) {
-    const rawName = (record.fullName ?? record.full_name) as unknown;
+  if ("fullName" in record) {
+    const rawName = record.fullName;
     if (typeof rawName !== "string" || rawName.trim().length === 0) {
       errors.fullName = "Họ và tên không được để trống.";
     } else if (rawName.trim().length > 100) {
@@ -113,8 +104,8 @@ export function validateProfileInput(input: unknown): ProfileValidationResult {
   }
 
   let sanitizedGpaGoal: number | null | undefined;
-  if ("gpaGoal" in record || "gpa_goal" in record) {
-    const rawGpa = (record.gpaGoal ?? record.gpa_goal) as unknown;
+  if ("gpaGoal" in record) {
+    const rawGpa = record.gpaGoal;
     if (rawGpa === null || rawGpa === "") {
       sanitizedGpaGoal = null;
     } else {
@@ -124,7 +115,7 @@ export function validateProfileInput(input: unknown): ProfileValidationResult {
       } else if (numGpa < 0.0 || numGpa > 4.0) {
         errors.gpaGoal = "Mục tiêu GPA phải nằm trong khoảng từ 0.0 đến 4.0.";
       } else {
-        // Round to 2 decimal places
+        // Round to 2 decimal places (preserves 0 correctly)
         sanitizedGpaGoal = Math.round(numGpa * 100) / 100;
       }
     }
@@ -178,7 +169,7 @@ export async function getProfileByUserId(
       major: data.major,
       studentCode: data.student_code,
       avatarUrl: data.avatar_url,
-      gpaGoal: data.gpa_goal ? Number(data.gpa_goal) : null,
+      gpaGoal: data.gpa_goal === null ? null : Number(data.gpa_goal),
       role: data.role || "student",
       createdAt: data.created_at,
       updatedAt: data.updated_at
@@ -191,6 +182,7 @@ export async function getProfileByUserId(
 /**
  * Updates the authenticated user's own profile.
  * Server-only helper that derives ownership strictly from the authenticated server user ID.
+ * Only sends the 4 allowed editable columns (never sends role, id, or privileged keys).
  */
 export async function updateOwnProfile(
   userId: string,
@@ -209,15 +201,13 @@ export async function updateOwnProfile(
   try {
     const supabase = await createClient();
 
+    // Only include granted editable columns
     const updatePayload: {
       full_name?: string;
       faculty?: string | null;
       major?: string | null;
       gpa_goal?: number | null;
-      updated_at?: string;
-    } = {
-      updated_at: new Date().toISOString()
-    };
+    } = {};
 
     if (validation.sanitized.fullName !== undefined) {
       updatePayload.full_name = validation.sanitized.fullName;
@@ -244,14 +234,13 @@ export async function updateOwnProfile(
     }
 
     if (!data) {
-      // Profile might not exist yet; try creating it
+      // Profile might not exist yet; try creating it with granted insert columns only
       const insertPayload = {
         id: userId,
         full_name: validation.sanitized.fullName || "Học viên",
         faculty: validation.sanitized.faculty || null,
         major: validation.sanitized.major || null,
-        gpa_goal: validation.sanitized.gpaGoal || null,
-        role: "student"
+        gpa_goal: validation.sanitized.gpaGoal !== undefined ? validation.sanitized.gpaGoal : null
       };
 
       const { data: inserted, error: insertError } = await supabase
@@ -275,7 +264,7 @@ export async function updateOwnProfile(
           major: inserted.major,
           studentCode: inserted.student_code,
           avatarUrl: inserted.avatar_url,
-          gpaGoal: inserted.gpa_goal ? Number(inserted.gpa_goal) : null,
+          gpaGoal: inserted.gpa_goal === null ? null : Number(inserted.gpa_goal),
           role: inserted.role || "student",
           createdAt: inserted.created_at,
           updatedAt: inserted.updated_at
@@ -294,7 +283,7 @@ export async function updateOwnProfile(
         major: data.major,
         studentCode: data.student_code,
         avatarUrl: data.avatar_url,
-        gpaGoal: data.gpa_goal ? Number(data.gpa_goal) : null,
+        gpaGoal: data.gpa_goal === null ? null : Number(data.gpa_goal),
         role: data.role || "student",
         createdAt: data.created_at,
         updatedAt: data.updated_at

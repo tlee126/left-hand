@@ -499,12 +499,14 @@ describe("Auth Session Helpers Contract & Intent", () => {
     test("validateProfileInput rejects privileged and unknown fields", async () => {
       const { validateProfileInput } = await import("../../lib/repositories/profile-repository");
 
-      // Attempting to overwrite role or id
+      // Attempting to overwrite role, id, email, or unknown keys
       const maliciousInput = {
         fullName: "Hacker",
         role: "admin",
         owner_id: "victim-id",
-        payment_status: "paid"
+        payment_status: "paid",
+        email: "hacker@evil.com",
+        unknownKey: "value"
       };
 
       const result = validateProfileInput(maliciousInput);
@@ -512,9 +514,11 @@ describe("Auth Session Helpers Contract & Intent", () => {
       assert.ok(result.errors.role, "Must reject role modification");
       assert.ok(result.errors.owner_id, "Must reject owner_id modification");
       assert.ok(result.errors.payment_status, "Must reject payment_status modification");
+      assert.ok(result.errors.email, "Must reject email modification");
+      assert.ok(result.errors.unknownKey, "Must reject unknown fields");
     });
 
-    test("validateProfileInput validates GPA boundaries strictly [0.0 - 4.0]", async () => {
+    test("validateProfileInput validates GPA boundaries strictly and preserves GPA 0", async () => {
       const { validateProfileInput } = await import("../../lib/repositories/profile-repository");
 
       // Negative GPA
@@ -531,6 +535,14 @@ describe("Auth Session Helpers Contract & Intent", () => {
       const resNaN = validateProfileInput({ gpaGoal: "not-a-number" });
       assert.strictEqual(resNaN.valid, false);
       assert.ok(resNaN.errors.gpaGoal);
+
+      // GPA 0 must be preserved as 0 (not converted to null)
+      const resZero = validateProfileInput({
+        fullName: "Minh Anh",
+        gpaGoal: 0
+      });
+      assert.strictEqual(resZero.valid, true);
+      assert.strictEqual(resZero.sanitized?.gpaGoal, 0);
 
       // Valid GPA
       const resValid = validateProfileInput({
@@ -595,7 +607,7 @@ describe("Auth Session Helpers Contract & Intent", () => {
       }
     });
 
-    test("0004_profiles_schema_and_policies.sql defines strict RLS per auth.uid()", async () => {
+    test("0004_profiles_schema_and_policies.sql defines strict RLS and column-level grants", async () => {
       const migrationPath = path.resolve(
         process.cwd(),
         "supabase/migrations/0004_profiles_schema_and_policies.sql"
@@ -618,6 +630,30 @@ describe("Auth Session Helpers Contract & Intent", () => {
       assert.ok(
         sql.includes("TO authenticated"),
         "Migration policies must target authenticated role"
+      );
+
+      // Must revoke broad write grants
+      assert.ok(
+        sql.includes("REVOKE INSERT, UPDATE ON TABLE profiles FROM authenticated;"),
+        "Migration must revoke broad INSERT/UPDATE permissions from authenticated"
+      );
+
+      // Must restrict INSERT column grants
+      assert.ok(
+        sql.includes("GRANT INSERT (id, full_name, faculty, major, gpa_goal) ON TABLE profiles TO authenticated;"),
+        "Migration must grant INSERT only on allowed non-privileged columns"
+      );
+
+      // Must restrict UPDATE column grants
+      assert.ok(
+        sql.includes("GRANT UPDATE (full_name, faculty, major, gpa_goal) ON TABLE profiles TO authenticated;"),
+        "Migration must grant UPDATE only on allowed editable columns"
+      );
+
+      // Must NOT grant UPDATE on role, email, phone, created_at, or updated_at
+      assert.ok(
+        !/GRANT\s+UPDATE\s*\([^)]*\brole\b[^)]*\)/i.test(sql),
+        "Migration must NOT grant UPDATE on role column"
       );
     });
   });

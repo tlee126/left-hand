@@ -51,7 +51,10 @@ export function StudentDashboardClient({
       email: initialProfile?.email || authUserEmail || demoStudent.email,
       faculty: initialProfile?.faculty || demoStudent.faculty,
       major: initialProfile?.major || demoStudent.major,
-      gpaGoal: initialProfile?.gpaGoal ? Number(initialProfile.gpaGoal) : demoStudent.gpaGoal,
+      gpaGoal:
+        initialProfile?.gpaGoal !== undefined && initialProfile?.gpaGoal !== null
+          ? Number(initialProfile.gpaGoal)
+          : demoStudent.gpaGoal,
       avatarInitials: initials,
       currentGpa: demoStudent.currentGpa,
       streakDays: demoStudent.streakDays,
