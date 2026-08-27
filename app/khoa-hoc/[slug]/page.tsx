@@ -2,14 +2,10 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, BookOpen, Calendar, Check, Clock, Home, Star, User, Video } from "lucide-react";
 import { CatalogPageShell } from "@/components/catalog/catalog-page-shell";
-import { courses } from "@/data/catalog";
+import { getPublishedCourseBySlug } from "@/lib/repositories/catalog-repository";
 import { coverThemes } from "@/components/catalog/theme";
 
-export async function generateStaticParams() {
-  return courses.map((item) => ({
-    slug: item.slug,
-  }));
-}
+export const revalidate = 60;
 
 const formatLabels = {
   online: "Học Online",
@@ -30,7 +26,7 @@ export default async function CourseDetailPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  const item = courses.find((c) => c.slug === slug);
+  const item = await getPublishedCourseBySlug(slug);
 
   if (!item) {
     notFound();
