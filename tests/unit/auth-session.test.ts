@@ -95,7 +95,6 @@ describe("Auth Session Helpers Contract & Intent", () => {
 
     // Must read 'next' query param with fallback
     assert.ok(code.includes('searchParams.get("next")'), "Callback route must support 'next' redirect");
-    assert.ok(code.includes('?? "/ca-nhan"'), "Default redirect target must be /ca-nhan");
 
     // Must call exchangeCodeForSession
     assert.ok(code.includes("exchangeCodeForSession(code)"), "Callback route must exchange code for session");
@@ -105,6 +104,126 @@ describe("Auth Session Helpers Contract & Intent", () => {
       code.includes('/dang-nhap?error=auth_callback'),
       "Must redirect to /dang-nhap?error=auth_callback on missing code or exchange error"
     );
+  });
+
+  describe("GET /auth/callback Route Handler Execution", () => {
+    let GET: (request: Request) => Promise<Response>;
+    let handleAuthCallback: (request: Request, client?: any) => Promise<Response>;
+
+    test("load route handler functions", async () => {
+      const module = await import("../../app/auth/callback/route");
+      GET = module.GET;
+      handleAuthCallback = module.handleAuthCallback;
+      assert.strictEqual(typeof GET, "function");
+      assert.strictEqual(typeof handleAuthCallback, "function");
+    });
+
+    test("1. missing code redirects to /dang-nhap?error=auth_callback", async () => {
+      const request = new Request("http://localhost:3000/auth/callback");
+      const response = await GET(request);
+
+      assert.strictEqual(response.status, 307);
+      const location = response.headers.get("location");
+      assert.strictEqual(location, "http://localhost:3000/dang-nhap?error=auth_callback");
+    });
+
+    test("2. failed exchange redirects to /dang-nhap?error=auth_callback", async () => {
+      const mockFailingClient = {
+        auth: {
+          exchangeCodeForSession: async () => ({
+            data: { session: null, user: null },
+            error: new Error("Invalid or expired code")
+          })
+        }
+      };
+
+      const request = new Request("http://localhost:3000/auth/callback?code=invalid-code");
+      const response = await handleAuthCallback(request, mockFailingClient);
+
+      assert.strictEqual(response.status, 307);
+      const location = response.headers.get("location");
+      assert.strictEqual(location, "http://localhost:3000/dang-nhap?error=auth_callback");
+    });
+
+    test("3. successful exchange redirects to /ca-nhan", async () => {
+      const mockSuccessClient = {
+        auth: {
+          exchangeCodeForSession: async () => ({
+            data: { session: { access_token: "tok" }, user: { id: "u1" } },
+            error: null
+          })
+        }
+      };
+
+      const request = new Request("http://localhost:3000/auth/callback?code=valid-auth-code");
+      const response = await handleAuthCallback(request, mockSuccessClient);
+
+      assert.strictEqual(response.status, 307);
+      const location = response.headers.get("location");
+      assert.strictEqual(location, "http://localhost:3000/ca-nhan");
+    });
+
+    test("4. invalid external next falls back to /ca-nhan", async () => {
+      const mockSuccessClient = {
+        auth: {
+          exchangeCodeForSession: async () => ({
+            data: { session: { access_token: "tok" }, user: { id: "u1" } },
+            error: null
+          })
+        }
+      };
+
+      const maliciousNextTargets = [
+        "https://evil.com/phishing",
+        "http://attacker.com",
+        "//evil.com/bypass",
+        "\\evil.com",
+        "javascript:alert(1)"
+      ];
+
+      for (const badNext of maliciousNextTargets) {
+        const request = new Request(
+          `http://localhost:3000/auth/callback?code=valid-code&next=${encodeURIComponent(badNext)}`
+        );
+        const response = await handleAuthCallback(request, mockSuccessClient);
+
+        assert.strictEqual(response.status, 307);
+        const location = response.headers.get("location");
+        assert.strictEqual(
+          location,
+          "http://localhost:3000/ca-nhan",
+          `Must fall back to /ca-nhan for malicious next: ${badNext}`
+        );
+      }
+    });
+
+    test("5. valid internal next is preserved", async () => {
+      const mockSuccessClient = {
+        auth: {
+          exchangeCodeForSession: async () => ({
+            data: { session: { access_token: "tok" }, user: { id: "u1" } },
+            error: null
+          })
+        }
+      };
+
+      const validTargets = [
+        "/ca-nhan/cai-dat",
+        "/khoa-hoc",
+        "/tai-lieu/ke-toan-tai-chinh-1"
+      ];
+
+      for (const target of validTargets) {
+        const request = new Request(
+          `http://localhost:3000/auth/callback?code=valid-code&next=${encodeURIComponent(target)}`
+        );
+        const response = await handleAuthCallback(request, mockSuccessClient);
+
+        assert.strictEqual(response.status, 307);
+        const location = response.headers.get("location");
+        assert.strictEqual(location, `http://localhost:3000${target}`);
+      }
+    });
   });
 
   test("client-side codebase never imports or references service role keys", async () => {
