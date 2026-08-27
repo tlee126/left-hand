@@ -3,43 +3,42 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useDemoAuth } from "@/hooks/use-demo-auth";
 import { ArrowLeft, Lock, Mail, Sparkles } from "lucide-react";
 import { FloatingActions } from "@/components/site/floating-actions";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login, isLoggedIn } = useDemoAuth();
+  const { login, isLoggedIn, loading: authLoading, isDemoMode } = useDemoAuth();
   
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // If already logged in, redirect immediately
-  if (isLoggedIn) {
-    if (typeof window !== "undefined") {
+  // If already logged in, redirect immediately to student personal dashboard
+  useEffect(() => {
+    if (!authLoading && isLoggedIn) {
       router.push("/ca-nhan");
     }
-  }
+  }, [authLoading, isLoggedIn, router]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
+
     setError(null);
     setIsSubmitting(true);
 
-    // Add a tiny delay to feel realistic
-    setTimeout(() => {
-      const success = login(email, password);
-      setIsSubmitting(false);
-      
-      if (success) {
-        router.push("/ca-nhan");
-      } else {
-        setError("Email hoặc mật khẩu demo không đúng! Hãy kiểm tra lại thông tin gợi ý phía dưới.");
-      }
-    }, 600);
+    const result = await login(email, password);
+    setIsSubmitting(false);
+
+    if (result.success) {
+      router.push("/ca-nhan");
+    } else {
+      setError(result.error || "Email hoặc mật khẩu không chính xác. Vui lòng kiểm tra lại.");
+    }
   };
 
   const handleFillDemo = () => {
@@ -114,9 +113,10 @@ export default function LoginPage() {
                     type="email"
                     required
                     value={email}
+                    disabled={isSubmitting}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="student@lefthand.vn"
-                    className="h-11 w-full rounded-[16px] border border-[#d8deef] bg-white pl-11 pr-4 text-sm font-medium text-[#22325f] outline-none transition focus:border-[#132a67]/60 focus:ring-4 focus:ring-accent/5"
+                    className="h-11 w-full rounded-[16px] border border-[#d8deef] bg-white pl-11 pr-4 text-sm font-medium text-[#22325f] outline-none transition focus:border-[#132a67]/60 focus:ring-4 focus:ring-accent/5 disabled:opacity-60 disabled:cursor-not-allowed"
                   />
                 </div>
               </div>
@@ -133,9 +133,10 @@ export default function LoginPage() {
                     type="password"
                     required
                     value={password}
+                    disabled={isSubmitting}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
-                    className="h-11 w-full rounded-[16px] border border-[#d8deef] bg-white pl-11 pr-4 text-sm font-medium text-[#22325f] outline-none transition focus:border-[#132a67]/60 focus:ring-4 focus:ring-accent/5"
+                    className="h-11 w-full rounded-[16px] border border-[#d8deef] bg-white pl-11 pr-4 text-sm font-medium text-[#22325f] outline-none transition focus:border-[#132a67]/60 focus:ring-4 focus:ring-accent/5 disabled:opacity-60 disabled:cursor-not-allowed"
                   />
                 </div>
               </div>
@@ -159,30 +160,32 @@ export default function LoginPage() {
               </button>
             </form>
 
-            {/* Demo Account Box */}
-            <div className="mt-6 rounded-2xl border border-dashed border-[#1b2e7430] bg-[#fcf9f2] p-4 text-center">
-              <div className="flex items-center justify-center gap-1.5 text-xs font-extrabold text-accent">
-                <Sparkles className="h-4 w-4" />
-                Tài khoản demo trải nghiệm
-              </div>
-              <div className="mt-2 text-left space-y-1 text-xs text-[#5f6d8f] font-semibold">
-                <div className="flex justify-between">
-                  <span>Email:</span>
-                  <span className="font-mono text-ink">demo@lefthand.vn</span>
+            {/* Demo Account Box (Only visible in Demo Mode) */}
+            {isDemoMode && (
+              <div className="mt-6 rounded-2xl border border-dashed border-[#1b2e7430] bg-[#fcf9f2] p-4 text-center">
+                <div className="flex items-center justify-center gap-1.5 text-xs font-extrabold text-accent">
+                  <Sparkles className="h-4 w-4" />
+                  Tài khoản demo trải nghiệm
                 </div>
-                <div className="flex justify-between">
-                  <span>Mật khẩu:</span>
-                  <span className="font-mono text-ink">123456</span>
+                <div className="mt-2 text-left space-y-1 text-xs text-[#5f6d8f] font-semibold">
+                  <div className="flex justify-between">
+                    <span>Email:</span>
+                    <span className="font-mono text-ink">demo@lefthand.vn</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Mật khẩu:</span>
+                    <span className="font-mono text-ink">123456</span>
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  onClick={handleFillDemo}
+                  className="mt-3 text-[11px] font-bold text-blue-600 hover:underline transition"
+                >
+                  Tự động nhập thông tin demo
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={handleFillDemo}
-                className="mt-3 text-[11px] font-bold text-blue-600 hover:underline transition"
-              >
-                Tự động nhập thông tin demo
-              </button>
-            </div>
+            )}
           </div>
         </div>
       </main>
