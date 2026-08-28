@@ -4,6 +4,25 @@ import { useEffect, useState, useTransition } from "react";
 import type { User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/browser";
 import { demoStudent, DemoStudent } from "@/data/student-demo";
+import {
+  performSignup,
+  mapSignupError,
+  getValidCallbackUrl,
+  validateSignupInput,
+  type SignupResult,
+  type SignupParams,
+  type SignupInputValidation
+} from "@/lib/auth/signup";
+
+export {
+  performSignup,
+  mapSignupError,
+  getValidCallbackUrl,
+  validateSignupInput,
+  type SignupResult,
+  type SignupParams,
+  type SignupInputValidation
+};
 
 export interface AuthStateUser {
   id?: string;
@@ -220,6 +239,26 @@ export function useDemoAuth() {
     }
   };
 
+  const signup = async (
+    email: string,
+    password?: string,
+    emailRedirectTo?: string
+  ): Promise<SignupResult> => {
+    try {
+      const supabase = createClient();
+      return await performSignup(supabase, {
+        email,
+        password,
+        emailRedirectTo
+      });
+    } catch (err: unknown) {
+      return {
+        success: false,
+        error: mapSignupError(err)
+      };
+    }
+  };
+
   const logout = async () => {
     try {
       const supabase = createClient();
@@ -240,6 +279,7 @@ export function useDemoAuth() {
     loading,
     isDemoMode,
     login,
+    signup,
     logout
   };
 }
