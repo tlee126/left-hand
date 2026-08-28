@@ -1,5 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 
+export type AccountStatus = "pending" | "approved" | "rejected" | "suspended";
+
 export interface StudentProfile {
   id: string;
   fullName: string;
@@ -11,6 +13,10 @@ export interface StudentProfile {
   avatarUrl: string | null;
   gpaGoal: number | null;
   role: string;
+  accountStatus: AccountStatus;
+  approvedAt: string | null;
+  approvedBy: string | null;
+  rejectionReason: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -137,19 +143,82 @@ export function validateProfileInput(input: unknown): ProfileValidationResult {
   };
 }
 
+export interface ProfileRow {
+  id?: string;
+  full_name?: string;
+  email?: string | null;
+  phone?: string | null;
+  faculty?: string | null;
+  major?: string | null;
+  student_code?: string | null;
+  avatar_url?: string | null;
+  gpa_goal?: number | string | null;
+  role?: string | null;
+  account_status?: string | null;
+  approved_at?: string | null;
+  approved_by?: string | null;
+  rejection_reason?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
+export interface ProfileQueryResult<T = ProfileRow> {
+  data: T | null;
+  error: { message?: string } | Error | null | unknown;
+}
+
+export interface ProfileQueryFilter {
+  eq(column: string, value: unknown): ProfileQueryExecution;
+  maybeSingle?(): Promise<ProfileQueryResult>;
+  single?(): Promise<ProfileQueryResult>;
+}
+
+export interface ProfileQueryExecution {
+  select?(columns?: string): ProfileQueryExecution;
+  maybeSingle(): Promise<ProfileQueryResult>;
+  single?(): Promise<ProfileQueryResult>;
+}
+
+export interface ProfileInsertFilter {
+  select(columns?: string): {
+    single(): Promise<ProfileQueryResult>;
+    maybeSingle?(): Promise<ProfileQueryResult>;
+  };
+}
+
+export interface ProfileUpdateFilter {
+  eq(column: string, value: unknown): {
+    select(columns?: string): {
+      maybeSingle(): Promise<ProfileQueryResult>;
+      single?(): Promise<ProfileQueryResult>;
+    };
+    maybeSingle?(): Promise<ProfileQueryResult>;
+  };
+}
+
+export interface ProfileRepositoryClient {
+  from(table: string): {
+    select(columns?: string): ProfileQueryFilter;
+    update?(payload: unknown): ProfileUpdateFilter;
+    insert?(payload: unknown): ProfileInsertFilter;
+  };
+}
+
 /**
  * Loads the student profile for the specified user ID from Supabase.
  * Server-only helper that never accepts owner_id from client state.
  */
 export async function getProfileByUserId(
-  userId: string
+  userId: string,
+  client?: ProfileRepositoryClient
 ): Promise<StudentProfile | null> {
   if (!userId || typeof userId !== "string") {
     return null;
   }
 
   try {
-    const supabase = await createClient();
+    const supabase = client ?? (await createClient());
     const { data, error } = await supabase
       .from("profiles")
       .select("*")
@@ -160,19 +229,28 @@ export async function getProfileByUserId(
       return null;
     }
 
+    const row = data as ProfileRow;
+
     return {
-      id: data.id,
-      fullName: data.full_name,
-      email: data.email,
-      phone: data.phone,
-      faculty: data.faculty,
-      major: data.major,
-      studentCode: data.student_code,
-      avatarUrl: data.avatar_url,
-      gpaGoal: data.gpa_goal === null ? null : Number(data.gpa_goal),
-      role: data.role || "student",
-      createdAt: data.created_at,
-      updatedAt: data.updated_at
+      id: String(row.id ?? ""),
+      fullName: String(row.full_name ?? ""),
+      email: (row.email as string | null) ?? null,
+      phone: (row.phone as string | null) ?? null,
+      faculty: (row.faculty as string | null) ?? null,
+      major: (row.major as string | null) ?? null,
+      studentCode: (row.student_code as string | null) ?? null,
+      avatarUrl: (row.avatar_url as string | null) ?? null,
+      gpaGoal:
+        row.gpa_goal === null || row.gpa_goal === undefined
+          ? null
+          : Number(row.gpa_goal),
+      role: (row.role as string) || "student",
+      accountStatus: (row.account_status as AccountStatus) || "pending",
+      approvedAt: (row.approved_at as string | null) ?? null,
+      approvedBy: (row.approved_by as string | null) ?? null,
+      rejectionReason: (row.rejection_reason as string | null) ?? null,
+      createdAt: String(row.created_at ?? ""),
+      updatedAt: String(row.updated_at ?? "")
     };
   } catch {
     return null;
@@ -186,7 +264,8 @@ export async function getProfileByUserId(
  */
 export async function updateOwnProfile(
   userId: string,
-  input: UpdateProfileInput
+  input: UpdateProfileInput,
+  client?: ProfileRepositoryClient
 ): Promise<{ success: boolean; profile?: StudentProfile; error?: string }> {
   if (!userId || typeof userId !== "string") {
     return { success: false, error: "Người dùng chưa xác thực." };
@@ -199,7 +278,7 @@ export async function updateOwnProfile(
   }
 
   try {
-    const supabase = await createClient();
+    const supabase = client ?? (await createClient());
 
     // Only include granted editable columns
     const updatePayload: {
@@ -222,15 +301,26 @@ export async function updateOwnProfile(
       updatePayload.gpa_goal = validation.sanitized.gpaGoal;
     }
 
-    const { data, error } = await supabase
-      .from("profiles")
+    const tableQuery = supabase.from("profiles");
+    if (!tableQuery.update) {
+      return { success: false, error: "Thao tác cập nhật không khả dụng." };
+    }
+
+    const { data, error } = await tableQuery
       .update(updatePayload)
       .eq("id", userId)
       .select()
       .maybeSingle();
 
     if (error) {
-      return { success: false, error: error.message || "Không thể cập nhật hồ sơ." };
+      const errorMsg =
+        typeof error === "object" &&
+        error &&
+        "message" in error &&
+        typeof error.message === "string"
+          ? error.message
+          : "Không thể cập nhật hồ sơ.";
+      return { success: false, error: errorMsg };
     }
 
     if (!data) {
@@ -240,53 +330,85 @@ export async function updateOwnProfile(
         full_name: validation.sanitized.fullName || "Học viên",
         faculty: validation.sanitized.faculty || null,
         major: validation.sanitized.major || null,
-        gpa_goal: validation.sanitized.gpaGoal !== undefined ? validation.sanitized.gpaGoal : null
+        gpa_goal:
+          validation.sanitized.gpaGoal !== undefined
+            ? validation.sanitized.gpaGoal
+            : null
       };
 
-      const { data: inserted, error: insertError } = await supabase
-        .from("profiles")
+      if (!tableQuery.insert) {
+        return { success: false, error: "Thao tác khởi tạo không khả dụng." };
+      }
+
+      const { data: inserted, error: insertError } = await tableQuery
         .insert(insertPayload)
         .select()
         .single();
 
       if (insertError || !inserted) {
-        return { success: false, error: insertError?.message || "Không thể khởi tạo hồ sơ." };
+        const insertErrorMsg =
+          typeof insertError === "object" &&
+          insertError &&
+          "message" in insertError &&
+          typeof insertError.message === "string"
+            ? insertError.message
+            : "Không thể khởi tạo hồ sơ.";
+        return { success: false, error: insertErrorMsg };
       }
 
+      const insertedRow = inserted as ProfileRow;
       return {
         success: true,
         profile: {
-          id: inserted.id,
-          fullName: inserted.full_name,
-          email: inserted.email,
-          phone: inserted.phone,
-          faculty: inserted.faculty,
-          major: inserted.major,
-          studentCode: inserted.student_code,
-          avatarUrl: inserted.avatar_url,
-          gpaGoal: inserted.gpa_goal === null ? null : Number(inserted.gpa_goal),
-          role: inserted.role || "student",
-          createdAt: inserted.created_at,
-          updatedAt: inserted.updated_at
+          id: String(insertedRow.id ?? ""),
+          fullName: String(insertedRow.full_name ?? ""),
+          email: (insertedRow.email as string | null) ?? null,
+          phone: (insertedRow.phone as string | null) ?? null,
+          faculty: (insertedRow.faculty as string | null) ?? null,
+          major: (insertedRow.major as string | null) ?? null,
+          studentCode: (insertedRow.student_code as string | null) ?? null,
+          avatarUrl: (insertedRow.avatar_url as string | null) ?? null,
+          gpaGoal:
+            insertedRow.gpa_goal === null ||
+            insertedRow.gpa_goal === undefined
+              ? null
+              : Number(insertedRow.gpa_goal),
+          role: (insertedRow.role as string) || "student",
+          accountStatus:
+            (insertedRow.account_status as AccountStatus) || "pending",
+          approvedAt: (insertedRow.approved_at as string | null) ?? null,
+          approvedBy: (insertedRow.approved_by as string | null) ?? null,
+          rejectionReason:
+            (insertedRow.rejection_reason as string | null) ?? null,
+          createdAt: String(insertedRow.created_at ?? ""),
+          updatedAt: String(insertedRow.updated_at ?? "")
         }
       };
     }
 
+    const dataRow = data as ProfileRow;
     return {
       success: true,
       profile: {
-        id: data.id,
-        fullName: data.full_name,
-        email: data.email,
-        phone: data.phone,
-        faculty: data.faculty,
-        major: data.major,
-        studentCode: data.student_code,
-        avatarUrl: data.avatar_url,
-        gpaGoal: data.gpa_goal === null ? null : Number(data.gpa_goal),
-        role: data.role || "student",
-        createdAt: data.created_at,
-        updatedAt: data.updated_at
+        id: String(dataRow.id ?? ""),
+        fullName: String(dataRow.full_name ?? ""),
+        email: (dataRow.email as string | null) ?? null,
+        phone: (dataRow.phone as string | null) ?? null,
+        faculty: (dataRow.faculty as string | null) ?? null,
+        major: (dataRow.major as string | null) ?? null,
+        studentCode: (dataRow.student_code as string | null) ?? null,
+        avatarUrl: (dataRow.avatar_url as string | null) ?? null,
+        gpaGoal:
+          dataRow.gpa_goal === null || dataRow.gpa_goal === undefined
+            ? null
+            : Number(dataRow.gpa_goal),
+        role: (dataRow.role as string) || "student",
+        accountStatus: (dataRow.account_status as AccountStatus) || "pending",
+        approvedAt: (dataRow.approved_at as string | null) ?? null,
+        approvedBy: (dataRow.approved_by as string | null) ?? null,
+        rejectionReason: (dataRow.rejection_reason as string | null) ?? null,
+        createdAt: String(dataRow.created_at ?? ""),
+        updatedAt: String(dataRow.updated_at ?? "")
       }
     };
   } catch (err: unknown) {

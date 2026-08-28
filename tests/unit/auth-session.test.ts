@@ -327,7 +327,7 @@ describe("Auth Session Helpers Contract & Intent", () => {
   });
 
   describe("Task 3.1C-B: Defense-in-depth Server-side Auth Guards for Student Pages", () => {
-    test("app/ca-nhan/page.tsx is a Server Component and uses getAuthUser server check", async () => {
+    test("app/ca-nhan/page.tsx is a Server Component and uses getAccountAccess server check", async () => {
       const pagePath = path.resolve(process.cwd(), "app/ca-nhan/page.tsx");
       const pageCode = await fs.readFile(pagePath, "utf-8");
 
@@ -337,10 +337,10 @@ describe("Auth Session Helpers Contract & Intent", () => {
         "app/ca-nhan/page.tsx must be a Server Component"
       );
 
-      // Must import getAuthUser from @/lib/auth/session
+      // Must import getAccountAccess from @/lib/auth/session
       assert.ok(
-        pageCode.includes("getAuthUser"),
-        "app/ca-nhan/page.tsx must import getAuthUser"
+        pageCode.includes("getAccountAccess"),
+        "app/ca-nhan/page.tsx must import getAccountAccess"
       );
       assert.ok(
         pageCode.includes("@/lib/auth/session"),
@@ -370,7 +370,7 @@ describe("Auth Session Helpers Contract & Intent", () => {
       );
     });
 
-    test("app/ca-nhan/mon/[slug]/page.tsx is a Server Component and uses getAuthUser server check", async () => {
+    test("app/ca-nhan/mon/[slug]/page.tsx is a Server Component and uses getAccountAccess server check", async () => {
       const pagePath = path.resolve(process.cwd(), "app/ca-nhan/mon/[slug]/page.tsx");
       const pageCode = await fs.readFile(pagePath, "utf-8");
 
@@ -380,10 +380,10 @@ describe("Auth Session Helpers Contract & Intent", () => {
         "app/ca-nhan/mon/[slug]/page.tsx must be a Server Component"
       );
 
-      // Must import getAuthUser from @/lib/auth/session
+      // Must import getAccountAccess from @/lib/auth/session
       assert.ok(
-        pageCode.includes("getAuthUser"),
-        "app/ca-nhan/mon/[slug]/page.tsx must import getAuthUser"
+        pageCode.includes("getAccountAccess"),
+        "app/ca-nhan/mon/[slug]/page.tsx must import getAccountAccess"
       );
       assert.ok(
         pageCode.includes("@/lib/auth/session"),
@@ -655,6 +655,573 @@ describe("Auth Session Helpers Contract & Intent", () => {
         !/GRANT\s+UPDATE\s*\([^)]*\brole\b[^)]*\)/i.test(sql),
         "Migration must NOT grant UPDATE on role column"
       );
+    });
+
+    describe("Task 3.1E: Account Approval Gate", () => {
+      test("0005_account_approval_gate.sql defines status constraints, backfill, self-approval guard, and strict permissions", async () => {
+        const migrationPath = path.resolve(
+          process.cwd(),
+          "supabase/migrations/0005_account_approval_gate.sql"
+        );
+        const sql = await fs.readFile(migrationPath, "utf-8");
+
+        // 1. Columns added
+        assert.ok(sql.includes("account_status TEXT NOT NULL DEFAULT 'pending'"), "Must add account_status with default pending");
+        assert.ok(sql.includes("approved_at TIMESTAMPTZ NULL"), "Must add approved_at column");
+        assert.ok(sql.includes("approved_by UUID NULL REFERENCES auth.users(id)"), "Must add approved_by foreign key");
+        assert.ok(sql.includes("rejection_reason TEXT NULL"), "Must add rejection_reason column");
+
+        // 2. CHECK constraint on allowed account_status values
+        assert.ok(
+          sql.includes("account_status IN ('pending', 'approved', 'rejected', 'suspended')"),
+          "Must enforce CHECK constraint on status: pending, approved, rejected, suspended"
+        );
+
+        // 3. Prevent self-approval check constraint
+        assert.ok(
+          sql.includes("chk_profiles_no_self_approval"),
+          "Must define chk_profiles_no_self_approval constraint"
+        );
+        assert.ok(
+          sql.includes("approved_by IS NULL OR approved_by <> id"),
+          "Constraint must prohibit approved_by from matching profile id"
+        );
+
+        // 4. Backfill existing profiles as approved
+        assert.ok(
+          sql.includes("UPDATE profiles"),
+          "Must update existing profiles"
+        );
+        assert.ok(
+          sql.includes("SET account_status = 'approved'"),
+          "Must backfill existing profiles to approved"
+        );
+
+        // 5. Performance indexes
+        assert.ok(
+          sql.includes("CREATE INDEX IF NOT EXISTS idx_profiles_account_status ON profiles(account_status)"),
+          "Must create index on account_status"
+        );
+        assert.ok(
+          sql.includes("CREATE INDEX IF NOT EXISTS idx_profiles_approved_by ON profiles(approved_by)"),
+          "Must create index on approved_by"
+        );
+
+        // 6. RLS and permissions
+        assert.ok(
+          sql.includes("ALTER TABLE profiles ENABLE ROW LEVEL SECURITY"),
+          "Must ensure RLS is enabled"
+        );
+        assert.ok(
+          sql.includes("REVOKE INSERT, UPDATE ON TABLE profiles FROM authenticated;"),
+          "Must revoke broad write permissions"
+        );
+        assert.ok(
+          sql.includes("GRANT SELECT ON TABLE profiles TO authenticated;"),
+          "Must grant SELECT on profiles to authenticated"
+        );
+        assert.ok(
+          sql.includes("GRANT INSERT (id, full_name, faculty, major, gpa_goal) ON TABLE profiles TO authenticated;"),
+          "Must restrict INSERT column grants so client cannot set status/approval columns"
+        );
+        assert.ok(
+          sql.includes("GRANT UPDATE (full_name, faculty, major, gpa_goal) ON TABLE profiles TO authenticated;"),
+          "Must restrict UPDATE column grants to non-privileged fields only"
+        );
+
+        // Must NOT grant client ability to mutate account_status or approval metadata
+        assert.ok(
+          !/GRANT\s+UPDATE\s*\([^)]*\baccount_status\b[^)]*\)/i.test(sql),
+          "Migration must NOT grant UPDATE on account_status"
+        );
+        assert.ok(
+          !/GRANT\s+UPDATE\s*\([^)]*\bapproved_by\b[^)]*\)/i.test(sql),
+          "Migration must NOT grant UPDATE on approved_by"
+        );
+        assert.ok(
+          !/GRANT\s+UPDATE\s*\([^)]*\bapproved_at\b[^)]*\)/i.test(sql),
+          "Migration must NOT grant UPDATE on approved_at"
+        );
+      });
+
+      test("database.types.ts includes account_status, approved_at, approved_by, and rejection_reason", async () => {
+        const dbTypesPath = path.resolve(process.cwd(), "lib/supabase/database.types.ts");
+        const dbTypes = await fs.readFile(dbTypesPath, "utf-8");
+
+        assert.ok(dbTypes.includes("account_status: string"), "profiles.Row must include account_status");
+        assert.ok(dbTypes.includes("approved_at: string | null"), "profiles.Row must include approved_at");
+        assert.ok(dbTypes.includes("approved_by: string | null"), "profiles.Row must include approved_by");
+        assert.ok(dbTypes.includes("rejection_reason: string | null"), "profiles.Row must include rejection_reason");
+      });
+
+      test("profile-repository.ts exports AccountStatus, updates StudentProfile, and rejects status mutations", async () => {
+        const { validateProfileInput } = await import("../../lib/repositories/profile-repository");
+
+        // Test validation rejects account status and approval fields
+        const maliciousStatusPayloads = [
+          { accountStatus: "approved" },
+          { account_status: "approved" },
+          { approvedAt: new Date().toISOString() },
+          { approved_at: new Date().toISOString() },
+          { approvedBy: "admin-uuid" },
+          { approved_by: "admin-uuid" },
+          { rejectionReason: "none" },
+          { rejection_reason: "none" }
+        ];
+
+        for (const payload of maliciousStatusPayloads) {
+          const result = validateProfileInput(payload);
+          assert.strictEqual(
+            result.valid,
+            false,
+            `validateProfileInput must reject privileged payload: ${JSON.stringify(payload)}`
+          );
+        }
+      });
+
+      describe("getAccountAccess() branches with mock clients", () => {
+        const createMockClient = (options: {
+          user?: any;
+          profileData?: any;
+          userError?: any;
+          profileError?: any;
+        }) => {
+          return {
+            auth: {
+              getUser: async () => ({
+                data: { user: options.user ?? null },
+                error: options.userError ?? null
+              })
+            },
+            from: (table: string) => {
+              assert.strictEqual(table, "profiles");
+              return {
+                select: (_cols: string) => {
+                  return {
+                    eq: (field: string, _val: any) => {
+                      assert.strictEqual(field, "id");
+                      return {
+                        maybeSingle: async () => ({
+                          data: options.profileData ?? null,
+                          error: options.profileError ?? null
+                        })
+                      };
+                    }
+                  };
+                }
+              };
+            }
+          };
+        };
+
+        test("branch 1: unauthenticated when getUser returns null or throws/errors", async () => {
+          const { getAccountAccess } = await import("../../lib/auth/session");
+
+          // user is null
+          const clientNoUser = createMockClient({ user: null });
+          const access1 = await getAccountAccess(clientNoUser);
+          assert.strictEqual(access1.status, "unauthenticated");
+          assert.strictEqual(access1.user, null);
+          assert.strictEqual(access1.profile, null);
+
+          // getUser returns error
+          const clientError = createMockClient({
+            user: null,
+            userError: new Error("Auth session expired or missing")
+          });
+          const access2 = await getAccountAccess(clientError);
+          assert.strictEqual(access2.status, "unauthenticated");
+          assert.strictEqual(access2.user, null);
+          assert.strictEqual(access2.profile, null);
+
+          // unauthenticated when env vars missing (production fallback without client)
+          const originalUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+          const originalKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+          try {
+            delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+            delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+            const access3 = await getAccountAccess();
+            assert.strictEqual(access3.status, "unauthenticated");
+            assert.strictEqual(access3.user, null);
+            assert.strictEqual(access3.profile, null);
+          } finally {
+            if (originalUrl) process.env.NEXT_PUBLIC_SUPABASE_URL = originalUrl;
+            if (originalKey) process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = originalKey;
+          }
+        });
+
+        test("branch 2: profile_missing when user exists but profile is null", async () => {
+          const { getAccountAccess } = await import("../../lib/auth/session");
+
+          const mockUser = { id: "user-missing-prof", email: "newuser@lefthand.vn" };
+          const client = createMockClient({
+            user: mockUser,
+            profileData: null
+          });
+
+          const access = await getAccountAccess(client);
+          assert.strictEqual(access.status, "profile_missing");
+          assert.deepStrictEqual(access.user, mockUser);
+          assert.strictEqual(access.profile, null);
+        });
+
+        test("branch 3: pending when profile account_status is 'pending' or unknown fallback", async () => {
+          const { getAccountAccess } = await import("../../lib/auth/session");
+
+          const mockUser = { id: "user-pending-1", email: "pending@lefthand.vn" };
+          const mockProfileRow = {
+            id: "user-pending-1",
+            full_name: "Nguyen Van A",
+            email: "pending@lefthand.vn",
+            phone: "0901234567",
+            faculty: "Kế toán",
+            major: "Kiểm toán",
+            student_code: "SV001",
+            avatar_url: null,
+            gpa_goal: "3.5",
+            role: "student",
+            account_status: "pending",
+            approved_at: null,
+            approved_by: null,
+            rejection_reason: null,
+            created_at: "2026-08-28T00:00:00Z",
+            updated_at: "2026-08-28T00:00:00Z"
+          };
+
+          const client = createMockClient({
+            user: mockUser,
+            profileData: mockProfileRow
+          });
+
+          const access = await getAccountAccess(client);
+          assert.strictEqual(access.status, "pending");
+          assert.deepStrictEqual(access.user, mockUser);
+          assert.ok(access.profile);
+          assert.strictEqual(access.profile.accountStatus, "pending");
+          assert.strictEqual(access.profile.fullName, "Nguyen Van A");
+          assert.strictEqual(access.profile.gpaGoal, 3.5);
+
+          // Unknown status fallback to pending
+          const unknownStatusClient = createMockClient({
+            user: mockUser,
+            profileData: { ...mockProfileRow, account_status: "unknown_future_status" }
+          });
+          const accessUnknown = await getAccountAccess(unknownStatusClient);
+          assert.strictEqual(accessUnknown.status, "pending");
+        });
+
+        test("branch 4: approved when profile account_status is 'approved'", async () => {
+          const { getAccountAccess } = await import("../../lib/auth/session");
+
+          const mockUser = { id: "user-approved-1", email: "approved@lefthand.vn" };
+          const mockProfileRow = {
+            id: "user-approved-1",
+            full_name: "Tran Thi B",
+            email: "approved@lefthand.vn",
+            phone: "0909999999",
+            faculty: "Tài chính",
+            major: "Ngân hàng",
+            student_code: "SV002",
+            avatar_url: "https://example.com/avatar.jpg",
+            gpa_goal: 3.8,
+            role: "student",
+            account_status: "approved",
+            approved_at: "2026-08-28T10:00:00Z",
+            approved_by: "admin-uuid-1",
+            rejection_reason: null,
+            created_at: "2026-08-20T00:00:00Z",
+            updated_at: "2026-08-28T10:00:00Z"
+          };
+
+          const client = createMockClient({
+            user: mockUser,
+            profileData: mockProfileRow
+          });
+
+          const access = await getAccountAccess(client);
+          assert.strictEqual(access.status, "approved");
+          assert.deepStrictEqual(access.user, mockUser);
+          assert.ok(access.profile);
+          assert.strictEqual(access.profile.accountStatus, "approved");
+          assert.strictEqual(access.profile.approvedAt, "2026-08-28T10:00:00Z");
+          assert.strictEqual(access.profile.approvedBy, "admin-uuid-1");
+        });
+
+        test("branch 5: rejected when profile account_status is 'rejected'", async () => {
+          const { getAccountAccess } = await import("../../lib/auth/session");
+
+          const mockUser = { id: "user-rejected-1", email: "rejected@lefthand.vn" };
+          const mockProfileRow = {
+            id: "user-rejected-1",
+            full_name: "Le Van C",
+            email: "rejected@lefthand.vn",
+            phone: null,
+            faculty: null,
+            major: null,
+            student_code: null,
+            avatar_url: null,
+            gpa_goal: null,
+            role: "student",
+            account_status: "rejected",
+            approved_at: null,
+            approved_by: null,
+            rejection_reason: "Thông tin thẻ sinh viên không hợp lệ",
+            created_at: "2026-08-25T00:00:00Z",
+            updated_at: "2026-08-26T00:00:00Z"
+          };
+
+          const client = createMockClient({
+            user: mockUser,
+            profileData: mockProfileRow
+          });
+
+          const access = await getAccountAccess(client);
+          assert.strictEqual(access.status, "rejected");
+          assert.deepStrictEqual(access.user, mockUser);
+          assert.ok(access.profile);
+          assert.strictEqual(access.profile.accountStatus, "rejected");
+          assert.strictEqual(access.profile.rejectionReason, "Thông tin thẻ sinh viên không hợp lệ");
+        });
+
+        test("branch 6: suspended when profile account_status is 'suspended'", async () => {
+          const { getAccountAccess } = await import("../../lib/auth/session");
+
+          const mockUser = { id: "user-suspended-1", email: "suspended@lefthand.vn" };
+          const mockProfileRow = {
+            id: "user-suspended-1",
+            full_name: "Pham Van D",
+            email: "suspended@lefthand.vn",
+            phone: "0912345678",
+            faculty: "Kinh doanh",
+            major: "Marketing",
+            student_code: "SV003",
+            avatar_url: null,
+            gpa_goal: 3.2,
+            role: "student",
+            account_status: "suspended",
+            approved_at: "2026-08-20T00:00:00Z",
+            approved_by: "admin-uuid-1",
+            rejection_reason: null,
+            created_at: "2026-08-15T00:00:00Z",
+            updated_at: "2026-08-28T00:00:00Z"
+          };
+
+          const client = createMockClient({
+            user: mockUser,
+            profileData: mockProfileRow
+          });
+
+          const access = await getAccountAccess(client);
+          assert.strictEqual(access.status, "suspended");
+          assert.deepStrictEqual(access.user, mockUser);
+          assert.ok(access.profile);
+          assert.strictEqual(access.profile.accountStatus, "suspended");
+        });
+      });
+
+      test("app/cho-duyet/page.tsx STATUS_CONFIGS configuration is exhaustive and complete", async () => {
+        const { STATUS_CONFIGS } = await import("../../app/cho-duyet/page");
+
+        assert.ok(STATUS_CONFIGS && typeof STATUS_CONFIGS === "object", "STATUS_CONFIGS must be exported as an object");
+
+        const requiredStatuses = ["pending", "rejected", "suspended", "missing-profile"];
+        const requiredFields = [
+          "badge",
+          "badgeClass",
+          "title",
+          "description",
+          "icon",
+          "iconBg",
+          "iconColor",
+          "tipTitle",
+          "tipDescription"
+        ];
+
+        for (const status of requiredStatuses) {
+          const config = STATUS_CONFIGS[status];
+          assert.ok(config, `STATUS_CONFIGS must define config for '${status}'`);
+
+          for (const field of requiredFields) {
+            assert.ok(
+              config[field as keyof typeof config] !== undefined && config[field as keyof typeof config] !== null,
+              `Status config for '${status}' must contain field '${field}'`
+            );
+          }
+
+          assert.strictEqual(typeof config.badge, "string", `'${status}'.badge must be a string`);
+          assert.ok(config.badge.length > 0, `'${status}'.badge must not be empty`);
+
+          assert.strictEqual(typeof config.badgeClass, "string", `'${status}'.badgeClass must be a string`);
+          assert.ok(config.badgeClass.includes("bg-"), `'${status}'.badgeClass must preserve bg-* class`);
+          assert.ok(config.badgeClass.includes("text-"), `'${status}'.badgeClass must preserve text-* class`);
+          assert.ok(config.badgeClass.includes("border-"), `'${status}'.badgeClass must preserve border-* class`);
+
+          assert.strictEqual(typeof config.title, "string", `'${status}'.title must be a string`);
+          assert.ok(config.title.length > 0, `'${status}'.title must not be empty`);
+
+          assert.strictEqual(typeof config.description, "string", `'${status}'.description must be a string`);
+          assert.ok(config.description.length > 0, `'${status}'.description must not be empty`);
+
+          assert.ok(
+            typeof config.icon === "function" || typeof config.icon === "object",
+            `'${status}'.icon must be a valid Lucide component`
+          );
+
+          assert.strictEqual(typeof config.iconBg, "string", `'${status}'.iconBg must be a string`);
+          assert.ok(config.iconBg.length > 0, `'${status}'.iconBg must not be empty`);
+
+          assert.strictEqual(typeof config.iconColor, "string", `'${status}'.iconColor must be a string`);
+          assert.ok(config.iconColor.length > 0, `'${status}'.iconColor must not be empty`);
+
+          assert.strictEqual(typeof config.tipTitle, "string", `'${status}'.tipTitle must be a string`);
+          assert.ok(config.tipTitle.length > 0, `'${status}'.tipTitle must not be empty`);
+
+          assert.strictEqual(typeof config.tipDescription, "string", `'${status}'.tipDescription must be a string`);
+          assert.ok(config.tipDescription.length > 0, `'${status}'.tipDescription must not be empty`);
+        }
+
+        // Default pending configuration completeness check
+        const pendingConfig = STATUS_CONFIGS.pending;
+        assert.strictEqual(pendingConfig.badge, "Đang chờ quản trị viên duyệt");
+        assert.strictEqual(pendingConfig.title, "Tài khoản đang chờ phê duyệt");
+        assert.ok(pendingConfig.description.includes("kiểm duyệt và kích hoạt tài khoản trong vòng 24 giờ"));
+        assert.strictEqual(pendingConfig.tipTitle, "Quy trình kích hoạt");
+        assert.ok(pendingConfig.tipDescription.includes("Sau khi admin phê duyệt"));
+      });
+
+      test("app/cho-duyet/page.tsx is a public Server Component and handles status variants", async () => {
+        const pagePath = path.resolve(process.cwd(), "app/cho-duyet/page.tsx");
+        const pageCode = await fs.readFile(pagePath, "utf-8");
+
+        // Must be a Server Component (no 'use client')
+        assert.ok(
+          !pageCode.includes('"use client"'),
+          "app/cho-duyet/page.tsx must be a Server Component"
+        );
+
+        // Must handle statuses: pending, rejected, suspended, missing-profile
+        assert.ok(pageCode.includes("pending"), "Must handle pending status");
+        assert.ok(pageCode.includes("rejected"), "Must handle rejected status");
+        assert.ok(pageCode.includes("suspended"), "Must handle suspended status");
+        assert.ok(pageCode.includes("missing-profile"), "Must handle missing-profile status");
+
+        // Must apply full badgeClass without split(" ")
+        assert.ok(
+          !pageCode.includes('badgeClass.split(" ")'),
+          "app/cho-duyet/page.tsx must not use split(' ') on badgeClass"
+        );
+        assert.ok(
+          pageCode.includes("${config.badgeClass}"),
+          "app/cho-duyet/page.tsx must apply full config.badgeClass to badge container"
+        );
+
+        // Must provide links to /dang-nhap and /
+        assert.ok(pageCode.includes('href="/dang-nhap"'), "Must link to /dang-nhap");
+        assert.ok(pageCode.includes('href="/"'), "Must link to home /");
+
+        // Must NOT allow user to change their own status or contain update buttons
+        assert.ok(!pageCode.includes("updateOwnProfile"), "Pending page must not call updateOwnProfile");
+        assert.ok(!pageCode.includes("localStorage"), "Pending page must not use localStorage");
+
+        // Test rendering component
+        const pageModule = await import("../../app/cho-duyet/page");
+        const AccountPendingPage = pageModule.default;
+        assert.strictEqual(typeof AccountPendingPage, "function");
+
+        const pendingJsx = await AccountPendingPage({
+          searchParams: Promise.resolve({ status: "pending" })
+        });
+        assert.ok(pendingJsx, "AccountPendingPage renders successfully for pending status");
+
+        const rejectedJsx = await AccountPendingPage({
+          searchParams: Promise.resolve({ status: "rejected" })
+        });
+        assert.ok(rejectedJsx, "AccountPendingPage renders successfully for rejected status");
+
+        const suspendedJsx = await AccountPendingPage({
+          searchParams: Promise.resolve({ status: "suspended" })
+        });
+        assert.ok(suspendedJsx, "AccountPendingPage renders successfully for suspended status");
+
+        const missingJsx = await AccountPendingPage({
+          searchParams: Promise.resolve({ status: "missing-profile" })
+        });
+        assert.ok(missingJsx, "AccountPendingPage renders successfully for missing-profile status");
+
+        const fallbackJsx = await AccountPendingPage({
+          searchParams: Promise.resolve({ status: "unknown-status-value" })
+        });
+        assert.ok(fallbackJsx, "AccountPendingPage renders fallback for unknown status");
+      });
+
+      test("server route guards on /ca-nhan and /ca-nhan/mon/[slug] do not create redirect loops", async () => {
+        const caNhanPath = path.resolve(process.cwd(), "app/ca-nhan/page.tsx");
+        const caNhanCode = await fs.readFile(caNhanPath, "utf-8");
+
+        const workspacePath = path.resolve(process.cwd(), "app/ca-nhan/mon/[slug]/page.tsx");
+        const workspaceCode = await fs.readFile(workspacePath, "utf-8");
+
+        // Both must route pending to /cho-duyet (not /ca-nhan, preventing loops)
+        assert.ok(
+          caNhanCode.includes('redirect("/cho-duyet")'),
+          "ca-nhan must redirect pending users to /cho-duyet"
+        );
+        assert.ok(
+          workspaceCode.includes('redirect("/cho-duyet")'),
+          "workspace must redirect pending users to /cho-duyet"
+        );
+
+        // Both must route rejected/suspended/missing-profile
+        assert.ok(caNhanCode.includes('redirect("/cho-duyet?status=rejected")'));
+        assert.ok(caNhanCode.includes('redirect("/cho-duyet?status=suspended")'));
+        assert.ok(caNhanCode.includes('redirect("/cho-duyet?status=missing-profile")'));
+
+        assert.ok(workspaceCode.includes('redirect("/cho-duyet?status=rejected")'));
+        assert.ok(workspaceCode.includes('redirect("/cho-duyet?status=suspended")'));
+        assert.ok(workspaceCode.includes('redirect("/cho-duyet?status=missing-profile")'));
+      });
+
+      test("AccountNotApprovedError encapsulates status and descriptive message", async () => {
+        const { AccountNotApprovedError } = await import("../../lib/auth/session");
+        assert.strictEqual(typeof AccountNotApprovedError, "function");
+
+        const errPending = new AccountNotApprovedError("pending");
+        assert.strictEqual(errPending.name, "AccountNotApprovedError");
+        assert.strictEqual(errPending.status, "pending");
+        assert.ok(errPending.message.includes("pending"));
+
+        const errRejected = new AccountNotApprovedError("rejected", "Tài khoản bị từ chối");
+        assert.strictEqual(errRejected.status, "rejected");
+        assert.strictEqual(errRejected.message, "Tài khoản bị từ chối");
+      });
+
+      test("client files never expose service role keys or client-side status override", async () => {
+        const filesToScan = [
+          "lib/supabase/browser.ts",
+          "lib/supabase/server.ts",
+          "lib/auth/session.ts",
+          "lib/repositories/profile-repository.ts",
+          "app/cho-duyet/page.tsx",
+          "app/ca-nhan/page.tsx",
+          "app/ca-nhan/mon/[slug]/page.tsx",
+          "app/dang-nhap/page.tsx",
+          "hooks/use-demo-auth.ts"
+        ];
+
+        for (const relPath of filesToScan) {
+          const fullPath = path.resolve(process.cwd(), relPath);
+          const content = await fs.readFile(fullPath, "utf-8");
+
+          assert.ok(
+            !content.includes("SUPABASE_SERVICE_ROLE_KEY"),
+            `${relPath} must not reference SUPABASE_SERVICE_ROLE_KEY`
+          );
+          assert.ok(
+            !content.includes("service_role"),
+            `${relPath} must not reference service_role key`
+          );
+        }
+      });
     });
   });
 });
