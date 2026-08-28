@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
-import { getAuthUser } from "@/lib/auth/session";
-import { getProfileByUserId } from "@/lib/repositories/profile-repository";
+import { getAccountAccess } from "@/lib/auth/session";
 import { StudentDashboardClient } from "./dashboard-client";
 
 /**
@@ -23,9 +22,9 @@ export default async function StudentDashboardPage({
 }: {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const user = await getAuthUser();
+  const access = await getAccountAccess();
 
-  if (!user) {
+  if (access.status === "unauthenticated") {
     const resolvedSearchParams = searchParams ? await searchParams : {};
     const query = new URLSearchParams();
 
@@ -44,8 +43,26 @@ export default async function StudentDashboardPage({
     redirect(`/dang-nhap?next=${encodeURIComponent(safeNext)}`);
   }
 
-  // Load server-side authenticated user profile
-  const profile = await getProfileByUserId(user.id);
+  if (access.status === "pending") {
+    redirect("/cho-duyet");
+  }
 
-  return <StudentDashboardClient initialProfile={profile} authUserEmail={user.email ?? null} />;
+  if (access.status === "rejected") {
+    redirect("/cho-duyet?status=rejected");
+  }
+
+  if (access.status === "suspended") {
+    redirect("/cho-duyet?status=suspended");
+  }
+
+  if (access.status === "profile_missing") {
+    redirect("/cho-duyet?status=missing-profile");
+  }
+
+  return (
+    <StudentDashboardClient
+      initialProfile={access.profile}
+      authUserEmail={access.user?.email ?? null}
+    />
+  );
 }

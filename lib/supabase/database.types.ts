@@ -219,6 +219,9 @@ export type Database = {
       }
       profiles: {
         Row: {
+          account_status: string
+          approved_at: string | null
+          approved_by: string | null
           avatar_url: string | null
           created_at: string
           email: string | null
@@ -228,11 +231,15 @@ export type Database = {
           id: string
           major: string | null
           phone: string | null
+          rejection_reason: string | null
           role: string
           student_code: string | null
           updated_at: string
         }
         Insert: {
+          account_status?: string
+          approved_at?: string | null
+          approved_by?: string | null
           avatar_url?: string | null
           created_at?: string
           email?: string | null
@@ -242,11 +249,15 @@ export type Database = {
           id: string
           major?: string | null
           phone?: string | null
+          rejection_reason?: string | null
           role?: string
           student_code?: string | null
           updated_at?: string
         }
         Update: {
+          account_status?: string
+          approved_at?: string | null
+          approved_by?: string | null
           avatar_url?: string | null
           created_at?: string
           email?: string | null
@@ -256,6 +267,7 @@ export type Database = {
           id?: string
           major?: string | null
           phone?: string | null
+          rejection_reason?: string | null
           role?: string
           student_code?: string | null
           updated_at?: string
