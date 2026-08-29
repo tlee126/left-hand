@@ -14,6 +14,60 @@ export type Database = {
   }
   public: {
     Tables: {
+      consultations: {
+        Row: {
+          created_at: string
+          faculty: string
+          full_name: string
+          id: string
+          interest: string
+          major: string | null
+          need: string
+          note: string | null
+          phone: string
+          request_id: string
+          selected_product_slug: string | null
+          selected_subject_slug: string | null
+          source_path: string | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          faculty: string
+          full_name: string
+          id?: string
+          interest: string
+          major?: string | null
+          need: string
+          note?: string | null
+          phone: string
+          request_id: string
+          selected_product_slug?: string | null
+          selected_subject_slug?: string | null
+          source_path?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          faculty?: string
+          full_name?: string
+          id?: string
+          interest?: string
+          major?: string | null
+          need?: string
+          note?: string | null
+          phone?: string
+          request_id?: string
+          selected_product_slug?: string | null
+          selected_subject_slug?: string | null
+          source_path?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       course_lessons: {
         Row: {
           course_id: string

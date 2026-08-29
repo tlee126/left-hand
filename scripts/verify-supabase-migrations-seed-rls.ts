@@ -37,13 +37,14 @@ async function runAudit(): Promise<void> {
       "0002_public_catalog_read_policies.sql",
       "0003_public_catalog_table_grants.sql",
       "0004_profiles_schema_and_policies.sql",
-      "0005_account_approval_gate.sql"
+      "0005_account_approval_gate.sql",
+      "0006_consultations.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 5 migration files exist in strict topological order",
+      check: "All 6 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -105,7 +106,37 @@ async function runAudit(): Promise<void> {
       details: "auth.uid() = id, check constraint, non-privileged column grants only"
     });
 
-    // 6. Audit supabase/seed.sql
+    // 6. Audit 0006_consultations.sql
+    const sql0006 = await fs.readFile(path.join(migrationsDir, "0006_consultations.sql"), "utf-8");
+    const hasConsultationsTable = /CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+consultations/i.test(sql0006);
+    const hasUUIDId = /id\s+UUID\s+PRIMARY\s+KEY\s+DEFAULT\s+gen_random_uuid\(\)/i.test(sql0006);
+    const hasRequestId = /request_id\s+TEXT\s+NOT\s+NULL\s+UNIQUE/i.test(sql0006);
+    const hasRequiredColumns = ['full_name', 'phone', 'faculty', 'interest', 'need'].every((col) => new RegExp(`${col}\\s+TEXT\\s+NOT\\s+NULL`, 'i').test(sql0006));
+    const hasStatus = /status\s+TEXT\s+NOT\s+NULL\s+DEFAULT\s+'new'/i.test(sql0006);
+    const hasTimestamps = /created_at\s+TIMESTAMPTZ\s+NOT\s+NULL\s+DEFAULT\s+now\(\)/i.test(sql0006) && /updated_at\s+TIMESTAMPTZ\s+NOT\s+NULL\s+DEFAULT\s+now\(\)/i.test(sql0006);
+    const hasIndex = /CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+idx_consultations_status_created_at/i.test(sql0006);
+    const hasConsultationsRls = /ALTER\s+TABLE\s+consultations\s+ENABLE\s+ROW\s+LEVEL\s+SECURITY/i.test(sql0006);
+    const hasInsertGrant = /GRANT\s+INSERT\s+\([^)]+\)\s+ON\s+TABLE\s+consultations\s+TO\s+anon,\s+authenticated/i.test(sql0006);
+    const hasInsertPolicy = /CREATE\s+POLICY\s+"consultations_allow_insert_anon_authenticated"[\s\S]*?FOR\s+INSERT/i.test(sql0006);
+    const noOtherPolicies = (sql0006.match(/CREATE\s+POLICY/gi) || []).length === 1;
+    const noOtherGrants = !/GRANT\s+(SELECT|UPDATE|DELETE|ALL)\s+ON\s+TABLE\s+consultations/i.test(sql0006);
+    const noClientManagedFields = !/GRANT\s+INSERT\s+\([^)]*\b(id|status|created_at|updated_at)\b[^)]*\)\s+ON\s+TABLE\s+consultations/i.test(sql0006);
+
+    results.push({
+      category: "0006_consultations",
+      check: "Consultations table schema correct (UUID, request_id, columns, status, timestamps, index)",
+      passed: hasConsultationsTable && hasUUIDId && hasRequestId && hasRequiredColumns && hasStatus && hasTimestamps && hasIndex,
+      details: "UUID PK, text columns, defaults, index on status/created_at"
+    });
+
+    results.push({
+      category: "0006_consultations",
+      check: "Strict RLS and restricted INSERT grants",
+      passed: hasConsultationsRls && hasInsertGrant && hasInsertPolicy && noOtherPolicies && noOtherGrants && noClientManagedFields,
+      details: "RLS enabled, 1 INSERT policy, restricted column grants, no SELECT/UPDATE/DELETE"
+    });
+
+    // 7. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
     const isTxn = /^\s*(?:--[^\n]*\n\s*)*BEGIN\s*;/im.test(sqlSeed) && /COMMIT\s*;\s*$/i.test(sqlSeed.trim());
     const subjectsSeed = CANONICAL_SUBJECTS.every((s) => sqlSeed.includes(`'${s.slug}'`));
