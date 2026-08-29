@@ -16,7 +16,9 @@ logs/
 # TypeScript
 tsconfig.tsbuildinfo
 
-# Test artifacts
+# Test & Supabase CLI artifacts
 coverage/
 test-results/
 playwright-report/
+supabase/.temp/
+supabase/.branches/

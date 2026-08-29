@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/unit/**/*.test.ts"
+    "test": "tsx --test tests/unit/**/*.test.ts tests/integration/**/*.test.ts",
+    "test:integration": "tsx --test tests/integration/**/*.test.ts",
+    "verify:db": "tsx scripts/verify-supabase-migrations-seed-rls.ts"
   },
   "dependencies": {
     "@fontsource/be-vietnam-pro": "5.2.8",
