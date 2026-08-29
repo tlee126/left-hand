@@ -30,7 +30,8 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "0002_public_catalog_read_policies.sql",
         "0003_public_catalog_table_grants.sql",
         "0004_profiles_schema_and_policies.sql",
-        "0005_account_approval_gate.sql"
+        "0005_account_approval_gate.sql",
+        "0006_consultations.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -157,6 +158,34 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       assert.ok(sql0005.includes("account_status IN ('pending', 'approved', 'rejected', 'suspended')"));
       assert.ok(sql0005.includes("chk_profiles_no_self_approval"));
       assert.ok(sql0005.includes("approved_by IS NULL OR approved_by <> id"));
+    });
+
+    test("0006_consultations.sql creates consultations table with RLS and restrictive grants", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0006_consultations.sql"), "utf-8");
+
+      assert.ok(/CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+consultations/i.test(sql), "must create consultations table");
+      assert.ok(/id\s+UUID\s+PRIMARY\s+KEY\s+DEFAULT\s+gen_random_uuid\(\)/i.test(sql), "must have UUID primary key");
+      assert.ok(/request_id\s+TEXT\s+NOT\s+NULL\s+UNIQUE/i.test(sql), "must have unique request_id");
+      assert.ok(/status\s+TEXT\s+NOT\s+NULL\s+DEFAULT\s+'new'/i.test(sql), "must have status with default 'new'");
+      assert.ok(/created_at\s+TIMESTAMPTZ\s+NOT\s+NULL\s+DEFAULT\s+now\(\)/i.test(sql), "must have created_at");
+      assert.ok(/updated_at\s+TIMESTAMPTZ\s+NOT\s+NULL\s+DEFAULT\s+now\(\)/i.test(sql), "must have updated_at");
+      assert.ok(/CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+idx_consultations_status_created_at/i.test(sql), "must have index on status and created_at");
+      assert.ok(/ALTER\s+TABLE\s+consultations\s+ENABLE\s+ROW\s+LEVEL\s+SECURITY/i.test(sql), "must enable RLS");
+
+      const hasInsertGrant = /GRANT\s+INSERT\s+\([^)]+\)\s+ON\s+TABLE\s+consultations\s+TO\s+anon,\s+authenticated/i.test(sql);
+      assert.ok(hasInsertGrant, "must have restricted column INSERT grant for anon, authenticated");
+
+      const noClientManagedFields = !/GRANT\s+INSERT\s+\([^)]*\b(id|status|created_at|updated_at)\b[^)]*\)\s+ON\s+TABLE\s+consultations/i.test(sql);
+      assert.ok(noClientManagedFields, "must not allow inserting id, status, created_at, or updated_at");
+
+      const noOtherGrants = !/GRANT\s+(SELECT|UPDATE|DELETE|ALL)\s+ON\s+TABLE\s+consultations/i.test(sql);
+      assert.ok(noOtherGrants, "must not grant SELECT, UPDATE, or DELETE privileges");
+
+      const hasInsertPolicy = /CREATE\s+POLICY\s+"consultations_allow_insert_anon_authenticated"[\s\S]*?FOR\s+INSERT/i.test(sql);
+      assert.ok(hasInsertPolicy, "must have an INSERT policy for anon/authenticated");
+
+      const policyCount = (sql.match(/CREATE\s+POLICY/gi) || []).length;
+      assert.strictEqual(policyCount, 1, "must have exactly one policy");
     });
   });
 

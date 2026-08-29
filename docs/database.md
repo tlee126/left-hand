@@ -21,6 +21,7 @@ The schema employs a normalized, typed relational model separating core product 
 | `course_lessons` | `id` (UUID) | 1-to-N lessons / syllabus items under a specific course (order index, lesson title, duration). |
 | `tutors` | `product_id` (UUID FK) | 1-to-1 extension of `products` for 1-on-1 and small group peer tutors (name, faculty, format description, strengths, bio). |
 | `tutor_subjects` | `(tutor_product_id, subject_id)` | M-to-N join table tracking which subjects each tutor teaches and whether a subject is their primary specialization. |
+| `consultations` | `id` (UUID) | Consultation lead capture. Tracks requests for advice/quotes (status, requester info, requested item). |
 
 ---
 
@@ -90,6 +91,14 @@ erDiagram
         boolean is_primary
     }
 
+    CONSULTATIONS {
+        uuid id PK
+        text request_id UK
+        text full_name
+        text phone
+        text status
+    }
+
     SUBJECTS ||--o{ PRODUCTS : "subject_id"
     PRODUCTS ||--o| MATERIALS : "1-to-1"
     PRODUCTS ||--o| COURSES : "1-to-1"
@@ -122,7 +131,8 @@ erDiagram
   - Public users may read only published content (`publication_status = 'published'`).
   - Child tables (`materials`, `courses`, `course_lessons`, `tutors`, `tutor_subjects`) restrict reads to items whose parent product is published.
   - User profiles remain strictly private with no public table grants or policies.
-  - No public mutation (INSERT, UPDATE, DELETE) grants or policies are permitted.
+  - Consultation leads (`consultations`) allow restricted public `INSERT` (anon, authenticated) only on specific safe form columns. Database-managed fields (id, status, timestamps) cannot be written by clients. Public `SELECT`/`UPDATE`/`DELETE` are explicitly denied.
+  - No public mutation (INSERT, UPDATE, DELETE) grants or policies are permitted (except for explicit `INSERT` forms like `consultations`).
 
 ---
 
