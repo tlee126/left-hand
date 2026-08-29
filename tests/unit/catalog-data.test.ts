@@ -17,10 +17,11 @@ import {
   CATEGORIES,
   COLOR_THEMES,
   CANONICAL_SUBJECTS,
+  CATEGORY_THEME_MAP,
   isValidSlug,
   findSubjectByName
 } from "../../lib/domain/subjects";
-import { ENROLLMENT_STATUSES } from "../../lib/domain/product-types";
+import { ENROLLMENT_STATUSES, parseVND } from "../../lib/domain/product-types";
 
 describe("Catalog Seed Integrity & Normalization", () => {
   describe("Materials Catalog", () => {
@@ -196,6 +197,114 @@ describe("Catalog Seed Integrity & Normalization", () => {
         assert.ok(
           (TUTOR_FORMATS as readonly string[]).includes(item.format),
           `Tutor ${item.id} format "${item.format}" must be one of ${TUTOR_FORMATS.join(", ")}`
+        );
+      }
+    });
+  });
+
+  describe("Cross-Catalog Slug Uniqueness", () => {
+    test("no slug is shared between materials, courses, and tutors", () => {
+      const materialSlugs = materials.map((m) => ({ slug: m.slug, src: `material:${m.id}` }));
+      const courseSlugs = courses.map((c) => ({ slug: c.slug, src: `course:${c.id}` }));
+      const tutorSlugs = tutors.map((t) => ({ slug: t.slug, src: `tutor:${t.id}` }));
+      const all = [...materialSlugs, ...courseSlugs, ...tutorSlugs];
+
+      const seen = new Map<string, string>();
+      for (const { slug, src } of all) {
+        assert.ok(
+          !seen.has(slug),
+          `Slug "${slug}" is shared across catalog kinds: ${seen.get(slug)} and ${src}`
+        );
+        seen.set(slug, src);
+      }
+    });
+  });
+
+  describe("Price Discount Sanity", () => {
+    test("material oldPrice must be greater than price when present", () => {
+      for (const item of materials) {
+        if (item.oldPrice) {
+          const price = parseVND(item.price);
+          const old = parseVND(item.oldPrice);
+          assert.ok(
+            price !== null && old !== null && old > price,
+            `Material ${item.id}: oldPrice (${item.oldPrice}) must be greater than price (${item.price})`
+          );
+        }
+      }
+    });
+
+    test("course oldPrice must be greater than price when present", () => {
+      for (const item of courses) {
+        if (item.oldPrice) {
+          const price = parseVND(item.price);
+          const old = parseVND(item.oldPrice);
+          assert.ok(
+            price !== null && old !== null && old > price,
+            `Course ${item.id}: oldPrice (${item.oldPrice}) must be greater than price (${item.price})`
+          );
+        }
+      }
+    });
+  });
+
+  describe("Category–ColorTheme Consistency", () => {
+    test("every material category maps to the correct colorTheme per CATEGORY_THEME_MAP", () => {
+      for (const item of materials) {
+        const expected = CATEGORY_THEME_MAP[item.category];
+        assert.strictEqual(
+          item.colorTheme,
+          expected,
+          `Material ${item.id}: colorTheme "${item.colorTheme}" does not match CATEGORY_THEME_MAP["${item.category}"] = "${expected}"`
+        );
+      }
+    });
+
+    test("every course category maps to the correct colorTheme per CATEGORY_THEME_MAP", () => {
+      for (const item of courses) {
+        const expected = CATEGORY_THEME_MAP[item.category];
+        assert.strictEqual(
+          item.colorTheme,
+          expected,
+          `Course ${item.id}: colorTheme "${item.colorTheme}" does not match CATEGORY_THEME_MAP["${item.category}"] = "${expected}"`
+        );
+      }
+    });
+  });
+
+  describe("Rating Precision", () => {
+    test("material ratings are multiples of 0.1 within [1.0, 5.0]", () => {
+      for (const item of materials) {
+        assert.ok(
+          Number.isFinite(item.rating) &&
+            item.rating >= 1.0 &&
+            item.rating <= 5.0 &&
+            Math.round(item.rating * 10) === item.rating * 10,
+          `Material ${item.id} rating ${item.rating} must be a 1-decimal multiple within [1.0, 5.0]`
+        );
+      }
+    });
+
+    test("course ratings are multiples of 0.1 within [1.0, 5.0]", () => {
+      for (const item of courses) {
+        assert.ok(
+          Number.isFinite(item.rating) &&
+            item.rating >= 1.0 &&
+            item.rating <= 5.0 &&
+            Math.round(item.rating * 10) === item.rating * 10,
+          `Course ${item.id} rating ${item.rating} must be a 1-decimal multiple within [1.0, 5.0]`
+        );
+      }
+    });
+
+    test("tutor ratings are multiples of 0.1 within [1.0, 5.0]", () => {
+      for (const item of tutors) {
+        assert.ok(
+          Number.isFinite(item.rating) &&
+            item.rating >= 1.0 &&
+            item.rating <= 5.0 &&
+            Math.round(item.rating * 10) === item.rating * 10,
+          `Tutor ${item.id} rating ${item.rating} must be a 1-decimal multiple within [1.0, 5.0]`
         );
       }
     });

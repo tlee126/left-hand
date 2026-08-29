@@ -211,7 +211,7 @@ BEGIN
     ON CONFLICT (product_id) DO UPDATE
     SET pages = EXCLUDED.pages, tags = EXCLUDED.tags, includes = EXCLUDED.includes, suitable_for = EXCLUDED.suitable_for, updated_at = timezone('utc'::text, now());
 
-    -- mat-httnql
+    -- mat-htttql
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('he-thong-thong-tin-quan-ly', 'material', 'Đề cương Hệ thống thông tin quản lý UFM', 'Tóm tắt cấu trúc hạ tầng CNTT, hệ thống ERP, CRM và các phương pháp phát triển hệ thống thông tin trong doanh nghiệp.', v_sub_htttql, 'MIS', 'digital_download', 'published', 25000, 45000, 4.70, false, 'mis')
     ON CONFLICT (kind, slug) DO UPDATE

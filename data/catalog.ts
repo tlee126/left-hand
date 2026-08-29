@@ -402,7 +402,7 @@ export const materials: MaterialItem[] = [
     ]
   },
   {
-    id: "mat-httnql",
+    id: "mat-htttql",
     slug: "he-thong-thong-tin-quan-ly",
     title: "Đề cương Hệ thống thông tin quản lý UFM",
     subject: "Hệ thống thông tin quản lý",
