@@ -123,11 +123,14 @@ export function normalizeVietnamesePhone(rawPhone: unknown): string | null {
 
   // Convert international prefixes (+84, 0084, 84) to domestic leading "0"
   if (cleaned.startsWith("+84")) {
-    cleaned = "0" + cleaned.slice(3).replace(/^0+/, "");
+    if (cleaned[3] === "0") return null;
+    cleaned = "0" + cleaned.slice(3);
   } else if (cleaned.startsWith("0084")) {
-    cleaned = "0" + cleaned.slice(4).replace(/^0+/, "");
+    if (cleaned[4] === "0") return null;
+    cleaned = "0" + cleaned.slice(4);
   } else if (cleaned.startsWith("84") && cleaned.length >= 11) {
-    cleaned = "0" + cleaned.slice(2).replace(/^0+/, "");
+    if (cleaned[2] === "0") return null;
+    cleaned = "0" + cleaned.slice(2);
   }
 
   // Valid Vietnamese phone number format:

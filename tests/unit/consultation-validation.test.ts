@@ -135,7 +135,6 @@ describe("Phase 4.1-B: Shared Consultation Validation", () => {
         { input: "+84 901 234 567", expected: "0901234567" },
         { input: "+84-901-234-567", expected: "0901234567" },
         { input: "(+84) 901 234 567", expected: "0901234567" },
-        { input: "+84 0901 234 567", expected: "0901234567" },
         { input: "84901234567", expected: "0901234567" },
         { input: "0084901234567", expected: "0901234567" }
       ];
@@ -170,7 +169,10 @@ describe("Phase 4.1-B: Shared Consultation Validation", () => {
         "0612345678", // invalid prefix 06
         "+1 555 123 4567", // US number
         "+44 20 7946 0958", // UK number
-        "1234567890" // missing leading 0
+        "1234567890", // missing leading 0
+        "+84 0901 234 567", // invalid international format with leading 0
+        "0084 0901 234 567", // invalid international format with leading 0
+        "84 0901 234 567" // invalid international format with leading 0
       ];
 
       for (const phone of invalidPhones) {
