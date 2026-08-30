@@ -8,8 +8,10 @@ import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
 import { faculties, majors, courseGroups, needs } from "@/data/site";
 import { materials, courses, tutors } from "@/data/catalog";
+import { findSubjectByName, findSubjectBySlug } from "@/lib/domain/subjects";
+import { validateConsultationInput, type ConsultationInput } from "@/lib/validation/consultation";
 
-type FormValues = {
+export type FormValues = {
   fullName: string;
   phone: string;
   faculty: string;
@@ -19,9 +21,9 @@ type FormValues = {
   note: string;
 };
 
-type FormErrors = Partial<Record<keyof FormValues, string>>;
+export type FormErrors = Partial<Record<keyof FormValues, string>>;
 
-const initialValues: FormValues = {
+export const initialValues: FormValues = {
   fullName: "",
   phone: "",
   faculty: "",
@@ -31,15 +33,226 @@ const initialValues: FormValues = {
   note: ""
 };
 
+export interface CtaMetadataResult {
+  sourcePath: string | null;
+  selectedProductSlug: string | null;
+  selectedSubjectSlug: string | null;
+  resolvedInterest?: string;
+  resolvedNeed?: string;
+}
+
+export function generateIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+export function resolveCtaMetadata(
+  search: string,
+  pathname: string = "/"
+): CtaMetadataResult {
+  const normalizedSearch = search.startsWith("?") || search === "" ? search : `?${search}`;
+  const params = new URLSearchParams(normalizedSearch);
+  const interestParam = params.get("interest");
+  const typeParam = params.get("type");
+
+  const sourcePath = `${pathname}${normalizedSearch}`.slice(0, 500);
+
+  if (!interestParam) {
+    return {
+      sourcePath: sourcePath || "/",
+      selectedProductSlug: null,
+      selectedSubjectSlug: null
+    };
+  }
+
+  let selectedProductSlug: string | null = null;
+  let selectedSubjectSlug: string | null = null;
+  let resolvedInterest = interestParam;
+  let resolvedNeed = "";
+
+  const mat = materials.find((m) => m.slug === interestParam);
+  if (mat) {
+    selectedProductSlug = mat.slug;
+    resolvedInterest = mat.subject;
+    const matchedSubject = findSubjectByName(mat.subject);
+    selectedSubjectSlug = matchedSubject?.slug || null;
+  } else {
+    const crs = courses.find((c) => c.slug === interestParam);
+    if (crs) {
+      selectedProductSlug = crs.slug;
+      resolvedInterest = crs.subject;
+      const matchedSubject = findSubjectByName(crs.subject);
+      selectedSubjectSlug = matchedSubject?.slug || null;
+    } else {
+      const tut = tutors.find((t) => t.slug === interestParam);
+      if (tut) {
+        selectedProductSlug = tut.slug;
+        resolvedInterest = tut.subjects[0] || interestParam;
+        const matchedSubject = findSubjectByName(tut.subjects[0]);
+        selectedSubjectSlug = matchedSubject?.slug || null;
+      } else {
+        const subj = findSubjectBySlug(interestParam) || findSubjectByName(interestParam);
+        if (subj) {
+          selectedSubjectSlug = subj.slug;
+          resolvedInterest = subj.name;
+        }
+      }
+    }
+  }
+
+  if (typeParam === "material") {
+    resolvedNeed = "Tài liệu ôn thi";
+  } else if (typeParam === "course") {
+    resolvedNeed = "Khóa học / lớp ôn";
+  } else if (typeParam === "tutor") {
+    resolvedNeed = "Peer Tutor 1:1";
+  }
+
+  return {
+    sourcePath,
+    selectedProductSlug,
+    selectedSubjectSlug,
+    resolvedInterest,
+    resolvedNeed: resolvedNeed || undefined
+  };
+}
+
+export function buildConsultationPayload(
+  values: FormValues,
+  ctaMeta: {
+    sourcePath?: string | null;
+    selectedProductSlug?: string | null;
+    selectedSubjectSlug?: string | null;
+  }
+): ConsultationInput {
+  const subjectSlug =
+    findSubjectByName(values.interest)?.slug ||
+    findSubjectBySlug(values.interest)?.slug ||
+    ctaMeta.selectedSubjectSlug ||
+    null;
+
+  return {
+    fullName: values.fullName.trim(),
+    phone: values.phone.trim(),
+    faculty: values.faculty.trim(),
+    major: values.major.trim() || null,
+    interest: values.interest.trim(),
+    need: values.need.trim(),
+    note: values.note.trim() || null,
+    sourcePath: ctaMeta.sourcePath ? ctaMeta.sourcePath.slice(0, 500) : null,
+    selectedProductSlug: ctaMeta.selectedProductSlug
+      ? ctaMeta.selectedProductSlug.slice(0, 150)
+      : null,
+    selectedSubjectSlug: subjectSlug ? subjectSlug.slice(0, 150) : null
+  };
+}
+
+export interface ConsultationSubmitResult {
+  success: boolean;
+  status: number;
+  message: string;
+  details?: Record<string, string>;
+}
+
+export async function submitConsultation(
+  payload: ConsultationInput,
+  idempotencyKey: string,
+  fetchFn: typeof fetch = fetch
+): Promise<ConsultationSubmitResult> {
+  try {
+    const response = await fetchFn("/api/consultations", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (response.status === 201) {
+      return {
+        success: true,
+        status: 201,
+        message: "Đã nhận nhu cầu của bạn. LEFT HAND sẽ liên hệ lại với gợi ý phù hợp."
+      };
+    }
+
+    if (response.status === 409) {
+      return {
+        success: true,
+        status: 409,
+        message: "Yêu cầu tư vấn của bạn đã được tiếp nhận. LEFT HAND sẽ liên hệ sớm nhất."
+      };
+    }
+
+    if (response.status === 400) {
+      let data: any = null;
+      try {
+        data = await response.json();
+      } catch {
+        // ignore JSON parse error
+      }
+
+      return {
+        success: false,
+        status: 400,
+        message: "Vui lòng kiểm tra lại các trường thông tin bắt buộc.",
+        details: data?.details && typeof data.details === "object" ? data.details : undefined
+      };
+    }
+
+    if (response.status === 429) {
+      return {
+        success: false,
+        status: 429,
+        message: "Bạn đã gửi yêu cầu quá nhiều lần. Vui lòng thử lại sau ít phút."
+      };
+    }
+
+    // 500, 503, or any other server error status
+    return {
+      success: false,
+      status: response.status,
+      message: "Hệ thống đang bận hoặc tạm thời gián đoạn. Vui lòng thử lại sau ít phút."
+    };
+  } catch {
+    return {
+      success: false,
+      status: 0,
+      message: "Không thể kết nối đến máy chủ. Vui lòng kiểm tra kết nối mạng và thử lại."
+    };
+  }
+}
+
 export function ConsultationForm() {
   const [values, setValues] = useState<FormValues>(initialValues);
   const [errors, setErrors] = useState<FormErrors>({});
-  const [status, setStatus] = useState<"idle" | "loading" | "success">("idle");
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const [ctaMeta, setCtaMeta] = useState<{
+    sourcePath: string | null;
+    selectedProductSlug: string | null;
+    selectedSubjectSlug: string | null;
+  }>({
+    sourcePath: null,
+    selectedProductSlug: null,
+    selectedSubjectSlug: null
+  });
 
+  const idempotencyKeyRef = useRef<string | null>(null);
   const isLoading = status === "loading";
 
   const helperMessage = useMemo(() => {
+    if (feedback?.message) {
+      return feedback.message;
+    }
+
     if (status === "success") {
       return "Đã nhận nhu cầu của bạn. LEFT HAND sẽ liên hệ lại với gợi ý phù hợp.";
     }
@@ -49,93 +262,86 @@ export function ConsultationForm() {
     }
 
     return "Điền nhanh nhu cầu hiện tại để team gợi ý tài liệu, tutor hoặc lớp ôn đúng môn.";
-  }, [errors, status]);
-
-  useEffect(() => {
-    return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-    };
-  }, []);
+  }, [errors, feedback, status]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      const interestParam = params.get("interest");
-      const typeParam = params.get("type");
+      const meta = resolveCtaMetadata(window.location.search, window.location.pathname);
+      setCtaMeta({
+        sourcePath: meta.sourcePath,
+        selectedProductSlug: meta.selectedProductSlug,
+        selectedSubjectSlug: meta.selectedSubjectSlug
+      });
 
-      if (interestParam) {
-        // Resolve subject name from slug
-        let resolvedInterest = interestParam;
-        const mat = materials.find((m) => m.slug === interestParam);
-        if (mat) {
-          resolvedInterest = mat.subject;
-        } else {
-          const crs = courses.find((c) => c.slug === interestParam);
-          if (crs) {
-            resolvedInterest = crs.subject;
-          } else {
-            const tut = tutors.find((t) => t.slug === interestParam);
-            if (tut) {
-              resolvedInterest = tut.subjects[0] || interestParam;
-            }
-          }
+      setValues((current) => {
+        const next = { ...current };
+        if (meta.resolvedInterest) {
+          next.interest = meta.resolvedInterest;
         }
-
-        setValues((current) => {
-          const next = { ...current };
-          next.interest = resolvedInterest;
-          if (typeParam === "material") {
-            next.need = "Tài liệu ôn thi";
-          } else if (typeParam === "course") {
-            next.need = "Khóa học / lớp ôn";
-          } else if (typeParam === "tutor") {
-            next.need = "Peer Tutor 1:1";
-          }
-          return next;
-        });
-      }
+        if (meta.resolvedNeed) {
+          next.need = meta.resolvedNeed;
+        }
+        return next;
+      });
     }
   }, []);
 
-  function validate(nextValues: FormValues) {
-    const nextErrors: FormErrors = {};
-
-    if (!nextValues.fullName.trim()) nextErrors.fullName = "Vui lòng nhập họ và tên.";
-    if (!nextValues.phone.trim()) {
-      nextErrors.phone = "Vui lòng nhập số điện thoại.";
-    } else if (nextValues.phone.replace(/\D/g, "").length < 9) {
-      nextErrors.phone = "Số điện thoại chưa hợp lệ.";
-    }
-    if (!nextValues.faculty) nextErrors.faculty = "Vui lòng chọn khoa/viện.";
-    if (!nextValues.interest) nextErrors.interest = "Vui lòng chọn môn học.";
-    if (!nextValues.need) nextErrors.need = "Vui lòng chọn nhu cầu.";
-
-    return nextErrors;
-  }
-
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const nextErrors = validate(values);
-    setErrors(nextErrors);
+    if (isLoading) return;
 
-    if (Object.keys(nextErrors).length > 0) {
+    setFeedback(null);
+
+    const currentSourcePath = typeof window !== "undefined"
+      ? `${window.location.pathname}${window.location.search}`
+      : ctaMeta.sourcePath;
+
+    const payload = buildConsultationPayload(values, {
+      sourcePath: currentSourcePath,
+      selectedProductSlug: ctaMeta.selectedProductSlug,
+      selectedSubjectSlug: ctaMeta.selectedSubjectSlug
+    });
+
+    const validation = validateConsultationInput(payload);
+    if (!validation.isValid) {
+      setErrors(validation.errors);
       setStatus("idle");
       return;
     }
 
+    setErrors({});
     setStatus("loading");
 
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
+    if (!idempotencyKeyRef.current) {
+      idempotencyKeyRef.current = generateIdempotencyKey();
     }
+    const idempotencyKey = idempotencyKeyRef.current;
 
-    timeoutRef.current = setTimeout(() => {
-      setStatus("success");
-      setValues(initialValues);
-      setErrors({});
-    }, 1200);
+    try {
+      const result = await submitConsultation(payload, idempotencyKey);
+
+      if (result.success) {
+        setStatus("success");
+        setFeedback({ type: "success", message: result.message });
+        setValues(initialValues);
+        setErrors({});
+        // Reset idempotency key only after successful completion or form reset
+        idempotencyKeyRef.current = null;
+      } else {
+        setStatus("error");
+        setFeedback({ type: "error", message: result.message });
+        if (result.details) {
+          setErrors(result.details);
+        }
+        // Retain entered values and idempotency key for retry
+      }
+    } catch {
+      setStatus("error");
+      setFeedback({
+        type: "error",
+        message: "Không thể kết nối đến máy chủ. Vui lòng kiểm tra kết nối mạng và thử lại."
+      });
+    }
   }
 
   return (
@@ -160,6 +366,19 @@ export function ConsultationForm() {
               />
 
               <form className="mt-6 grid gap-4 relative z-10" noValidate onSubmit={handleSubmit}>
+                {feedback && (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className={`rounded-xl p-3.5 text-sm font-semibold border transition-all ${
+                      feedback.type === "success"
+                        ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                        : "bg-rose-50 text-rose-800 border-rose-200"
+                    }`}
+                  >
+                    {feedback.message}
+                  </div>
+                )}
                 <div className="grid gap-4 md:grid-cols-2">
                   <Field
                     label="Họ và tên *"
@@ -301,6 +520,7 @@ export function ConsultationForm() {
 
                 <Field
                   label="Ghi chú không bắt buộc"
+                  error={errors.note}
                   input={
                     <textarea
                       value={values.note}
@@ -311,7 +531,7 @@ export function ConsultationForm() {
                         }))
                       }
                       placeholder="Ví dụ: Mình cần ôn giữa kỳ gấp, đang kẹt phần nào, hoặc muốn học vào buổi tối."
-                      className={inputClass("textarea", false)}
+                      className={inputClass("textarea", Boolean(errors.note))}
                     />
                   }
                 />
