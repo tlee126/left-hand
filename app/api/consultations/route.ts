@@ -20,28 +20,7 @@ export function getClientIp(req: NextRequest | Request): string {
     return (req as any).ip;
   }
 
-  const xff = req.headers.get("x-forwarded-for");
-  if (!xff) return "unknown";
-
-  // Parse only the first address
-  const firstIp = xff.split(",")[0].trim();
-
-  // Cap length to prevent oversized keys (IPv6 max standard string length is 45)
-  if (firstIp.length > 45 || firstIp.length < 3) {
-    return "unknown";
-  }
-
-  // Validate as basic IPv4
-  const isIPv4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(firstIp) && firstIp.split('.').every(p => parseInt(p, 10) <= 255);
-
-  // Validate as basic IPv6
-  const isIPv6 = /^[a-fA-F0-9:]+$/.test(firstIp) && firstIp.includes(':') && firstIp.split(':').every(p => p.length <= 4) && firstIp.split(':').length <= 8;
-
-  if (isIPv4 || isIPv6) {
-    return firstIp;
-  }
-
-  // Fallback to shared bucket for malformed/arbitrary values
+  // Fallback to shared bucket
   return "unknown";
 }
 
@@ -174,10 +153,7 @@ export async function handleConsultationPost(
     }
 
     // Do not log full phone, note, request body, or secrets.
-    console.error("Database insert failed for consultation", {
-      code: error.code,
-      message: error.message
-    });
+    console.error("Database insert failed for consultation");
     return NextResponse.json(
       { error: "Internal Server Error" },
       { status: 500 }

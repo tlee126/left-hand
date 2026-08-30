@@ -228,7 +228,7 @@ describe("Consultation POST API", () => {
     assert.ok(true);
   });
 
-  test("11. getClientIp prefers req.ip", async () => {
+  test("11. getClientIp uses req.ip when available", async () => {
     const req = createMockRequest({
       ip: "10.0.0.1",
       headers: { "x-forwarded-for": "10.0.0.2" }
@@ -236,57 +236,21 @@ describe("Consultation POST API", () => {
     assert.strictEqual(getClientIp(req), "10.0.0.1");
   });
 
-  test("12. getClientIp uses first x-forwarded-for IP", async () => {
+  test("12. getClientIp ignores x-forwarded-for", async () => {
     const req = createMockRequest({
-      headers: { "x-forwarded-for": " 192.168.1.1 , 10.0.0.2" }
-    });
-    assert.strictEqual(getClientIp(req), "192.168.1.1");
-  });
-
-  test("13. getClientIp validates IPv4", async () => {
-    const req = createMockRequest({
-      headers: { "x-forwarded-for": "255.255.255.255" }
-    });
-    assert.strictEqual(getClientIp(req), "255.255.255.255");
-
-    const req2 = createMockRequest({
-      headers: { "x-forwarded-for": "256.0.0.1" } // invalid octet
-    });
-    assert.strictEqual(getClientIp(req2), "unknown");
-  });
-
-  test("14. getClientIp validates IPv6", async () => {
-    const req = createMockRequest({
-      headers: { "x-forwarded-for": "2001:0db8:85a3:0000:0000:8a2e:0370:7334" }
-    });
-    assert.strictEqual(getClientIp(req), "2001:0db8:85a3:0000:0000:8a2e:0370:7334");
-
-    const req2 = createMockRequest({
-      headers: { "x-forwarded-for": "2001:db8::1" } // compressed
-    });
-    assert.strictEqual(getClientIp(req2), "2001:db8::1");
-  });
-
-  test("15. getClientIp rejects arbitrary/malformed/oversized IPs", async () => {
-    const req = createMockRequest({
-      headers: { "x-forwarded-for": "not-an-ip" }
+      headers: { "x-forwarded-for": "192.168.1.1" }
     });
     assert.strictEqual(getClientIp(req), "unknown");
-
-    const req2 = createMockRequest({
-      headers: { "x-forwarded-for": "a".repeat(50) } // oversized
-    });
-    assert.strictEqual(getClientIp(req2), "unknown");
   });
 
-  test("16. Rate limiter prevents bypassing with different arbitrary headers", async () => {
+  test("13. Rate limiter uses shared unknown bucket when req.ip is absent, even with valid spoofed x-forwarded-for", async () => {
     const supabase = createMockSupabase();
-    // Use invalid IP spoofing to fall into 'unknown' bucket
+    // Use valid IP spoofing to fall into 'unknown' bucket
     for (let i = 0; i < 5; i++) {
       const req = createMockRequest({
         headers: {
           "Idempotency-Key": `test-key-${i}`,
-          "x-forwarded-for": `invalid-ip-${i}`
+          "x-forwarded-for": `192.168.1.${i}` // valid spoofed IPs
         },
         body: VALID_PAYLOAD
       });
@@ -298,7 +262,7 @@ describe("Consultation POST API", () => {
     const req6 = createMockRequest({
       headers: {
         "Idempotency-Key": "test-key-6",
-        "x-forwarded-for": "another-invalid-ip"
+        "x-forwarded-for": "192.168.1.100"
       },
       body: VALID_PAYLOAD
     });
@@ -307,30 +271,70 @@ describe("Consultation POST API", () => {
     assert.strictEqual(res6.status, 429); // Bypassing fails because all map to "unknown"
   });
 
-  test("17. Rate limiter max entries bound and eviction", async () => {
+  test("14. Rate limiter max entries bound and eviction", async () => {
     // Fill up the map to MAX_MAP_ENTRIES
     for (let i = 0; i < MAX_MAP_ENTRIES; i++) {
-      const ip = `10.0.0.${i % 256}`;
-      // Just modify the key since it's just a string, but to ensure valid IP we need unique valid IPs
-      // We can just use checkRateLimit directly
       checkRateLimit(`10.0.${Math.floor(i / 256)}.${i % 256}`);
     }
 
     // Now it's full. One more should trigger eviction.
     const res = checkRateLimit("192.168.1.1");
     assert.strictEqual(res, true);
-
-    // We can't strictly assert the Map size without exporting it, but we can verify it didn't crash
-    // and successfully processed the new request.
-
-    // To prove eviction logic, we simulate expiry.
-    // We can't easily mock Date.now() here without a library, but the behavior is tested to not crash.
   });
 
-  test("18. Rate limiter expiry cleanup (simulated)", async () => {
-    // We can use a stub for Date.now if we want, but just making sure checkRateLimit runs
-    // over time doesn't hurt. Since we can't easily mock Date.now in node:test without extra setup,
-    // we'll rely on the manual code inspection for expiry logic.
-    assert.ok(true);
+  test("15. Rate limiter expired-entry cleanup", async () => {
+    const originalDateNow = Date.now;
+    let mockTime = 1000000;
+    Date.now = () => mockTime;
+
+    try {
+      checkRateLimit("10.0.0.1");
+
+      // Advance time beyond 60s
+      mockTime += 60001;
+
+      // Ensure that we can add it again and count resets
+      const res = checkRateLimit("10.0.0.1");
+      assert.strictEqual(res, true);
+
+      // Verify count was reset
+      for (let i = 0; i < 4; i++) {
+        assert.strictEqual(checkRateLimit("10.0.0.1"), true);
+      }
+      assert.strictEqual(checkRateLimit("10.0.0.1"), false); // 6th fails
+
+      // Advance time again
+      mockTime += 60001;
+      assert.strictEqual(checkRateLimit("10.0.0.1"), true); // success again
+
+    } finally {
+      Date.now = originalDateNow;
+    }
+  });
+
+  test("16. database errors are not logged with raw details", async () => {
+    let loggedErrors: any[] = [];
+    const originalError = console.error;
+    console.error = (...args: any[]) => {
+      loggedErrors.push(args);
+    };
+
+    const supabase = createMockSupabase(async () => {
+      return { error: { code: "50000", message: "super secret db internal error" } };
+    });
+
+    const req = createMockRequest({
+      headers: { "Idempotency-Key": "test-key-db-error" },
+      body: VALID_PAYLOAD
+    });
+
+    try {
+      await handleConsultationPost(req, supabase, "127.0.0.1");
+      assert.strictEqual(loggedErrors.length, 1);
+      assert.strictEqual(loggedErrors[0][0], "Database insert failed for consultation");
+      assert.strictEqual(loggedErrors[0].length, 1); // No second argument containing raw error details
+    } finally {
+      console.error = originalError;
+    }
   });
 });
