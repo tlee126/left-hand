@@ -12,17 +12,76 @@ interface RateLimitEntry {
 const RATE_LIMIT_MAP = new Map<string, RateLimitEntry>();
 const MAX_REQUESTS = 5;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+export const MAX_MAP_ENTRIES = 1000;
+
+export function getClientIp(req: NextRequest | Request): string {
+  // Prefer platform-provided IP (e.g., Vercel/Next.js Edge)
+  if ("ip" in req && typeof (req as any).ip === "string" && (req as any).ip.length > 0) {
+    return (req as any).ip;
+  }
+
+  const xff = req.headers.get("x-forwarded-for");
+  if (!xff) return "unknown";
+
+  // Parse only the first address
+  const firstIp = xff.split(",")[0].trim();
+
+  // Cap length to prevent oversized keys (IPv6 max standard string length is 45)
+  if (firstIp.length > 45 || firstIp.length < 3) {
+    return "unknown";
+  }
+
+  // Validate as basic IPv4
+  const isIPv4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(firstIp) && firstIp.split('.').every(p => parseInt(p, 10) <= 255);
+
+  // Validate as basic IPv6
+  const isIPv6 = /^[a-fA-F0-9:]+$/.test(firstIp) && firstIp.includes(':') && firstIp.split(':').every(p => p.length <= 4) && firstIp.split(':').length <= 8;
+
+  if (isIPv4 || isIPv6) {
+    return firstIp;
+  }
+
+  // Fallback to shared bucket for malformed/arbitrary values
+  return "unknown";
+}
+
+function cleanupRateLimitMap(now: number) {
+  for (const [key, val] of RATE_LIMIT_MAP.entries()) {
+    if (val.expiresAt < now) {
+      RATE_LIMIT_MAP.delete(key);
+    }
+  }
+}
 
 export function checkRateLimit(ip: string): boolean {
   const now = Date.now();
-  const entry = RATE_LIMIT_MAP.get(ip);
-  if (!entry || entry.expiresAt < now) {
+  let entry = RATE_LIMIT_MAP.get(ip);
+
+  if (entry && entry.expiresAt < now) {
+    RATE_LIMIT_MAP.delete(ip);
+    entry = undefined;
+  }
+
+  if (!entry) {
+    if (RATE_LIMIT_MAP.size >= MAX_MAP_ENTRIES) {
+      cleanupRateLimitMap(now);
+
+      // If still full after cleanup, evict deterministically (oldest inserted)
+      if (RATE_LIMIT_MAP.size >= MAX_MAP_ENTRIES) {
+        const firstKey = RATE_LIMIT_MAP.keys().next().value;
+        if (firstKey !== undefined) {
+          RATE_LIMIT_MAP.delete(firstKey);
+        }
+      }
+    }
     RATE_LIMIT_MAP.set(ip, { count: 1, expiresAt: now + RATE_LIMIT_WINDOW_MS });
     return true;
   }
+
   if (entry.count >= MAX_REQUESTS) {
     return false;
   }
+
   entry.count += 1;
   return true;
 }
@@ -141,10 +200,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const ip =
-    req.headers.get("x-forwarded-for") ||
-    (req as any).ip ||
-    "unknown";
+  const ip = getClientIp(req);
 
   return handleConsultationPost(req, supabase, ip);
 }
