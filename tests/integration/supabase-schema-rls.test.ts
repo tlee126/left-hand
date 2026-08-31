@@ -31,7 +31,8 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "0003_public_catalog_table_grants.sql",
         "0004_profiles_schema_and_policies.sql",
         "0005_account_approval_gate.sql",
-        "0006_consultations.sql"
+        "0006_consultations.sql",
+        "0007_consultation_admin_rls.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -186,6 +187,17 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
 
       const policyCount = (sql.match(/CREATE\s+POLICY/gi) || []).length;
       assert.strictEqual(policyCount, 1, "must have exactly one policy");
+    });
+    test("0007_consultation_admin_rls.sql grants SELECT to authenticated admins", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0007_consultation_admin_rls.sql"), "utf-8");
+
+      assert.ok(/GRANT\s+SELECT\s+ON\s+TABLE\s+consultations\s+TO\s+authenticated/i.test(sql), "must grant SELECT to authenticated");
+      assert.ok(!/GRANT\s+.*anon/i.test(sql), "must not grant SELECT to anon");
+      assert.ok(!/GRANT\s+(INSERT|UPDATE|DELETE|ALL)/i.test(sql), "must not grant public mutations");
+
+      assert.ok(/CREATE\s+POLICY\s+"[^"]+"\s+ON\s+consultations\s+FOR\s+SELECT\s+TO\s+authenticated/i.test(sql), "must create SELECT policy for authenticated");
+      assert.ok(sql.includes("profiles.role = 'admin'") && sql.includes("auth.uid()"), "policy must check profiles.role = 'admin' for auth.uid()");
+      assert.ok(!/FOR\s+(INSERT|UPDATE|DELETE)/i.test(sql), "must not add mutation policies");
     });
   });
 

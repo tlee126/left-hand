@@ -38,7 +38,8 @@ async function runAudit(): Promise<void> {
       "0003_public_catalog_table_grants.sql",
       "0004_profiles_schema_and_policies.sql",
       "0005_account_approval_gate.sql",
-      "0006_consultations.sql"
+      "0006_consultations.sql",
+      "0007_consultation_admin_rls.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
@@ -136,7 +137,30 @@ async function runAudit(): Promise<void> {
       details: "RLS enabled, 1 INSERT policy, restricted column grants, no SELECT/UPDATE/DELETE"
     });
 
-    // 7. Audit supabase/seed.sql
+    // 7. Audit 0007_consultation_admin_rls.sql
+    const sql0007 = await fs.readFile(path.join(migrationsDir, "0007_consultation_admin_rls.sql"), "utf-8");
+    const grantsSelectAuthenticated = /GRANT\s+SELECT\s+ON\s+TABLE\s+consultations\s+TO\s+authenticated/i.test(sql0007);
+    const noAnonSelectGrant = !/GRANT\s+.*anon/i.test(sql0007);
+    const noMutation0007Grants = !/GRANT\s+(INSERT|UPDATE|DELETE|ALL)/i.test(sql0007);
+    const hasAdminSelectPolicy = /CREATE\s+POLICY\s+"[^"]+"\s+ON\s+consultations\s+FOR\s+SELECT\s+TO\s+authenticated\s+USING/i.test(sql0007);
+    const adminPolicyChecksRole = sql0007.includes("profiles.role = 'admin'") && sql0007.includes("auth.uid()");
+    const noPublicMutationPolicies = !/FOR\s+(INSERT|UPDATE|DELETE)/i.test(sql0007);
+
+    results.push({
+      category: "0007_consultation_admin_rls",
+      check: "Grants SELECT only to authenticated, no mutation grants",
+      passed: grantsSelectAuthenticated && noAnonSelectGrant && noMutation0007Grants,
+      details: "No SELECT for anon, no public INSERT/UPDATE/DELETE grants added"
+    });
+
+    results.push({
+      category: "0007_consultation_admin_rls",
+      check: "Admin-only SELECT RLS policy on consultations",
+      passed: hasAdminSelectPolicy && adminPolicyChecksRole && noPublicMutationPolicies,
+      details: "Requires auth.uid() and profiles.role = 'admin', no mutation policies"
+    });
+
+    // 8. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
     const isTxn = /^\s*(?:--[^\n]*\n\s*)*BEGIN\s*;/im.test(sqlSeed) && /COMMIT\s*;\s*$/i.test(sqlSeed.trim());
     const subjectsSeed = CANONICAL_SUBJECTS.every((s) => sqlSeed.includes(`'${s.slug}'`));
