@@ -160,7 +160,7 @@ export default async function AdminConsultationInboxPage({
               {consultations.map((consultation) => (
                 <tr key={consultation.id}>
                   <td className="whitespace-nowrap px-4 py-3">{formatCreatedAt(consultation.created_at)}</td>
-                  <td className="px-4 py-3 font-semibold">{displayValue(consultation.full_name)}</td>
+                  <td className="px-4 py-3 font-semibold"><Link href={`${INBOX_PATH}/${consultation.id}`}>{displayValue(consultation.full_name)}</Link></td>
                   <td className="whitespace-nowrap px-4 py-3">{displayValue(consultation.phone)}</td>
                   <td className="px-4 py-3">{displayValue(consultation.faculty)}</td>
                   <td className="px-4 py-3">{displayValue(consultation.interest)}</td>
