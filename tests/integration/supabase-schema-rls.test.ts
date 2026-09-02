@@ -2,7 +2,7 @@
  * Integration & Security Verification Tests for Supabase Migrations, Seed & RLS (Phase 2 Hardening)
  * 
  * Verifies:
- * 1. Migration topological integrity (0001 -> 0005) & schema definitions
+ * 1. Migration topological integrity (0001 -> 0008) & schema definitions
  * 2. Seed idempotency and data consistency with data/catalog.ts
  * 3. RLS policy definitions and table/column grants across catalog & profiles
  * 4. Live database integration test workflow (when Supabase/Postgres is available)
@@ -15,6 +15,162 @@ import * as path from "node:path";
 import { materials, courses, tutors } from "../../data/catalog";
 import { CANONICAL_SUBJECTS } from "../../lib/domain/subjects";
 import { parseVND } from "../../lib/domain/product-types";
+
+const expectedAdminPredicate = "EXISTS ( SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin' )";
+
+function normalizeSql(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function extractPolicyClause(policy: string, clauseName: "USING" | "WITH CHECK"): string | null {
+  const clauseStart = new RegExp(`\\b${clauseName}\\s*\\(`, "i").exec(policy);
+  if (!clauseStart) return null;
+
+  const openingParen = policy.indexOf("(", clauseStart.index);
+  let depth = 0;
+  let inString = false;
+  for (let index = openingParen; index < policy.length; index += 1) {
+    const character = policy[index];
+    if (character === "'" && policy[index + 1] === "'") {
+      index += 1;
+      continue;
+    }
+    if (character === "'") inString = !inString;
+    if (inString) continue;
+    if (character === "(") depth += 1;
+    if (character === ")") {
+      depth -= 1;
+      if (depth === 0) return policy.slice(openingParen + 1, index);
+    }
+  }
+  return null;
+}
+
+/**
+ * Hardened contract assertion helper for migration 0008 (consultation admin status update).
+ * Validates positive invariants and rejects forbidden grants, bypasses, and duplicate constraints.
+ */
+function assertMigration0008Contract(
+  sql0008: string,
+  options?: { sql0004?: string; sql0006?: string }
+): void {
+  const code = sql0008.replace(/--.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+
+  // 1. Privilege escalation & RLS bypass checks
+  assert.ok(!/\bservice_role\b/i.test(code), "Must not reference service_role");
+  assert.ok(
+    !/\b(?:password|secret|token|bearer|apikey|api_key|service_role_key|anon_key)\b\s*[:=]/i.test(code) && !/'ey[a-zA-Z0-9._-]{20,}'/.test(code),
+    "Must not contain credentials, tokens, passwords, or hardcoded secrets"
+  );
+  assert.ok(!/SECURITY\s+DEFINER/i.test(code), "Must not define or use SECURITY DEFINER");
+  assert.ok(!/\bBYPASSRLS\b/i.test(code), "Must not include BYPASSRLS");
+  assert.ok(!/\b(?:SET|ALTER)\s+ROLE\b/i.test(code), "Must not use SET ROLE or ALTER ROLE");
+  assert.ok(
+    !/GRANT\s+[^;]*?\bTO\s+[^;]*?\b(?:postgres|supabase_admin|service_role|authenticator|dashboard_user)\b/i.test(code),
+    "Must not grant privileges to privileged system roles"
+  );
+  assert.ok(!/DISABLE\s+ROW\s+LEVEL\s+SECURITY/i.test(code), "Must not disable Row Level Security");
+  assert.ok(!/ALTER\s+TABLE\s+(?:ONLY\s+)?(?!consultations\b)\w+/i.test(code), "Must not alter unrelated tables");
+  const grantTables = [...code.matchAll(/GRANT\s+[^;]*?\bON\s+(?:TABLE\s+)?([a-zA-Z_]\w*)/gi)].map((m) => m[1].toLowerCase());
+  const revokeTables = [...code.matchAll(/REVOKE\s+[^;]*?\bON\s+(?:TABLE\s+)?([a-zA-Z_]\w*)/gi)].map((m) => m[1].toLowerCase());
+  assert.ok(
+    grantTables.every((t) => t === "consultations") && revokeTables.every((t) => t === "consultations"),
+    "Grant and revoke statements must only target consultations table"
+  );
+
+  // 2. Reject table-wide UPDATE grants and allow only column grant exactly for status
+  assert.ok(
+    !/GRANT\s+UPDATE\s+ON\s+(?:TABLE\s+)?consultations\b/i.test(code),
+    "Must reject table-wide GRANT UPDATE ON TABLE consultations"
+  );
+  assert.ok(
+    !/GRANT\s+UPDATE\s*\((?!\s*status\s*\))/i.test(code),
+    "Must reject UPDATE grants on columns other than status"
+  );
+  assert.ok(
+    /GRANT\s+UPDATE\s*\(\s*status\s*\)\s+ON\s+TABLE\s+consultations\s+TO\s+authenticated/i.test(code),
+    "Must grant UPDATE (status) ON TABLE consultations TO authenticated"
+  );
+  assert.ok(
+    !/GRANT\s+UPDATE\s*[^;]*?\bTO\b[^;]*?\banon\b/i.test(code),
+    "Must not grant UPDATE privilege to anon"
+  );
+  assert.ok(
+    !/GRANT\s+UPDATE\s*[^;]*?\bTO\s+(?!authenticated\b)[a-zA-Z_]\w*/i.test(code),
+    "Must not grant UPDATE privilege to any role other than authenticated"
+  );
+  assert.ok(
+    /REVOKE\s+UPDATE\s+ON\s+TABLE\s+consultations\s+FROM\s+(?:anon,\s*authenticated|authenticated,\s*anon)/i.test(code),
+    "Must explicitly revoke table-wide UPDATE from anon and authenticated"
+  );
+
+  // 3. Reject grants of SELECT, INSERT, DELETE, or ALL in 0008 (table-wide and column-level)
+  assert.ok(
+    !/GRANT\s+(?:SELECT|INSERT|DELETE|ALL)\b/i.test(code),
+    "Must reject SELECT, INSERT, DELETE, and ALL grants in migration 0008"
+  );
+  const grantStatements = (code.match(/GRANT\s+[^;]+;/gi) || []).map((s) => s.trim());
+  assert.strictEqual(
+    grantStatements.length,
+    1,
+    "Exactly one GRANT statement allowed in migration 0008"
+  );
+  assert.ok(
+    /^GRANT\s+UPDATE\s*\(\s*status\s*\)\s+ON\s+(?:TABLE\s+)?consultations\s+TO\s+authenticated\s*;$/i.test(grantStatements[0]),
+    "Sole permitted grant must be GRANT UPDATE (status) ON TABLE consultations TO authenticated;"
+  );
+
+  // 4. Updated_at trigger contract
+  if (options?.sql0004) {
+    assert.ok(
+      /CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+update_updated_at_column\s*\(\s*\)\s*RETURNS\s+TRIGGER/i.test(options.sql0004),
+      "Migration 0004 must define update_updated_at_column() returning TRIGGER"
+    );
+  }
+  assert.ok(!/CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION/i.test(code), "Must not define or replace trigger function in 0008");
+  const triggerMatches = code.match(/CREATE\s+TRIGGER[\s\S]*?;/gi) || [];
+  assert.strictEqual(triggerMatches.length, 1, "Must have exactly one CREATE TRIGGER statement in 0008");
+  assert.ok(
+    /CREATE\s+TRIGGER\s+trg_consultations_updated_at\s+BEFORE\s+UPDATE\s+ON\s+consultations\s+FOR\s+EACH\s+ROW/i.test(triggerMatches[0]),
+    "Trigger must target consultations before update for each row"
+  );
+  assert.ok(
+    /EXECUTE\s+(?:FUNCTION|PROCEDURE)\s+update_updated_at_column\s*\(\s*\)\s*;/i.test(triggerMatches[0]),
+    "Trigger must execute update_updated_at_column()"
+  );
+
+  // 5. Policy verification
+  const updatePolicies = code.match(/CREATE\s+POLICY[\s\S]*?ON\s+consultations[\s\S]*?FOR\s+UPDATE[\s\S]*?;/gi) || [];
+  const allPolicies = code.match(/CREATE\s+POLICY[\s\S]*?;/gi) || [];
+  assert.strictEqual(allPolicies.length, 1, "Must have exactly one CREATE POLICY statement in 0008");
+  assert.strictEqual(updatePolicies.length, 1, "The single policy must be an UPDATE policy on consultations");
+  const usingClause = extractPolicyClause(updatePolicies[0] || "", "USING");
+  const withCheckClause = extractPolicyClause(updatePolicies[0] || "", "WITH CHECK");
+  assert.ok(usingClause !== null && withCheckClause !== null, "Policy must include both USING and WITH CHECK");
+  assert.strictEqual(normalizeSql(usingClause || ""), expectedAdminPredicate, "USING clause must be exactly the admin profile check and require auth.uid() admin profile check");
+  assert.strictEqual(normalizeSql(withCheckClause || ""), expectedAdminPredicate, "WITH CHECK clause must be exactly the admin profile check and require auth.uid() admin profile check");
+  const policyTarget = updatePolicies[0]?.match(/FOR\s+UPDATE([\s\S]*?)USING/i)?.[1] || "";
+  assert.strictEqual(normalizeSql(policyTarget), "TO authenticated", "UPDATE policy must target only authenticated");
+  assert.ok(!/FOR\s+DELETE/i.test(code) && !/GRANT\s+DELETE/i.test(code), "Must not include DELETE policy or grant");
+
+  // 6. Status integrity
+  assert.ok(
+    !/(?:CREATE\s+TYPE|ADD\s+CONSTRAINT|CHECK\s*\([^)]*status|chk_consultations_status)/i.test(code),
+    "Must not create a second status enum, type, or constraint in migration 0008"
+  );
+  const canonicalStatuses = new Set(["new", "contacted", "qualified", "closed"]);
+  const singleQuotedLiterals = code.match(/'([^']+)'/g)?.map((s) => s.replace(/'/g, "")) || [];
+  assert.ok(
+    singleQuotedLiterals.every((val) => val === "admin" || canonicalStatuses.has(val)),
+    "Must not introduce status values outside 'new', 'contacted', 'qualified', 'closed'"
+  );
+  if (options?.sql0006) {
+    assert.ok(
+      /CONSTRAINT\s+chk_consultations_status\s+CHECK\s*\(\s*status\s+IN\s*\(\s*'new',\s*'contacted',\s*'qualified',\s*'closed'\s*\)\s*\)/i.test(options.sql0006),
+      "Canonical status constraint from migration 0006 must remain intact"
+    );
+  }
+}
 
 describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
   const migrationsDir = path.resolve(process.cwd(), "supabase/migrations");
@@ -32,7 +188,8 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "0004_profiles_schema_and_policies.sql",
         "0005_account_approval_gate.sql",
         "0006_consultations.sql",
-        "0007_consultation_admin_rls.sql"
+        "0007_consultation_admin_rls.sql",
+        "0008_consultation_admin_status_update.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -173,6 +330,9 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       assert.ok(/CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+idx_consultations_status_created_at/i.test(sql), "must have index on status and created_at");
       assert.ok(/ALTER\s+TABLE\s+consultations\s+ENABLE\s+ROW\s+LEVEL\s+SECURITY/i.test(sql), "must enable RLS");
 
+      const hasStatusConstraint = /CONSTRAINT\s+chk_consultations_status\s+CHECK\s*\(\s*status\s+IN\s*\(\s*'new',\s*'contacted',\s*'qualified',\s*'closed'\s*\)\s*\)/i.test(sql);
+      assert.ok(hasStatusConstraint, "0006 must define canonical status constraint ('new', 'contacted', 'qualified', 'closed')");
+
       const hasInsertGrant = /GRANT\s+INSERT\s+\([^)]+\)\s+ON\s+TABLE\s+consultations\s+TO\s+anon,\s+authenticated/i.test(sql);
       assert.ok(hasInsertGrant, "must have restricted column INSERT grant for anon, authenticated");
 
@@ -188,6 +348,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       const policyCount = (sql.match(/CREATE\s+POLICY/gi) || []).length;
       assert.strictEqual(policyCount, 1, "must have exactly one policy");
     });
+
     test("0007_consultation_admin_rls.sql grants SELECT to authenticated admins", async () => {
       const sql = await fs.readFile(path.join(migrationsDir, "0007_consultation_admin_rls.sql"), "utf-8");
 
@@ -198,6 +359,14 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       assert.ok(/CREATE\s+POLICY\s+"[^"]+"\s+ON\s+consultations\s+FOR\s+SELECT\s+TO\s+authenticated/i.test(sql), "must create SELECT policy for authenticated");
       assert.ok(sql.includes("profiles.role = 'admin'") && sql.includes("auth.uid()"), "policy must check profiles.role = 'admin' for auth.uid()");
       assert.ok(!/FOR\s+(INSERT|UPDATE|DELETE)/i.test(sql), "must not add mutation policies");
+    });
+
+    test("0008_consultation_admin_status_update.sql restricts status updates to authenticated admins", async () => {
+      const sql0008 = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+      const sql0004 = await fs.readFile(path.join(migrationsDir, "0004_profiles_schema_and_policies.sql"), "utf-8");
+      const sql0006 = await fs.readFile(path.join(migrationsDir, "0006_consultations.sql"), "utf-8");
+
+      assertMigration0008Contract(sql0008, { sql0004, sql0006 });
     });
   });
 
@@ -329,6 +498,137 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         t.diagnostic(`LIVE DATABASE ACTIVE: Connected to ${supabaseUrl || "Postgres"}`);
         assert.ok(supabaseUrl || dbUrl, "Live database URL is present");
       }
+    });
+  });
+
+  describe("4. Migration 0008 Security & Policy Hardening (Negative Fixtures)", () => {
+    test("rejects table-wide UPDATE grants (authenticated, anon, or any role)", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+
+      const tableWideAuthSql = sql.replace(
+        "GRANT UPDATE (status) ON TABLE consultations TO authenticated;",
+        "GRANT UPDATE ON TABLE consultations TO authenticated;"
+      );
+      assert.throws(() => assertMigration0008Contract(tableWideAuthSql), /table-wide GRANT UPDATE/i);
+
+      const tableWideAnonSql = sql + "\nGRANT UPDATE ON TABLE consultations TO anon;";
+      assert.throws(() => assertMigration0008Contract(tableWideAnonSql), /table-wide GRANT UPDATE/i);
+
+      const multiColumnUpdateSql = sql.replace(
+        "GRANT UPDATE (status) ON TABLE consultations TO authenticated;",
+        "GRANT UPDATE (status, full_name) ON TABLE consultations TO authenticated;"
+      );
+      assert.throws(() => assertMigration0008Contract(multiColumnUpdateSql), /columns other than status/i);
+    });
+
+    test("rejects SELECT, INSERT, DELETE, and ALL mutation/read grants", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+
+      const selectGrantSql = sql + "\nGRANT SELECT ON TABLE consultations TO authenticated;";
+      assert.throws(() => assertMigration0008Contract(selectGrantSql), /reject SELECT, INSERT, DELETE, and ALL/i);
+
+      const insertGrantSql = sql + "\nGRANT INSERT (status) ON TABLE consultations TO authenticated;";
+      assert.throws(() => assertMigration0008Contract(insertGrantSql), /reject SELECT, INSERT, DELETE, and ALL/i);
+
+      const deleteGrantSql = sql + "\nGRANT DELETE ON TABLE consultations TO authenticated;";
+      assert.throws(() => assertMigration0008Contract(deleteGrantSql), /reject SELECT, INSERT, DELETE, and ALL/i);
+
+      const allGrantSql = sql + "\nGRANT ALL ON TABLE consultations TO authenticated;";
+      assert.throws(() => assertMigration0008Contract(allGrantSql), /reject SELECT, INSERT, DELETE, and ALL/i);
+    });
+
+    test("rejects missing USING or WITH CHECK clauses", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+
+      const missingWithCheckSql = sql.replace(/WITH CHECK\s*\([\s\S]*?\);/, ";");
+      assert.throws(() => assertMigration0008Contract(missingWithCheckSql), /both USING and WITH CHECK/i);
+
+      const missingUsingSql = sql.replace(/USING\s*\([\s\S]*?\)\s*WITH CHECK/, "WITH CHECK");
+      assert.throws(() => assertMigration0008Contract(missingUsingSql), /both USING and WITH CHECK/i);
+    });
+
+    test("rejects missing admin, profile, or auth.uid predicates", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+
+      const missingAdminRoleSql = sql.replace(/AND profiles\.role = 'admin'/g, "");
+      assert.throws(() => assertMigration0008Contract(missingAdminRoleSql), /auth\.uid\(\) admin profile check/i);
+
+      const missingAuthUidSql = sql.replace(/WHERE profiles\.id = auth\.uid\(\)/g, "WHERE profiles.id IS NOT NULL");
+      assert.throws(() => assertMigration0008Contract(missingAuthUidSql), /auth\.uid\(\) admin profile check/i);
+
+      const bypassPredicateSql = sql.replace(/USING\s*\([\s\S]*?\)\s*WITH CHECK/, "USING (true)\nWITH CHECK");
+      assert.throws(() => assertMigration0008Contract(bypassPredicateSql), /auth\.uid\(\) admin profile check/i);
+
+      const usingOrTrueSql = sql.replace(/\n\)\s*WITH CHECK/, " OR true\n)\nWITH CHECK");
+      assert.throws(() => assertMigration0008Contract(usingOrTrueSql), /USING clause must be exactly/i);
+
+      const withCheckOrTrueSql = sql.replace(/\n\);\s*$/, " OR true\n);");
+      assert.throws(() => assertMigration0008Contract(withCheckOrTrueSql), /WITH CHECK clause must be exactly/i);
+    });
+
+    test("rejects UPDATE policies with anon, public, or any additional target role", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+
+      const authenticatedAnonSql = sql.replace("FOR UPDATE\nTO authenticated", "FOR UPDATE\nTO authenticated, anon");
+      assert.throws(() => assertMigration0008Contract(authenticatedAnonSql), /only authenticated/i);
+
+      const authenticatedPublicSql = sql.replace("FOR UPDATE\nTO authenticated", "FOR UPDATE\nTO authenticated, public");
+      assert.throws(() => assertMigration0008Contract(authenticatedPublicSql), /only authenticated/i);
+
+      const authenticatedOtherRoleSql = sql.replace("FOR UPDATE\nTO authenticated", "FOR UPDATE\nTO authenticated, moderator");
+      assert.throws(() => assertMigration0008Contract(authenticatedOtherRoleSql), /only authenticated/i);
+    });
+
+    test("rejects SECURITY DEFINER, service_role, and RLS bypasses", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+
+      const securityDefinerSql = sql + "\nCREATE OR REPLACE FUNCTION bypass() RETURNS void AS $$ $$ LANGUAGE plpgsql SECURITY DEFINER;";
+      assert.throws(() => assertMigration0008Contract(securityDefinerSql), /SECURITY DEFINER/i);
+
+      const serviceRoleTargetSql = sql.replace("TO authenticated;", "TO service_role;");
+      assert.throws(() => assertMigration0008Contract(serviceRoleTargetSql), /service_role/i);
+
+      const bypassRlsSql = sql + "\nALTER ROLE authenticated BYPASSRLS;";
+      assert.throws(() => assertMigration0008Contract(bypassRlsSql), /BYPASSRLS/i);
+
+      const setRoleSql = sql + "\nSET ROLE postgres;";
+      assert.throws(() => assertMigration0008Contract(setRoleSql), /SET ROLE/i);
+    });
+
+    test("rejects duplicate status constraints and non-canonical status values", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+
+      const duplicateConstraintSql = sql + "\nALTER TABLE consultations ADD CONSTRAINT chk_consultations_status_dup CHECK (status IN ('new', 'closed'));";
+      assert.throws(() => assertMigration0008Contract(duplicateConstraintSql), /second status enum, type, or constraint/i);
+
+      const duplicateTypeSql = sql + "\nCREATE TYPE consultation_status_t AS ENUM ('new', 'closed');";
+      assert.throws(() => assertMigration0008Contract(duplicateTypeSql), /second status enum, type, or constraint/i);
+
+      const nonCanonicalSqlLiteral = sql + "\nSELECT 'pending_review' AS invalid_status;";
+      assert.throws(() => assertMigration0008Contract(nonCanonicalSqlLiteral), /status values outside/i);
+    });
+
+    test("rejects wrong trigger function and replacement function definitions", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+
+      const wrongTriggerFnSql = sql.replace(
+        "EXECUTE FUNCTION update_updated_at_column();",
+        "EXECUTE FUNCTION custom_update_trigger();"
+      );
+      assert.throws(() => assertMigration0008Contract(wrongTriggerFnSql), /must execute update_updated_at_column/i);
+
+      const replacementFnSql = sql + "\nCREATE OR REPLACE FUNCTION update_updated_at_column() RETURNS TRIGGER AS $$ BEGIN RETURN NEW; END; $$ LANGUAGE plpgsql;";
+      assert.throws(() => assertMigration0008Contract(replacementFnSql), /must not define or replace trigger function/i);
+    });
+
+    test("rejects cross-table privilege grants and revokes targeting other tables", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+
+      const crossTableGrantSql = sql + "\nGRANT SELECT ON TABLE profiles TO authenticated;";
+      assert.throws(() => assertMigration0008Contract(crossTableGrantSql), /only target consultations table/i);
+
+      const crossTableRevokeSql = sql + "\nREVOKE UPDATE ON TABLE profiles FROM authenticated;";
+      assert.throws(() => assertMigration0008Contract(crossTableRevokeSql), /only target consultations table/i);
     });
   });
 });

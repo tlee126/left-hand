@@ -17,6 +17,36 @@ interface AuditResult {
   details?: string;
 }
 
+const expectedAdminPredicate = "EXISTS ( SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin' )";
+
+function normalizeSql(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function extractPolicyClause(policy: string, clauseName: "USING" | "WITH CHECK"): string | null {
+  const clauseStart = new RegExp(`\\b${clauseName}\\s*\\(`, "i").exec(policy);
+  if (!clauseStart) return null;
+
+  const openingParen = policy.indexOf("(", clauseStart.index);
+  let depth = 0;
+  let inString = false;
+  for (let index = openingParen; index < policy.length; index += 1) {
+    const character = policy[index];
+    if (character === "'" && policy[index + 1] === "'") {
+      index += 1;
+      continue;
+    }
+    if (character === "'") inString = !inString;
+    if (inString) continue;
+    if (character === "(") depth += 1;
+    if (character === ")") {
+      depth -= 1;
+      if (depth === 0) return policy.slice(openingParen + 1, index);
+    }
+  }
+  return null;
+}
+
 async function runAudit(): Promise<void> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -39,13 +69,14 @@ async function runAudit(): Promise<void> {
       "0004_profiles_schema_and_policies.sql",
       "0005_account_approval_gate.sql",
       "0006_consultations.sql",
-      "0007_consultation_admin_rls.sql"
+      "0007_consultation_admin_rls.sql",
+      "0008_consultation_admin_status_update.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 6 migration files exist in strict topological order",
+      check: "All 8 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -122,12 +153,13 @@ async function runAudit(): Promise<void> {
     const noOtherPolicies = (sql0006.match(/CREATE\s+POLICY/gi) || []).length === 1;
     const noOtherGrants = !/GRANT\s+(SELECT|UPDATE|DELETE|ALL)\s+ON\s+TABLE\s+consultations/i.test(sql0006);
     const noClientManagedFields = !/GRANT\s+INSERT\s+\([^)]*\b(id|status|created_at|updated_at)\b[^)]*\)\s+ON\s+TABLE\s+consultations/i.test(sql0006);
+    const hasStatusConstraint0006 = /CONSTRAINT\s+chk_consultations_status\s+CHECK\s*\(\s*status\s+IN\s*\(\s*'new',\s*'contacted',\s*'qualified',\s*'closed'\s*\)\s*\)/i.test(sql0006);
 
     results.push({
       category: "0006_consultations",
       check: "Consultations table schema correct (UUID, request_id, columns, status, timestamps, index)",
-      passed: hasConsultationsTable && hasUUIDId && hasRequestId && hasRequiredColumns && hasStatus && hasTimestamps && hasIndex,
-      details: "UUID PK, text columns, defaults, index on status/created_at"
+      passed: hasConsultationsTable && hasUUIDId && hasRequestId && hasRequiredColumns && hasStatus && hasTimestamps && hasIndex && hasStatusConstraint0006,
+      details: "UUID PK, text columns, defaults, index on status/created_at, canonical status constraint ('new', 'contacted', 'qualified', 'closed')"
     });
 
     results.push({
@@ -160,7 +192,104 @@ async function runAudit(): Promise<void> {
       details: "Requires auth.uid() and profiles.role = 'admin', no mutation policies"
     });
 
-    // 8. Audit supabase/seed.sql
+    // 8. Audit 0008_consultation_admin_status_update.sql
+    const sql0008 = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+    const code0008 = sql0008.replace(/--.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+
+    // 8.1 Reject table-wide UPDATE grants and allow only column grant exactly for status
+    const revokesTableWideUpdate0008 = /REVOKE\s+UPDATE\s+ON\s+TABLE\s+consultations\s+FROM\s+(?:anon,\s*authenticated|authenticated,\s*anon)/i.test(code0008);
+    const noTableWideUpdate0008 = !/GRANT\s+UPDATE\s+ON\s+(?:TABLE\s+)?consultations\b/i.test(code0008);
+    const grantsOnlyStatusUpdate0008 = /GRANT\s+UPDATE\s*\(\s*status\s*\)\s+ON\s+TABLE\s+consultations\s+TO\s+authenticated/i.test(code0008);
+    const noOtherColumnUpdate0008 = !/GRANT\s+UPDATE\s*\((?!\s*status\s*\))/i.test(code0008);
+    const noAnonUpdateGrant0008 = !/GRANT\s+UPDATE[\s\S]*?\bTO\b[\s\S]*?\banon\b/i.test(code0008);
+    const noOtherRolesUpdate0008 = !/GRANT\s+UPDATE[\s\S]*?\bTO\s+(?!authenticated\b)[a-zA-Z_]\w*/i.test(code0008);
+
+    // 8.2 Reject grants of SELECT, INSERT, DELETE, or ALL in 0008 (table-wide and column-level)
+    const noForbiddenGrants0008 = !/GRANT\s+(?:SELECT|INSERT|DELETE|ALL)\b/i.test(code0008);
+    const grantStatements0008 = (code0008.match(/GRANT\s+[^;]+;/gi) || []).map((s) => s.trim());
+    const soleGrantIsStatusUpdate0008 = grantStatements0008.length === 1 &&
+      /^GRANT\s+UPDATE\s*\(\s*status\s*\)\s+ON\s+(?:TABLE\s+)?consultations\s+TO\s+authenticated\s*;$/i.test(grantStatements0008[0]);
+
+    // 8.3 Verify no privilege escalation or RLS bypass
+    const noServiceRole0008 = !/\bservice_role\b/i.test(code0008);
+    const noCredentialsOrSecrets0008 = !/\b(?:password|secret|token|bearer|apikey|api_key|service_role_key|anon_key)\b\s*[:=]/i.test(code0008)
+      && !/'ey[a-zA-Z0-9._-]{20,}'/.test(code0008);
+    const noSecurityDefiner0008 = !/SECURITY\s+DEFINER/i.test(code0008);
+    const noBypassRls0008 = !/\bBYPASSRLS\b/i.test(code0008);
+    const noRoleEscalation0008 = !/\b(?:SET|ALTER)\s+ROLE\b/i.test(code0008)
+      && !/GRANT\s+[^;]*?\bTO\s+[^;]*?\b(?:postgres|supabase_admin|service_role|authenticator|dashboard_user)\b/i.test(code0008);
+    const noDisableRls0008 = !/DISABLE\s+ROW\s+LEVEL\s+SECURITY/i.test(code0008);
+    const noAlteringUnrelatedTables0008 = !/ALTER\s+TABLE\s+(?:ONLY\s+)?(?!consultations\b)\w+/i.test(code0008);
+    const grantOnTables0008 = [...code0008.matchAll(/GRANT\s+[^;]*?\bON\s+(?:TABLE\s+)?([a-zA-Z_]\w*)/gi)].map((m) => m[1].toLowerCase());
+    const revokeOnTables0008 = [...code0008.matchAll(/REVOKE\s+[^;]*?\bON\s+(?:TABLE\s+)?([a-zA-Z_]\w*)/gi)].map((m) => m[1].toLowerCase());
+    const noUnrelatedTablePrivileges0008 = grantOnTables0008.every((t) => t === "consultations") && revokeOnTables0008.every((t) => t === "consultations");
+
+    // 8.4 Status integrity
+    const noSecondStatusConstraint0008 = !/(?:CREATE\s+TYPE|ADD\s+CONSTRAINT|CHECK\s*\([^)]*status|chk_consultations_status)/i.test(code0008);
+    const canonicalStatuses0008 = new Set(["new", "contacted", "qualified", "closed"]);
+    const singleQuoted0008 = code0008.match(/'([^']+)'/g)?.map((s) => s.replace(/'/g, "")) || [];
+    const noInvalidStatusValues0008 = singleQuoted0008.every((val) => val === "admin" || canonicalStatuses0008.has(val));
+    const canonical0006StatusPreserved = /CONSTRAINT\s+chk_consultations_status\s+CHECK\s*\(\s*status\s+IN\s*\(\s*'new',\s*'contacted',\s*'qualified',\s*'closed'\s*\)\s*\)/i.test(sql0006);
+
+    // 8.5 Updated_at trigger contract
+    const fnDefIn0004 = /CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+update_updated_at_column\s*\(\s*\)\s*RETURNS\s+TRIGGER/i.test(sql0004);
+    const noFunctionReplacement0008 = !/CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION/i.test(code0008);
+    const triggerMatches0008 = code0008.match(/CREATE\s+TRIGGER[\s\S]*?;/gi) || [];
+    const hasConsultationsUpdateTrigger0008 = triggerMatches0008.length === 1
+      && /CREATE\s+TRIGGER\s+trg_consultations_updated_at\s+BEFORE\s+UPDATE\s+ON\s+consultations\s+FOR\s+EACH\s+ROW/i.test(triggerMatches0008[0])
+      && /EXECUTE\s+(?:FUNCTION|PROCEDURE)\s+update_updated_at_column\s*\(\s*\)\s*;/i.test(triggerMatches0008[0]);
+
+    // 8.6 Policy verification
+    const updatePolicies0008 = code0008.match(/CREATE\s+POLICY[\s\S]*?ON\s+consultations[\s\S]*?FOR\s+UPDATE[\s\S]*?;/gi) || [];
+    const allPolicies0008 = code0008.match(/CREATE\s+POLICY[\s\S]*?;/gi) || [];
+    const updatePolicy0008 = updatePolicies0008[0] || "";
+    const policyTarget0008 = updatePolicy0008.match(/FOR\s+UPDATE([\s\S]*?)USING/i)?.[1] || "";
+    const hasOneAdminUpdatePolicy0008 = updatePolicies0008.length === 1
+      && allPolicies0008.length === 1
+      && normalizeSql(policyTarget0008) === "TO authenticated";
+    const usingPredicate0008 = extractPolicyClause(updatePolicy0008, "USING");
+    const withCheckPredicate0008 = extractPolicyClause(updatePolicy0008, "WITH CHECK");
+    const hasUsingAndWithCheck0008 = usingPredicate0008 !== null && withCheckPredicate0008 !== null;
+    const bothPredicatesRequireAdmin0008 = normalizeSql(usingPredicate0008 || "") === expectedAdminPredicate
+      && normalizeSql(withCheckPredicate0008 || "") === expectedAdminPredicate;
+    const noDeletePolicyOrGrant0008 = !/FOR\s+DELETE/i.test(code0008) && !/GRANT\s+DELETE/i.test(code0008);
+
+    results.push({
+      category: "0008_consultation_admin_status_update",
+      check: "Rejects table-wide UPDATE; grants only UPDATE(status) to authenticated and rejects other grants",
+      passed: revokesTableWideUpdate0008 && noTableWideUpdate0008 && grantsOnlyStatusUpdate0008 && noOtherColumnUpdate0008 && noAnonUpdateGrant0008 && noOtherRolesUpdate0008 && noForbiddenGrants0008 && soleGrantIsStatusUpdate0008,
+      details: "Table-wide UPDATE revoked; only UPDATE(status) granted to authenticated; SELECT/INSERT/DELETE/ALL forbidden"
+    });
+
+    results.push({
+      category: "0008_consultation_admin_status_update",
+      check: "No privilege escalation, SECURITY DEFINER, service_role, or RLS bypass",
+      passed: noServiceRole0008 && noCredentialsOrSecrets0008 && noSecurityDefiner0008 && noBypassRls0008 && noRoleEscalation0008 && noDisableRls0008 && noAlteringUnrelatedTables0008 && noUnrelatedTablePrivileges0008,
+      details: "No service_role, secrets, SECURITY DEFINER, BYPASSRLS, SET/ALTER ROLE, or cross-table modifications"
+    });
+
+    results.push({
+      category: "0008_consultation_admin_status_update",
+      check: "Status integrity preserved with no duplicate constraints or out-of-scope status values",
+      passed: noSecondStatusConstraint0008 && noInvalidStatusValues0008 && canonical0006StatusPreserved,
+      details: "No duplicate status types or checks; canonical status constraint in 0006 remains sole authority"
+    });
+
+    results.push({
+      category: "0008_consultation_admin_status_update",
+      check: "Consultations updated_at trigger contract reuses established 0004 function without replacement",
+      passed: fnDefIn0004 && noFunctionReplacement0008 && hasConsultationsUpdateTrigger0008,
+      details: "Trigger trg_consultations_updated_at calls update_updated_at_column() without redefining function"
+    });
+
+    results.push({
+      category: "0008_consultation_admin_status_update",
+      check: "Adds exactly one admin-only UPDATE RLS policy with USING and WITH CHECK",
+      passed: hasOneAdminUpdatePolicy0008 && hasUsingAndWithCheck0008 && bothPredicatesRequireAdmin0008 && noDeletePolicyOrGrant0008,
+      details: "Both predicates require profiles.id = auth.uid() and profiles.role = 'admin'"
+    });
+
+    // 9. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
     const isTxn = /^\s*(?:--[^\n]*\n\s*)*BEGIN\s*;/im.test(sqlSeed) && /COMMIT\s*;\s*$/i.test(sqlSeed.trim());
     const subjectsSeed = CANONICAL_SUBJECTS.every((s) => sqlSeed.includes(`'${s.slug}'`));
