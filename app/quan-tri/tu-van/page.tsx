@@ -2,9 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { getAccountAccess } from "@/lib/auth/session";
 import {
-  DEFAULT_CONSULTATION_PAGE_LIMIT,
   listConsultations,
-  MAX_CONSULTATION_PAGE_LIMIT,
   VALID_CONSULTATION_STATUSES,
   type Consultation,
   type ConsultationStatus,
@@ -12,6 +10,9 @@ import {
 } from "@/lib/repositories/consultation-repository";
 
 const INBOX_PATH = "/quan-tri/tu-van";
+const PAGE_SIZE = 20;
+/** Maximum accepted inbox page; its offset remains a safe integer. */
+const MAX_INBOX_PAGE = 10_000;
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
@@ -22,7 +23,7 @@ function firstParam(value: string | string[] | undefined): string | undefined {
 function parsePage(value: string | undefined): number {
   if (!value || !/^\d+$/.test(value)) return 1;
   const page = Number(value);
-  return Number.isSafeInteger(page) && page > 0 ? page : 1;
+  return Number.isSafeInteger(page) && page > 0 && page <= MAX_INBOX_PAGE ? page : 1;
 }
 
 function parseStatus(value: string | undefined): ConsultationStatus | undefined {
@@ -62,7 +63,7 @@ export default async function AdminConsultationInboxPage({
   const access = await getAccountAccess();
 
   if (access.status === "unauthenticated") {
-    redirect(`/dang-nhap?next=${encodeURIComponent(INBOX_PATH)}`);
+    redirect(`/dang-nhap?next=${INBOX_PATH}`);
   }
 
   if (
@@ -77,23 +78,24 @@ export default async function AdminConsultationInboxPage({
   const status = parseStatus(firstParam(params.status));
   const page = parsePage(firstParam(params.page));
   const options: ListConsultationsOptions = {
-    limit: DEFAULT_CONSULTATION_PAGE_LIMIT,
-    offset: (page - 1) * DEFAULT_CONSULTATION_PAGE_LIMIT
+    limit: PAGE_SIZE + 1,
+    offset: (page - 1) * PAGE_SIZE
   };
   if (search) options.search = search;
   if (status) options.status = status;
 
-  let consultations: Consultation[];
+  let fetchedRows: Consultation[];
   let loadFailed = false;
   try {
-    consultations = await listConsultations(options);
+    fetchedRows = await listConsultations(options);
   } catch {
     loadFailed = true;
-    consultations = [];
+    fetchedRows = [];
   }
 
+  const consultations = fetchedRows.slice(0, PAGE_SIZE);
   const hasPreviousPage = page > 1;
-  const hasNextPage = consultations.length === MAX_CONSULTATION_PAGE_LIMIT;
+  const hasNextPage = fetchedRows.length > PAGE_SIZE;
   const previousHref = `${INBOX_PATH}${buildQuery(page - 1, search, status)}`;
   const nextHref = `${INBOX_PATH}${buildQuery(page + 1, search, status)}`;
 
