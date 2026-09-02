@@ -131,7 +131,8 @@ erDiagram
   - Public users may read only published content (`publication_status = 'published'`).
   - Child tables (`materials`, `courses`, `course_lessons`, `tutors`, `tutor_subjects`) restrict reads to items whose parent product is published.
   - User profiles remain strictly private with no public table grants or policies.
-  - Consultation leads (`consultations`) allow restricted public `INSERT` (anon, authenticated) only on specific safe form columns. Database-managed fields (id, status, timestamps) cannot be written by clients. Public `SELECT`/`UPDATE`/`DELETE` are explicitly denied.
+  - Consultation leads (`consultations`) allow restricted public `INSERT` (anon, authenticated) only on specific safe form columns. Database-managed fields (id, status, timestamps) cannot be written by clients.
+  - Consultation read access (`SELECT`) is strictly granted only to authenticated users whose profile `role` is `'admin'`. Anonymous, student, and tutor roles are explicitly denied read access.
   - No public mutation (INSERT, UPDATE, DELETE) grants or policies are permitted (except for explicit `INSERT` forms like `consultations`).
 
 ---
