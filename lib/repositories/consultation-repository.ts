@@ -145,7 +145,7 @@ export async function listConsultations(
     const trimmed = options.search.trim().slice(0, MAX_SEARCH_LENGTH);
     if (trimmed.length > 0) {
       // Remove PostgREST delimiter characters (, () " \) and SQL ILIKE wildcards (% _) to prevent syntax/wildcard injection
-      const cleaned = trimmed.replace(/[,()"\\%_]/g, " ").trim();
+      const cleaned = trimmed.replace(/[,()"\\%_*]/g, " ").trim();
       if (cleaned.length > 0) {
         sanitizedSearch = cleaned;
       }

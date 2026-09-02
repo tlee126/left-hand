@@ -35,7 +35,7 @@ before(async () => {
     exports: {
       createClient: async () => mockClientInstance
     }
-  };
+  } as any;
 
   const repo = await import("../../lib/repositories/consultation-repository");
   listConsultations = repo.listConsultations;
@@ -226,15 +226,15 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
   describe("3. listConsultations: Search by Name and Phone", () => {
 
-    test("sanitizes SQL ILIKE wildcards (% and _) to prevent wildcard expansion", async () => {
+    test("sanitizes SQL ILIKE wildcards to prevent wildcard expansion", async () => {
       const client = createMockClient({ queryData: [SAMPLE_CONSULTATION] });
-      await listConsultations({ search: "Nguy?n%Van_A" });
+      await listConsultations({ search: "Nguyen%Van_A*" });
 
       const orCalls = client._calls.filter((c) => c.method === "or");
       assert.strictEqual(orCalls.length, 1);
       assert.strictEqual(
         orCalls[0].args[0],
-        "full_name.ilike.%Nguy?n Van A%,phone.ilike.%Nguy?n Van A%"
+        "full_name.ilike.%Nguyen Van A%,phone.ilike.%Nguyen Van A%"
       );
     });
 
@@ -544,18 +544,12 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
         // Trigger error during listing with PII-like search
         await assert.rejects(async () => {
-          await listConsultations(
-            { search: "0901234567" },
-            client
-          );
+          await listConsultations({ search: "0901234567" });
         });
 
         // Trigger error during get by ID
         await assert.rejects(async () => {
-          await getConsultationById(
-            "550e8400-e29b-41d4-a716-446655440000",
-            client
-          );
+          await getConsultationById("550e8400-e29b-41d4-a716-446655440000");
         });
 
         const combinedLogs = loggedMessages.join("\n");
