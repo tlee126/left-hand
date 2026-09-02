@@ -133,7 +133,9 @@ erDiagram
   - User profiles remain strictly private with no public table grants or policies.
   - Consultation leads (`consultations`) allow restricted public `INSERT` (anon, authenticated) only on specific safe form columns. Database-managed fields (id, status, timestamps) cannot be written by clients.
   - Consultation read access (`SELECT`) is strictly granted only to authenticated users whose profile `role` is `'admin'`. Anonymous, student, and tutor roles are explicitly denied read access.
-  - No public mutation (INSERT, UPDATE, DELETE) grants or policies are permitted (except for explicit `INSERT` forms like `consultations`).
+  - Consultation status transitions (`UPDATE`) are strictly granted only to authenticated admins, and only for the `status` column. The policy checks the administrator profile in both `USING` and `WITH CHECK`; `anon` receives no update privilege. Valid statuses remain constrained by `chk_consultations_status` to `new`, `contacted`, `qualified`, and `closed`.
+  - Migration `0008_consultation_admin_status_update.sql` attaches the established `update_updated_at_column()` trigger function from migration 0004 to `consultations`. The function was already used by the `profiles` updated-at trigger; it updates the database-managed `updated_at` timestamp during an allowed status update and does not broaden client column privileges.
+  - No public mutation (INSERT, UPDATE, DELETE) grants or policies are permitted except the explicit consultation form `INSERT` and the authenticated-admin `UPDATE(status)` permission above.
 
 ---
 

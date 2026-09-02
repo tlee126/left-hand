@@ -32,7 +32,8 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "0004_profiles_schema_and_policies.sql",
         "0005_account_approval_gate.sql",
         "0006_consultations.sql",
-        "0007_consultation_admin_rls.sql"
+        "0007_consultation_admin_rls.sql",
+        "0008_consultation_admin_status_update.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -198,6 +199,35 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       assert.ok(/CREATE\s+POLICY\s+"[^"]+"\s+ON\s+consultations\s+FOR\s+SELECT\s+TO\s+authenticated/i.test(sql), "must create SELECT policy for authenticated");
       assert.ok(sql.includes("profiles.role = 'admin'") && sql.includes("auth.uid()"), "policy must check profiles.role = 'admin' for auth.uid()");
       assert.ok(!/FOR\s+(INSERT|UPDATE|DELETE)/i.test(sql), "must not add mutation policies");
+    });
+
+    test("0008_consultation_admin_status_update.sql restricts status updates to authenticated admins", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+
+      assert.ok(
+        /REVOKE\s+UPDATE\s+ON\s+TABLE\s+consultations\s+FROM\s+anon,\s*authenticated/i.test(sql),
+        "must revoke table-wide UPDATE from anon and authenticated"
+      );
+      assert.ok(
+        /GRANT\s+UPDATE\s*\(\s*status\s*\)\s+ON\s+TABLE\s+consultations\s+TO\s+authenticated/i.test(sql),
+        "must grant UPDATE on status only to authenticated"
+      );
+      assert.ok(!/GRANT\s+UPDATE[\s\S]*?\bTO\b[\s\S]*?\banon\b/i.test(sql), "must not grant UPDATE to anon");
+      assert.ok(!/GRANT\s+(INSERT|DELETE|ALL)\b/i.test(sql), "must not add other mutation grants");
+      assert.ok(!/GRANT\s+UPDATE\s*\((?!\s*status\s*\))/i.test(sql), "must not grant UPDATE on columns other than status");
+      assert.ok(!/FOR\s+DELETE/i.test(sql) && !/GRANT\s+DELETE/i.test(sql), "must not add DELETE policy or grant");
+
+      const updatePolicies = sql.match(/CREATE\s+POLICY[\s\S]*?ON\s+consultations[\s\S]*?FOR\s+UPDATE[\s\S]*?;/gi) || [];
+      assert.strictEqual(updatePolicies.length, 1, "must create exactly one consultation UPDATE policy");
+      const policy = updatePolicies[0];
+      assert.ok(/FOR\s+UPDATE\s+TO\s+authenticated/i.test(policy), "UPDATE policy must target authenticated");
+      assert.ok(/USING\s*\([\s\S]*?\)\s*WITH\s+CHECK\s*\(/i.test(policy), "policy must include USING and WITH CHECK");
+
+      const adminPredicate = /EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+public\.profiles\s+WHERE\s+profiles\.id\s*=\s*auth\.uid\(\)\s+AND\s+profiles\.role\s*=\s*'admin'\s*\)/i;
+      const usingPredicate = policy.match(/USING\s*\(([\s\S]*?)\)\s*WITH\s+CHECK/i)?.[1] || "";
+      const withCheckPredicate = policy.match(/WITH\s+CHECK\s*\(([\s\S]*?)\)\s*;/i)?.[1] || "";
+      assert.ok(adminPredicate.test(usingPredicate), "USING must require the authenticated admin profile predicate");
+      assert.ok(adminPredicate.test(withCheckPredicate), "WITH CHECK must require the authenticated admin profile predicate");
     });
   });
 

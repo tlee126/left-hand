@@ -39,13 +39,14 @@ async function runAudit(): Promise<void> {
       "0004_profiles_schema_and_policies.sql",
       "0005_account_approval_gate.sql",
       "0006_consultations.sql",
-      "0007_consultation_admin_rls.sql"
+      "0007_consultation_admin_rls.sql",
+      "0008_consultation_admin_status_update.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 6 migration files exist in strict topological order",
+      check: "All 8 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -160,7 +161,39 @@ async function runAudit(): Promise<void> {
       details: "Requires auth.uid() and profiles.role = 'admin', no mutation policies"
     });
 
-    // 8. Audit supabase/seed.sql
+    // 8. Audit 0008_consultation_admin_status_update.sql
+    const sql0008 = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+    const revokesTableWideUpdate = /REVOKE\s+UPDATE\s+ON\s+TABLE\s+consultations\s+FROM\s+anon,\s*authenticated/i.test(sql0008);
+    const grantsOnlyStatusUpdate = /GRANT\s+UPDATE\s*\(\s*status\s*\)\s+ON\s+TABLE\s+consultations\s+TO\s+authenticated/i.test(sql0008);
+    const noAnonUpdateGrant = !/GRANT\s+UPDATE[\s\S]*?\bTO\b[\s\S]*?\banon\b/i.test(sql0008);
+    const noOtherMutationGrants = !/GRANT\s+(?:INSERT|DELETE|ALL)\b/i.test(sql0008)
+      && !/GRANT\s+UPDATE\s*\((?!\s*status\s*\))/i.test(sql0008);
+    const updatePolicies = sql0008.match(/CREATE\s+POLICY[\s\S]*?ON\s+consultations[\s\S]*?FOR\s+UPDATE[\s\S]*?;/gi) || [];
+    const hasOneAdminUpdatePolicy = updatePolicies.length === 1
+      && /FOR\s+UPDATE\s+TO\s+authenticated/i.test(updatePolicies[0]);
+    const hasUsingAndWithCheck = hasOneAdminUpdatePolicy
+      && /USING\s*\([\s\S]*?\)\s*WITH\s+CHECK\s*\(/i.test(updatePolicies[0]);
+    const adminPredicate = /EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+public\.profiles\s+WHERE\s+profiles\.id\s*=\s*auth\.uid\(\)\s+AND\s+profiles\.role\s*=\s*'admin'\s*\)/i;
+    const usingPredicate = updatePolicies[0]?.match(/USING\s*\(([\s\S]*?)\)\s*WITH\s+CHECK/i)?.[1] || "";
+    const withCheckPredicate = updatePolicies[0]?.match(/WITH\s+CHECK\s*\(([\s\S]*?)\)\s*;/i)?.[1] || "";
+    const bothPredicatesRequireAdmin = adminPredicate.test(usingPredicate) && adminPredicate.test(withCheckPredicate);
+    const noDeletePolicyOrGrant = !/FOR\s+DELETE/i.test(sql0008) && !/GRANT\s+DELETE/i.test(sql0008);
+
+    results.push({
+      category: "0008_consultation_admin_status_update",
+      check: "Grants only UPDATE(status) to authenticated and no UPDATE privilege to anon",
+      passed: revokesTableWideUpdate && grantsOnlyStatusUpdate && noAnonUpdateGrant && noOtherMutationGrants,
+      details: "Table-wide UPDATE revoked; authenticated receives UPDATE(status) only"
+    });
+
+    results.push({
+      category: "0008_consultation_admin_status_update",
+      check: "Adds exactly one admin-only UPDATE RLS policy with USING and WITH CHECK",
+      passed: hasOneAdminUpdatePolicy && hasUsingAndWithCheck && bothPredicatesRequireAdmin && noDeletePolicyOrGrant,
+      details: "Both predicates require profiles.id = auth.uid() and profiles.role = 'admin'"
+    });
+
+    // 9. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
     const isTxn = /^\s*(?:--[^\n]*\n\s*)*BEGIN\s*;/im.test(sqlSeed) && /COMMIT\s*;\s*$/i.test(sqlSeed.trim());
     const subjectsSeed = CANONICAL_SUBJECTS.every((s) => sqlSeed.includes(`'${s.slug}'`));
