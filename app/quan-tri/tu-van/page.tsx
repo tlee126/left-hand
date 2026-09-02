@@ -95,7 +95,7 @@ export default async function AdminConsultationInboxPage({
 
   const consultations = fetchedRows.slice(0, PAGE_SIZE);
   const hasPreviousPage = page > 1;
-  const hasNextPage = fetchedRows.length > PAGE_SIZE;
+  const hasNextPage = page < MAX_INBOX_PAGE && fetchedRows.length > PAGE_SIZE;
   const previousHref = `${INBOX_PATH}${buildQuery(page - 1, search, status)}`;
   const nextHref = `${INBOX_PATH}${buildQuery(page + 1, search, status)}`;
 

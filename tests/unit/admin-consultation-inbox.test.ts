@@ -166,6 +166,12 @@ describe("Task 4.2-C: Admin consultation inbox", () => {
     assert.deepEqual(decimal.calls, [{ limit: 21, offset: 0 }]);
   });
 
+  test("does not link past the maximum inbox page", async () => {
+    const result = await runPage({ access: "admin", params: { page: "10000" }, rows: 21 });
+    assert.deepEqual(result.calls, [{ limit: 21, offset: 199980 }]);
+    assert.ok(!result.links?.some((link) => link.href.includes("page=10001")));
+  });
+
   test("renders only a generic Vietnamese error when loading fails", async () => {
     const result = await runPage({ access: "admin", repositoryError: true });
     assert.ok(result.text?.includes("Không thể tải danh sách tư vấn lúc này"));
