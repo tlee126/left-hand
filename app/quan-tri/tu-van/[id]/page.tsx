@@ -14,8 +14,7 @@ function displayValue(value: string | null): string {
   return value?.trim() || "—";
 }
 
-function formatTimestamp(value: string | null): string {
-  if (!value) return "—";
+function formatTimestamp(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   return new Intl.DateTimeFormat("vi-VN", {
