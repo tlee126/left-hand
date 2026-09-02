@@ -63,10 +63,6 @@ export interface ListConsultationsOptions {
   offset?: number;
 }
 
-export interface ConsultationRepositoryClient {
-  from(table: string): any;
-}
-
 /**
  * Lists consultations with optional status filter, search query, and bounded pagination.
  *
@@ -79,8 +75,7 @@ export interface ConsultationRepositoryClient {
  * - Database errors are safely mapped without leaking raw Postgres details or PII.
  */
 export async function listConsultations(
-  options?: ListConsultationsOptions,
-  client?: ConsultationRepositoryClient
+  options?: ListConsultationsOptions
 ): Promise<Consultation[]> {
   if (options !== undefined && options !== null) {
     if (typeof options !== "object" || Array.isArray(options)) {
@@ -149,15 +144,15 @@ export async function listConsultations(
     }
     const trimmed = options.search.trim().slice(0, MAX_SEARCH_LENGTH);
     if (trimmed.length > 0) {
-      // Remove PostgREST delimiter characters (, () " \) to prevent syntax injection
-      const cleaned = trimmed.replace(/[,()"\\]/g, " ").trim();
+      // Remove PostgREST delimiter characters (, () " \) and SQL ILIKE wildcards (% _) to prevent syntax/wildcard injection
+      const cleaned = trimmed.replace(/[,()"\\%_]/g, " ").trim();
       if (cleaned.length > 0) {
         sanitizedSearch = cleaned;
       }
     }
   }
 
-  const supabase = client ?? (await createClient());
+  const supabase = await createClient();
 
   let query = supabase
     .from("consultations")
@@ -210,14 +205,13 @@ export async function listConsultations(
  * - Database failures are safely mapped without leaking raw Postgres details or PII.
  */
 export async function getConsultationById(
-  id: string,
-  client?: ConsultationRepositoryClient
+  id: string
 ): Promise<Consultation | null> {
   if (!isValidUuid(id)) {
     throw new ConsultationInputError("Invalid consultation ID: must be a valid UUID.");
   }
 
-  const supabase = client ?? (await createClient());
+  const supabase = await createClient();
 
   let data: unknown;
   let error: unknown;

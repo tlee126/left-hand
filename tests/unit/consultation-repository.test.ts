@@ -3,24 +3,55 @@
  */
 
 import assert from "node:assert/strict";
-import { test, describe } from "node:test";
+import { test, describe, before, afterEach } from "node:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import {
-  listConsultations,
-  getConsultationById,
-  isValidUuid,
-  ConsultationInputError,
-  ConsultationRepositoryError,
-  VALID_CONSULTATION_STATUSES,
-  CONSULTATION_COLUMNS,
-  CONSULTATION_SELECT_COLUMNS,
-  DEFAULT_CONSULTATION_PAGE_LIMIT,
-  MAX_CONSULTATION_PAGE_LIMIT,
-  MAX_SEARCH_LENGTH,
-  type Consultation,
-  type ListConsultationsOptions
+import type {
+  Consultation,
+  ListConsultationsOptions
 } from "../../lib/repositories/consultation-repository";
+
+let listConsultations: any;
+let getConsultationById: any;
+let isValidUuid: any;
+let ConsultationInputError: any;
+let ConsultationRepositoryError: any;
+let VALID_CONSULTATION_STATUSES: any;
+let CONSULTATION_COLUMNS: any;
+let CONSULTATION_SELECT_COLUMNS: any;
+let DEFAULT_CONSULTATION_PAGE_LIMIT: any;
+let MAX_CONSULTATION_PAGE_LIMIT: any;
+let MAX_SEARCH_LENGTH: any;
+
+let mockClientInstance: any = null;
+
+before(async () => {
+  const serverPath = require.resolve("../../lib/supabase/server");
+  try { require(serverPath); } catch(e) {}
+  require.cache[serverPath] = {
+    id: serverPath,
+    filename: serverPath,
+    loaded: true,
+    exports: {
+      createClient: async () => mockClientInstance
+    }
+  };
+
+  const repo = await import("../../lib/repositories/consultation-repository");
+  listConsultations = repo.listConsultations;
+  getConsultationById = repo.getConsultationById;
+  isValidUuid = repo.isValidUuid;
+  ConsultationInputError = repo.ConsultationInputError;
+  ConsultationRepositoryError = repo.ConsultationRepositoryError;
+  VALID_CONSULTATION_STATUSES = repo.VALID_CONSULTATION_STATUSES;
+  CONSULTATION_COLUMNS = repo.CONSULTATION_COLUMNS;
+  CONSULTATION_SELECT_COLUMNS = repo.CONSULTATION_SELECT_COLUMNS;
+  DEFAULT_CONSULTATION_PAGE_LIMIT = repo.DEFAULT_CONSULTATION_PAGE_LIMIT;
+  MAX_CONSULTATION_PAGE_LIMIT = repo.MAX_CONSULTATION_PAGE_LIMIT;
+  MAX_SEARCH_LENGTH = repo.MAX_SEARCH_LENGTH;
+});
+
+afterEach(() => { mockClientInstance = null; });
 
 interface MockQueryCall {
   method: string;
@@ -83,6 +114,7 @@ function createMockClient(options?: {
     }
   };
 
+  mockClientInstance = client;
   return client;
 }
 
@@ -108,7 +140,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
   describe("1. listConsultations: Defaults and No Filters", () => {
     test("list with no filters queries consultations table with explicit columns and default pagination", async () => {
       const client = createMockClient({ queryData: [SAMPLE_CONSULTATION] });
-      const results = await listConsultations(undefined, client);
+      const results = await listConsultations(undefined);
 
       assert.deepStrictEqual(results, [SAMPLE_CONSULTATION]);
 
@@ -132,7 +164,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
     test("list with empty options object applies default pagination", async () => {
       const client = createMockClient({ queryData: [] });
-      const results = await listConsultations({}, client);
+      const results = await listConsultations({});
 
       assert.deepStrictEqual(results, []);
       const rangeCall = client._calls.find((c) => c.method === "range");
@@ -145,7 +177,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
     test("valid status filters are accepted and passed to eq()", async () => {
       for (const status of VALID_CONSULTATION_STATUSES) {
         const client = createMockClient({ queryData: [SAMPLE_CONSULTATION] });
-        const results = await listConsultations({ status }, client);
+        const results = await listConsultations({ status });
 
         assert.deepStrictEqual(results, [SAMPLE_CONSULTATION]);
 
@@ -171,7 +203,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         const client = createMockClient({ queryData: [] });
         await assert.rejects(
           async () => {
-            await listConsultations({ status: invalidStatus }, client);
+            await listConsultations({ status: invalidStatus });
           },
           (err: unknown) => {
             assert.ok(err instanceof ConsultationInputError);
@@ -193,9 +225,22 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
   });
 
   describe("3. listConsultations: Search by Name and Phone", () => {
+
+    test("sanitizes SQL ILIKE wildcards (% and _) to prevent wildcard expansion", async () => {
+      const client = createMockClient({ queryData: [SAMPLE_CONSULTATION] });
+      await listConsultations({ search: "Nguy?n%Van_A" });
+
+      const orCalls = client._calls.filter((c) => c.method === "or");
+      assert.strictEqual(orCalls.length, 1);
+      assert.strictEqual(
+        orCalls[0].args[0],
+        "full_name.ilike.%Nguy?n Van A%,phone.ilike.%Nguy?n Van A%"
+      );
+    });
+
     test("searches by full_name and phone using PostgREST or filter", async () => {
       const client = createMockClient({ queryData: [SAMPLE_CONSULTATION] });
-      await listConsultations({ search: "Nguyễn Văn A" }, client);
+      await listConsultations({ search: "Nguyễn Văn A" });
 
       const orCalls = client._calls.filter((c) => c.method === "or");
       assert.strictEqual(orCalls.length, 1);
@@ -207,7 +252,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
     test("searches by phone number accurately", async () => {
       const client = createMockClient({ queryData: [SAMPLE_CONSULTATION] });
-      await listConsultations({ search: "0901234567" }, client);
+      await listConsultations({ search: "0901234567" });
 
       const orCalls = client._calls.filter((c) => c.method === "or");
       assert.strictEqual(orCalls.length, 1);
@@ -219,7 +264,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
     test("trims leading/trailing whitespace on search input", async () => {
       const client = createMockClient({ queryData: [SAMPLE_CONSULTATION] });
-      await listConsultations({ search: "   0901234567   " }, client);
+      await listConsultations({ search: "   0901234567   " });
 
       const orCalls = client._calls.filter((c) => c.method === "or");
       assert.strictEqual(orCalls.length, 1);
@@ -232,7 +277,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
     test("bounds long search query to maximum allowed length", async () => {
       const client = createMockClient({ queryData: [SAMPLE_CONSULTATION] });
       const longQuery = "a".repeat(200);
-      await listConsultations({ search: longQuery }, client);
+      await listConsultations({ search: longQuery });
 
       const orCalls = client._calls.filter((c) => c.method === "or");
       assert.strictEqual(orCalls.length, 1);
@@ -245,7 +290,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
     test("sanitizes PostgREST syntax injection characters from search query", async () => {
       const client = createMockClient({ queryData: [SAMPLE_CONSULTATION] });
-      await listConsultations({ search: 'Nguyễn, An (Test) "quote" \\' }, client);
+      await listConsultations({ search: 'Nguyễn, An (Test) "quote" \\' });
 
       const orCalls = client._calls.filter((c) => c.method === "or");
       assert.strictEqual(orCalls.length, 1);
@@ -257,7 +302,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
     test("whitespace-only search query does not add an or filter", async () => {
       const client = createMockClient({ queryData: [SAMPLE_CONSULTATION] });
-      await listConsultations({ search: "     " }, client);
+      await listConsultations({ search: "     " });
 
       const orCalls = client._calls.filter((c) => c.method === "or");
       assert.strictEqual(orCalls.length, 0);
@@ -267,7 +312,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
       const client = createMockClient({ queryData: [] });
       await assert.rejects(
         async () => {
-          await listConsultations({ search: 12345 as any }, client);
+          await listConsultations({ search: 12345 as any });
         },
         ConsultationInputError
       );
@@ -278,7 +323,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
   describe("4. listConsultations: Bounded Pagination", () => {
     test("accepts valid limit and offset within bounds", async () => {
       const client = createMockClient({ queryData: [SAMPLE_CONSULTATION] });
-      await listConsultations({ limit: 50, offset: 20 }, client);
+      await listConsultations({ limit: 50, offset: 20 });
 
       const rangeCall = client._calls.find((c) => c.method === "range");
       assert.ok(rangeCall);
@@ -287,12 +332,12 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
     test("accepts boundary limit of 1 and max limit of 100", async () => {
       const client1 = createMockClient({ queryData: [] });
-      await listConsultations({ limit: 1, offset: 0 }, client1);
+      await listConsultations({ limit: 1, offset: 0 });
       const range1 = client1._calls.find((c) => c.method === "range");
       assert.deepStrictEqual(range1?.args, [0, 0]);
 
       const clientMax = createMockClient({ queryData: [] });
-      await listConsultations({ limit: MAX_CONSULTATION_PAGE_LIMIT, offset: 50 }, clientMax);
+      await listConsultations({ limit: MAX_CONSULTATION_PAGE_LIMIT, offset: 50 });
       const rangeMax = clientMax._calls.find((c) => c.method === "range");
       assert.deepStrictEqual(rangeMax?.args, [50, 149]);
     });
@@ -301,7 +346,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
       const client = createMockClient({ queryData: [] });
       await assert.rejects(
         async () => {
-          await listConsultations({ limit: 101 }, client);
+          await listConsultations({ limit: 101 });
         },
         (err: unknown) => {
           assert.ok(err instanceof ConsultationInputError);
@@ -318,7 +363,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         const client = createMockClient({ queryData: [] });
         await assert.rejects(
           async () => {
-            await listConsultations({ limit }, client);
+            await listConsultations({ limit });
           },
           ConsultationInputError,
           `Limit ${limit} should be rejected`
@@ -333,7 +378,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         const client = createMockClient({ queryData: [] });
         await assert.rejects(
           async () => {
-            await listConsultations({ offset }, client);
+            await listConsultations({ offset });
           },
           ConsultationInputError,
           `Offset ${offset} should be rejected`
@@ -346,7 +391,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
   describe("5. listConsultations: Deterministic Ordering", () => {
     test("orders newest first by created_at DESC with id DESC as tie-breaker", async () => {
       const client = createMockClient({ queryData: [SAMPLE_CONSULTATION] });
-      await listConsultations(undefined, client);
+      await listConsultations(undefined);
 
       const orderCalls = client._calls.filter((c) => c.method === "order");
       assert.strictEqual(orderCalls.length, 2, "Must specify two ordering criteria");
@@ -358,7 +403,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
   describe("6. getConsultationById: Valid UUID Lookup", () => {
     test("retrieves consultation by valid UUID using explicit columns and maybeSingle", async () => {
       const client = createMockClient({ queryData: SAMPLE_CONSULTATION });
-      const result = await getConsultationById(SAMPLE_CONSULTATION.id, client);
+      const result = await getConsultationById(SAMPLE_CONSULTATION.id);
 
       assert.deepStrictEqual(result, SAMPLE_CONSULTATION);
 
@@ -380,7 +425,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
     test("returns null when consultation is not found", async () => {
       const client = createMockClient({ queryData: null });
-      const result = await getConsultationById(SAMPLE_CONSULTATION.id, client);
+      const result = await getConsultationById(SAMPLE_CONSULTATION.id);
 
       assert.strictEqual(result, null);
     });
@@ -406,7 +451,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         const client = createMockClient({ queryData: null });
         await assert.rejects(
           async () => {
-            await getConsultationById(id, client);
+            await getConsultationById(id);
           },
           (err: unknown) => {
             assert.ok(err instanceof ConsultationInputError);
@@ -441,7 +486,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
       await assert.rejects(
         async () => {
-          await listConsultations(undefined, client);
+          await listConsultations(undefined);
         },
         (err: unknown) => {
           assert.ok(err instanceof ConsultationRepositoryError);
@@ -466,7 +511,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
       await assert.rejects(
         async () => {
-          await getConsultationById(SAMPLE_CONSULTATION.id, client);
+          await getConsultationById(SAMPLE_CONSULTATION.id);
         },
         (err: unknown) => {
           assert.ok(err instanceof ConsultationRepositoryError);
@@ -540,7 +585,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         const client = createMockClient({ queryData: [] });
         await assert.rejects(
           async () => {
-            await listConsultations(dangerous, client);
+            await listConsultations(dangerous);
           },
           (err: unknown) => {
             assert.ok(err instanceof ConsultationInputError);
