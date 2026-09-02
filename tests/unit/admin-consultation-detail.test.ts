@@ -11,6 +11,7 @@ type Scenario = {
   record?: boolean;
   repositoryError?: boolean;
   inbox?: boolean;
+  nullableFields?: boolean;
 };
 
 const runtimeHarness = String.raw`
@@ -29,9 +30,9 @@ const access = scenario.access === "anonymous"
       : { status: "approved", user: {}, profile: { role: "admin" } };
 const record = {
   id: scenario.id, request_id: "request-1", full_name: "Nguyen Van A", phone: "0901234567",
-  faculty: "Khoa Toan", major: "Toan ung dung", interest: "Hoc bong", need: "Can tu van chi tiet",
-  note: "PII_NOTE_123", source_path: "/khoa-hoc/toan", selected_product_slug: "product-secret",
-  selected_subject_slug: "subject-secret", status: "new", created_at: "2026-01-01T00:00:00.000Z",
+  faculty: "Khoa Toan", major: scenario.nullableFields ? null : "Toan ung dung", interest: "Hoc bong", need: "Can tu van chi tiet",
+  note: scenario.nullableFields ? null : "PII_NOTE_123", source_path: scenario.nullableFields ? null : "/khoa-hoc/toan", selected_product_slug: scenario.nullableFields ? null : "product-secret",
+  selected_subject_slug: scenario.nullableFields ? null : "subject-secret", status: "new", created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z"
 };
 const authModule = "data:text/javascript,auth-module";
@@ -99,8 +100,15 @@ describe("Task 4.2-D: Admin consultation detail", () => {
   test("loads and renders an approved consultation as display-only text", async () => {
     const result = await runPage({ access: "admin", id: validId });
     assert.deepEqual(result.calls, [validId]);
-    for (const value of ["Nguyen Van A", "0901234567", "PII_NOTE_123", "product-secret", "subject-secret", "new"]) assert.ok(result.text?.includes(value));
+    for (const value of [validId, "request-1", "Nguyen Van A", "0901234567", "PII_NOTE_123", "product-secret", "subject-secret", "new"]) assert.ok(result.text?.includes(value));
     assert.ok(result.links?.some((link) => link.href === "/quan-tri/tu-van" && link.text.includes("Quay")));
+  });
+  test("renders fallback values for nullable consultation fields", async () => {
+    const result = await runPage({ access: "admin", id: validId, nullableFields: true });
+    assert.deepEqual(result.calls, [validId]);
+    assert.ok(result.text?.includes(validId));
+    assert.ok(result.text?.includes("request-1"));
+    assert.equal(result.text?.match(/—/g)?.length, 5);
   });
   test("inbox lead name links to the lead UUID detail path", async () => {
     const result = await runPage({ access: "admin", id: validId, inbox: true });

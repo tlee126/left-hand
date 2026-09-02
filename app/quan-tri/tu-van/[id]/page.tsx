@@ -36,6 +36,8 @@ function DetailField({ label, value }: { label: string; value: string }): ReactN
 function ConsultationDetails({ consultation }: { consultation: Consultation }): ReactNode {
   return (
     <dl className="grid gap-6 sm:grid-cols-2">
+      <DetailField label="ID lead" value={consultation.id} />
+      <DetailField label="Mã yêu cầu" value={consultation.request_id} />
       <DetailField label="Họ và tên" value={displayValue(consultation.full_name)} />
       <DetailField label="Số điện thoại" value={displayValue(consultation.phone)} />
       <DetailField label="Khoa" value={displayValue(consultation.faculty)} />
