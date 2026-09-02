@@ -3,7 +3,7 @@
 This document outlines the PostgreSQL database schema for the LEFT HAND learning platform, designed for Supabase.
 
 > [!NOTE]
-> **Status:** Initial migration files (`supabase/migrations/0001_core_schema.sql` and `supabase/seed.sql`) are prepared locally and have **NOT** yet been applied to the hosted Supabase project.
+> **Status:** Topological migrations `0001_core_schema.sql` through `0008_consultation_admin_status_update.sql` and idempotent `supabase/seed.sql` are prepared locally and verified via automated contract checks. They have **NOT** yet been applied to the hosted Supabase project.
 
 ---
 
@@ -121,6 +121,8 @@ erDiagram
 - No fractional cents or formatted strings (`29.000đ`) are stored in the database.
 - Contact pricing is enforced via `is_contact_for_price = true` with `price_vnd IS NULL` via check constraint `chk_pricing_consistency`.
 
+---
+
 ## 4. Security & Row Level Security (RLS) Policy
 
 - **Supabase Auth Integration:** `profiles.id` is explicitly anchored to `auth.users(id)` with `ON DELETE CASCADE`. No detached or unauthenticated profile records can exist.
@@ -131,11 +133,18 @@ erDiagram
   - Public users may read only published content (`publication_status = 'published'`).
   - Child tables (`materials`, `courses`, `course_lessons`, `tutors`, `tutor_subjects`) restrict reads to items whose parent product is published.
   - User profiles remain strictly private with no public table grants or policies.
+- **Consultation Form Insert Security (`0006_consultations.sql`):**
   - Consultation leads (`consultations`) allow restricted public `INSERT` (anon, authenticated) only on specific safe form columns. Database-managed fields (id, status, timestamps) cannot be written by clients.
+  - Canonical status constraint `chk_consultations_status` enforces exactly `'new'`, `'contacted'`, `'qualified'`, and `'closed'`.
+- **Consultation Admin Read Access (`0007_consultation_admin_rls.sql`):**
   - Consultation read access (`SELECT`) is strictly granted only to authenticated users whose profile `role` is `'admin'`. Anonymous, student, and tutor roles are explicitly denied read access.
-  - Consultation status transitions (`UPDATE`) are strictly granted only to authenticated admins, and only for the `status` column. The policy checks the administrator profile in both `USING` and `WITH CHECK`; `anon` receives no update privilege. Valid statuses remain constrained by `chk_consultations_status` to `new`, `contacted`, `qualified`, and `closed`.
-  - Migration `0008_consultation_admin_status_update.sql` attaches the established `update_updated_at_column()` trigger function from migration 0004 to `consultations`. The function was already used by the `profiles` updated-at trigger; it updates the database-managed `updated_at` timestamp during an allowed status update and does not broaden client column privileges.
-  - No public mutation (INSERT, UPDATE, DELETE) grants or policies are permitted except the explicit consultation form `INSERT` and the authenticated-admin `UPDATE(status)` permission above.
+- **Consultation Admin Status Update Hardening (`0008_consultation_admin_status_update.sql` / Task 4.2-E-A):**
+  - **Rejection of Table-wide UPDATE Grants:** Table-wide `GRANT UPDATE ON TABLE consultations` is strictly rejected for all roles. Migration 0008 explicitly revokes table-wide `UPDATE` from `anon` and `authenticated`.
+  - **Strict Mutation Grant Restriction:** The sole permitted grant in migration 0008 is `GRANT UPDATE (status) ON TABLE consultations TO authenticated;`. Grants of `SELECT`, `INSERT`, `DELETE`, or `ALL` (both table-wide and column-level) are forbidden.
+  - **Privilege Escalation & RLS Bypass Safeguards:** Migration 0008 contains no references to `service_role`, hardcoded secrets/tokens/credentials, `SECURITY DEFINER`, `BYPASSRLS`, `SET ROLE`, or `ALTER ROLE`. RLS disabling and altering unrelated tables are strictly rejected.
+  - **Status Integrity Contract:** Migration 0008 does not introduce secondary status types, enums, checks, or constraints. The canonical status constraint remains `chk_consultations_status` defined in migration 0006.
+  - **Trigger Contract:** Trigger `trg_consultations_updated_at` targets `consultations` before update for each row and executes the established `update_updated_at_column()` function from migration 0004 without defining a replacement or using `SECURITY DEFINER`.
+  - **Dual-Predicate Admin RLS Policy:** Exactly one UPDATE policy (`consultations_allow_update_status_admin`) is created, targeting `authenticated`. Both `USING` and `WITH CHECK` clauses require `EXISTS (SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')`. No DELETE policy or grants exist.
 
 ---
 
@@ -160,9 +169,13 @@ npx supabase db reset # (or run psql against supabase/seed.sql)
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0001_core_schema.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0002_public_catalog_read_policies.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0003_public_catalog_table_grants.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0004_profiles_schema_and_policies.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0005_account_approval_gate.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0006_consultations.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0007_consultation_admin_rls.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0008_consultation_admin_status_update.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/seed.sql
 ```
 
 > [!IMPORTANT]
 > The seed script `supabase/seed.sql` is fully idempotent using `ON CONFLICT (...) DO UPDATE` and can be executed repeatedly without generating duplicate records.
-
