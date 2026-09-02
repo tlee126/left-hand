@@ -16,6 +16,36 @@ import { materials, courses, tutors } from "../../data/catalog";
 import { CANONICAL_SUBJECTS } from "../../lib/domain/subjects";
 import { parseVND } from "../../lib/domain/product-types";
 
+const expectedAdminPredicate = "EXISTS ( SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin' )";
+
+function normalizeSql(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function extractPolicyClause(policy: string, clauseName: "USING" | "WITH CHECK"): string | null {
+  const clauseStart = new RegExp(`\\b${clauseName}\\s*\\(`, "i").exec(policy);
+  if (!clauseStart) return null;
+
+  const openingParen = policy.indexOf("(", clauseStart.index);
+  let depth = 0;
+  let inString = false;
+  for (let index = openingParen; index < policy.length; index += 1) {
+    const character = policy[index];
+    if (character === "'" && policy[index + 1] === "'") {
+      index += 1;
+      continue;
+    }
+    if (character === "'") inString = !inString;
+    if (inString) continue;
+    if (character === "(") depth += 1;
+    if (character === ")") {
+      depth -= 1;
+      if (depth === 0) return policy.slice(openingParen + 1, index);
+    }
+  }
+  return null;
+}
+
 /**
  * Hardened contract assertion helper for migration 0008 (consultation admin status update).
  * Validates positive invariants and rejects forbidden grants, bypasses, and duplicate constraints.
@@ -114,13 +144,13 @@ function assertMigration0008Contract(
   const allPolicies = code.match(/CREATE\s+POLICY[\s\S]*?;/gi) || [];
   assert.strictEqual(allPolicies.length, 1, "Must have exactly one CREATE POLICY statement in 0008");
   assert.strictEqual(updatePolicies.length, 1, "The single policy must be an UPDATE policy on consultations");
-  assert.ok(/FOR\s+UPDATE\s+TO\s+authenticated/i.test(updatePolicies[0]), "UPDATE policy must target authenticated");
-  assert.ok(/USING\s*\([\s\S]*?\)\s*WITH\s+CHECK\s*\(/i.test(updatePolicies[0]), "Policy must include both USING and WITH CHECK");
-  const adminPredicate = /EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+public\.profiles\s+WHERE\s+profiles\.id\s*=\s*auth\.uid\(\)\s+AND\s+profiles\.role\s*=\s*'admin'\s*\)/i;
-  const usingClause = updatePolicies[0]?.match(/USING\s*\(([\s\S]*?)\)\s*WITH\s+CHECK/i)?.[1] || "";
-  const withCheckClause = updatePolicies[0]?.match(/WITH\s+CHECK\s*\(([\s\S]*?)\)\s*;/i)?.[1] || "";
-  assert.ok(adminPredicate.test(usingClause), "USING clause must require auth.uid() admin profile check");
-  assert.ok(adminPredicate.test(withCheckClause), "WITH CHECK clause must require auth.uid() admin profile check");
+  const usingClause = extractPolicyClause(updatePolicies[0] || "", "USING");
+  const withCheckClause = extractPolicyClause(updatePolicies[0] || "", "WITH CHECK");
+  assert.ok(usingClause !== null && withCheckClause !== null, "Policy must include both USING and WITH CHECK");
+  assert.strictEqual(normalizeSql(usingClause || ""), expectedAdminPredicate, "USING clause must be exactly the admin profile check and require auth.uid() admin profile check");
+  assert.strictEqual(normalizeSql(withCheckClause || ""), expectedAdminPredicate, "WITH CHECK clause must be exactly the admin profile check and require auth.uid() admin profile check");
+  const policyTarget = updatePolicies[0]?.match(/FOR\s+UPDATE([\s\S]*?)USING/i)?.[1] || "";
+  assert.strictEqual(normalizeSql(policyTarget), "TO authenticated", "UPDATE policy must target only authenticated");
   assert.ok(!/FOR\s+DELETE/i.test(code) && !/GRANT\s+DELETE/i.test(code), "Must not include DELETE policy or grant");
 
   // 6. Status integrity
@@ -528,6 +558,25 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
 
       const bypassPredicateSql = sql.replace(/USING\s*\([\s\S]*?\)\s*WITH CHECK/, "USING (true)\nWITH CHECK");
       assert.throws(() => assertMigration0008Contract(bypassPredicateSql), /auth\.uid\(\) admin profile check/i);
+
+      const usingOrTrueSql = sql.replace(/\n\)\s*WITH CHECK/, " OR true\n)\nWITH CHECK");
+      assert.throws(() => assertMigration0008Contract(usingOrTrueSql), /USING clause must be exactly/i);
+
+      const withCheckOrTrueSql = sql.replace(/\n\);\s*$/, " OR true\n);");
+      assert.throws(() => assertMigration0008Contract(withCheckOrTrueSql), /WITH CHECK clause must be exactly/i);
+    });
+
+    test("rejects UPDATE policies with anon, public, or any additional target role", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+
+      const authenticatedAnonSql = sql.replace("FOR UPDATE\nTO authenticated", "FOR UPDATE\nTO authenticated, anon");
+      assert.throws(() => assertMigration0008Contract(authenticatedAnonSql), /only authenticated/i);
+
+      const authenticatedPublicSql = sql.replace("FOR UPDATE\nTO authenticated", "FOR UPDATE\nTO authenticated, public");
+      assert.throws(() => assertMigration0008Contract(authenticatedPublicSql), /only authenticated/i);
+
+      const authenticatedOtherRoleSql = sql.replace("FOR UPDATE\nTO authenticated", "FOR UPDATE\nTO authenticated, moderator");
+      assert.throws(() => assertMigration0008Contract(authenticatedOtherRoleSql), /only authenticated/i);
     });
 
     test("rejects SECURITY DEFINER, service_role, and RLS bypasses", async () => {
@@ -536,7 +585,6 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       const securityDefinerSql = sql + "\nCREATE OR REPLACE FUNCTION bypass() RETURNS void AS $$ $$ LANGUAGE plpgsql SECURITY DEFINER;";
       assert.throws(() => assertMigration0008Contract(securityDefinerSql), /SECURITY DEFINER/i);
 
-      const serviceRoleSql = sql + "\n-- comment\nSELECT 1;\n-- service_role reference\nGRANT UPDATE (status) ON TABLE consultations TO authenticated;\n-- service_role token\nDO $$ BEGIN PERFORM 1; END $$;";
       const serviceRoleTargetSql = sql.replace("TO authenticated;", "TO service_role;");
       assert.throws(() => assertMigration0008Contract(serviceRoleTargetSql), /service_role/i);
 

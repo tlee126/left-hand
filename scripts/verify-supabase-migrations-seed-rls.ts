@@ -17,6 +17,36 @@ interface AuditResult {
   details?: string;
 }
 
+const expectedAdminPredicate = "EXISTS ( SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin' )";
+
+function normalizeSql(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function extractPolicyClause(policy: string, clauseName: "USING" | "WITH CHECK"): string | null {
+  const clauseStart = new RegExp(`\\b${clauseName}\\s*\\(`, "i").exec(policy);
+  if (!clauseStart) return null;
+
+  const openingParen = policy.indexOf("(", clauseStart.index);
+  let depth = 0;
+  let inString = false;
+  for (let index = openingParen; index < policy.length; index += 1) {
+    const character = policy[index];
+    if (character === "'" && policy[index + 1] === "'") {
+      index += 1;
+      continue;
+    }
+    if (character === "'") inString = !inString;
+    if (inString) continue;
+    if (character === "(") depth += 1;
+    if (character === ")") {
+      depth -= 1;
+      if (depth === 0) return policy.slice(openingParen + 1, index);
+    }
+  }
+  return null;
+}
+
 async function runAudit(): Promise<void> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -212,15 +242,16 @@ async function runAudit(): Promise<void> {
     // 8.6 Policy verification
     const updatePolicies0008 = code0008.match(/CREATE\s+POLICY[\s\S]*?ON\s+consultations[\s\S]*?FOR\s+UPDATE[\s\S]*?;/gi) || [];
     const allPolicies0008 = code0008.match(/CREATE\s+POLICY[\s\S]*?;/gi) || [];
+    const updatePolicy0008 = updatePolicies0008[0] || "";
+    const policyTarget0008 = updatePolicy0008.match(/FOR\s+UPDATE([\s\S]*?)USING/i)?.[1] || "";
     const hasOneAdminUpdatePolicy0008 = updatePolicies0008.length === 1
       && allPolicies0008.length === 1
-      && /FOR\s+UPDATE\s+TO\s+authenticated/i.test(updatePolicies0008[0]);
-    const hasUsingAndWithCheck0008 = hasOneAdminUpdatePolicy0008
-      && /USING\s*\([\s\S]*?\)\s*WITH\s+CHECK\s*\(/i.test(updatePolicies0008[0]);
-    const adminPredicate0008 = /EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+public\.profiles\s+WHERE\s+profiles\.id\s*=\s*auth\.uid\(\)\s+AND\s+profiles\.role\s*=\s*'admin'\s*\)/i;
-    const usingPredicate0008 = updatePolicies0008[0]?.match(/USING\s*\(([\s\S]*?)\)\s*WITH\s+CHECK/i)?.[1] || "";
-    const withCheckPredicate0008 = updatePolicies0008[0]?.match(/WITH\s+CHECK\s*\(([\s\S]*?)\)\s*;/i)?.[1] || "";
-    const bothPredicatesRequireAdmin0008 = adminPredicate0008.test(usingPredicate0008) && adminPredicate0008.test(withCheckPredicate0008);
+      && normalizeSql(policyTarget0008) === "TO authenticated";
+    const usingPredicate0008 = extractPolicyClause(updatePolicy0008, "USING");
+    const withCheckPredicate0008 = extractPolicyClause(updatePolicy0008, "WITH CHECK");
+    const hasUsingAndWithCheck0008 = usingPredicate0008 !== null && withCheckPredicate0008 !== null;
+    const bothPredicatesRequireAdmin0008 = normalizeSql(usingPredicate0008 || "") === expectedAdminPredicate
+      && normalizeSql(withCheckPredicate0008 || "") === expectedAdminPredicate;
     const noDeletePolicyOrGrant0008 = !/FOR\s+DELETE/i.test(code0008) && !/GRANT\s+DELETE/i.test(code0008);
 
     results.push({
