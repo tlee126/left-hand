@@ -10,13 +10,12 @@ import {
 
 const INBOX_PATH = "/quan-tri/tu-van";
 
-function displayValue(value: string | null): string {
+function displayNullableValue(value: string | null): string {
   return value?.trim() || "—";
 }
 
 function formatTimestamp(value: string): string {
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
   return new Intl.DateTimeFormat("vi-VN", {
     dateStyle: "medium",
     timeStyle: "short"
@@ -37,17 +36,17 @@ function ConsultationDetails({ consultation }: { consultation: Consultation }): 
     <dl className="grid gap-6 sm:grid-cols-2">
       <DetailField label="ID lead" value={consultation.id} />
       <DetailField label="Mã yêu cầu" value={consultation.request_id} />
-      <DetailField label="Họ và tên" value={displayValue(consultation.full_name)} />
-      <DetailField label="Số điện thoại" value={displayValue(consultation.phone)} />
-      <DetailField label="Khoa" value={displayValue(consultation.faculty)} />
-      <DetailField label="Chuyên ngành" value={displayValue(consultation.major)} />
-      <DetailField label="Mối quan tâm" value={displayValue(consultation.interest)} />
-      <DetailField label="Nhu cầu" value={displayValue(consultation.need)} />
-      <DetailField label="Ghi chú" value={displayValue(consultation.note)} />
-      <DetailField label="Đường dẫn nguồn" value={displayValue(consultation.source_path)} />
-      <DetailField label="Slug sản phẩm đã chọn" value={displayValue(consultation.selected_product_slug)} />
-      <DetailField label="Slug môn học đã chọn" value={displayValue(consultation.selected_subject_slug)} />
-      <DetailField label="Trạng thái" value={displayValue(consultation.status)} />
+      <DetailField label="Họ và tên" value={consultation.full_name} />
+      <DetailField label="Số điện thoại" value={consultation.phone} />
+      <DetailField label="Khoa" value={consultation.faculty} />
+      <DetailField label="Chuyên ngành" value={displayNullableValue(consultation.major)} />
+      <DetailField label="Mối quan tâm" value={consultation.interest} />
+      <DetailField label="Nhu cầu" value={consultation.need} />
+      <DetailField label="Ghi chú" value={displayNullableValue(consultation.note)} />
+      <DetailField label="Đường dẫn nguồn" value={displayNullableValue(consultation.source_path)} />
+      <DetailField label="Slug sản phẩm đã chọn" value={displayNullableValue(consultation.selected_product_slug)} />
+      <DetailField label="Slug môn học đã chọn" value={displayNullableValue(consultation.selected_subject_slug)} />
+      <DetailField label="Trạng thái" value={consultation.status} />
       <DetailField label="Thời gian tạo" value={formatTimestamp(consultation.created_at)} />
       <DetailField label="Thời gian cập nhật" value={formatTimestamp(consultation.updated_at)} />
     </dl>
