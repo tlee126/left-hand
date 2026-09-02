@@ -620,5 +620,15 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       const replacementFnSql = sql + "\nCREATE OR REPLACE FUNCTION update_updated_at_column() RETURNS TRIGGER AS $$ BEGIN RETURN NEW; END; $$ LANGUAGE plpgsql;";
       assert.throws(() => assertMigration0008Contract(replacementFnSql), /must not define or replace trigger function/i);
     });
+
+    test("rejects cross-table privilege grants and revokes targeting other tables", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+
+      const crossTableGrantSql = sql + "\nGRANT SELECT ON TABLE profiles TO authenticated;";
+      assert.throws(() => assertMigration0008Contract(crossTableGrantSql), /only target consultations table/i);
+
+      const crossTableRevokeSql = sql + "\nREVOKE UPDATE ON TABLE profiles FROM authenticated;";
+      assert.throws(() => assertMigration0008Contract(crossTableRevokeSql), /only target consultations table/i);
+    });
   });
 });
