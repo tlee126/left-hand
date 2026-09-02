@@ -61,7 +61,6 @@ export interface ListConsultationsOptions {
   search?: string;
   limit?: number;
   offset?: number;
-  client?: ConsultationRepositoryClient;
 }
 
 export interface ConsultationRepositoryClient {
@@ -158,7 +157,7 @@ export async function listConsultations(
     }
   }
 
-  const supabase = client ?? options?.client ?? (await createClient());
+  const supabase = client ?? (await createClient());
 
   let query = supabase
     .from("consultations")
