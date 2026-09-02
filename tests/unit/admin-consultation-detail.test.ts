@@ -100,7 +100,26 @@ describe("Task 4.2-D: Admin consultation detail", () => {
   test("loads and renders an approved consultation as display-only text", async () => {
     const result = await runPage({ access: "admin", id: validId });
     assert.deepEqual(result.calls, [validId]);
-    for (const value of [validId, "request-1", "Nguyen Van A", "0901234567", "PII_NOTE_123", "product-secret", "subject-secret", "new"]) assert.ok(result.text?.includes(value));
+    const formatTimestamp = (value: string) => new Intl.DateTimeFormat("vi-VN", {
+      dateStyle: "medium",
+      timeStyle: "short"
+    }).format(new Date(value));
+    for (const value of [
+      validId,
+      "request-1",
+      "Nguyen Van A",
+      "0901234567",
+      "Khoa Toan",
+      "Toan ung dung",
+      "Hoc bong",
+      "Can tu van chi tiet",
+      "new",
+      "PII_NOTE_123",
+      "product-secret",
+      "subject-secret",
+      formatTimestamp("2026-01-01T00:00:00.000Z"),
+      formatTimestamp("2026-01-02T00:00:00.000Z")
+    ]) assert.ok(result.text?.includes(value));
     assert.ok(result.links?.some((link) => link.href === "/quan-tri/tu-van" && link.text.includes("Quay")));
   });
   test("renders fallback values for nullable consultation fields", async () => {
