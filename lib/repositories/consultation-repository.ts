@@ -35,6 +35,21 @@ export const CONSULTATION_COLUMNS = [
 
 export const CONSULTATION_SELECT_COLUMNS = CONSULTATION_COLUMNS.join(", ");
 
+export const CONSULTATION_STATUS_UPDATE_COLUMNS = [
+  "id",
+  "status",
+  "updated_at"
+] as const;
+
+export const CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS =
+  CONSULTATION_STATUS_UPDATE_COLUMNS.join(", ");
+
+export interface UpdatedConsultationStatus {
+  id: string;
+  status: ConsultationStatus;
+  updated_at: string;
+}
+
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -237,4 +252,73 @@ export async function getConsultationById(
   }
 
   return (data as unknown as Consultation) ?? null;
+}
+
+/**
+ * Updates a consultation record's status.
+ *
+ * Requirements:
+ * - Validates id with the existing strict UUID helper before any database call.
+ * - Validates status against the existing canonical list ('new', 'contacted', 'qualified', 'closed').
+ * - Invalid UUID/status throws ConsultationInputError without querying the database.
+ * - Uses server Supabase client (createClient()), with optional positional mock client for testing.
+ * - Update payload is strictly { status } - never accepts arbitrary objects or updates other columns.
+ * - Queries only consultations, filters by validated UUID, and selects minimal fields (id, status, updated_at).
+ * - Returns null when no matching row is returned.
+ * - Maps all database/network exceptions to ConsultationRepositoryError without exposing raw DB errors or PII.
+ */
+export async function updateConsultationStatus(
+  id: string,
+  status: ConsultationStatus,
+  client?: any
+): Promise<UpdatedConsultationStatus | null> {
+  if (!isValidUuid(id)) {
+    throw new ConsultationInputError("Invalid consultation ID: must be a valid UUID.");
+  }
+
+  if (
+    typeof status !== "string" ||
+    !VALID_CONSULTATION_STATUSES.includes(status as ConsultationStatus)
+  ) {
+    throw new ConsultationInputError(
+      `Invalid status: "${String(status)}". Allowed values: ${VALID_CONSULTATION_STATUSES.join(", ")}.`
+    );
+  }
+
+  const supabase = client ?? (await createClient());
+
+  let data: unknown;
+  let error: unknown;
+
+  try {
+    const result = await supabase
+      .from("consultations")
+      .update({ status })
+      .eq("id", id)
+      .select(CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS)
+      .maybeSingle();
+    data = result.data;
+    error = result.error;
+  } catch {
+    throw new ConsultationRepositoryError(
+      "Failed to update consultation status in database."
+    );
+  }
+
+  if (error) {
+    throw new ConsultationRepositoryError(
+      "Failed to update consultation status in database."
+    );
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  const row = data as Record<string, unknown>;
+  return {
+    id: String(row.id),
+    status: row.status as ConsultationStatus,
+    updated_at: String(row.updated_at)
+  };
 }
