@@ -285,12 +285,11 @@ export async function updateConsultationStatus(
     );
   }
 
-  const supabase = client ?? (await createClient());
-
   let data: unknown;
   let error: unknown;
 
   try {
+    const supabase = client ?? (await createClient());
     const result = await supabase
       .from("consultations")
       .update({ status })

@@ -28,6 +28,7 @@ let MAX_CONSULTATION_PAGE_LIMIT: any;
 let MAX_SEARCH_LENGTH: any;
 
 let mockClientInstance: any = null;
+let mockCreateClientError: any = null;
 
 before(async () => {
   const serverPath = require.resolve("../../lib/supabase/server");
@@ -37,7 +38,12 @@ before(async () => {
     filename: serverPath,
     loaded: true,
     exports: {
-      createClient: async () => mockClientInstance
+      createClient: async () => {
+        if (mockCreateClientError) {
+          throw mockCreateClientError;
+        }
+        return mockClientInstance;
+      }
     }
   } as any;
 
@@ -58,7 +64,10 @@ before(async () => {
   MAX_SEARCH_LENGTH = repo.MAX_SEARCH_LENGTH;
 });
 
-afterEach(() => { mockClientInstance = null; });
+afterEach(() => {
+  mockClientInstance = null;
+  mockCreateClientError = null;
+});
 
 interface MockQueryCall {
   method: string;
@@ -1126,6 +1135,76 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
       const fromCall = client._calls.find((c) => c.method === "from");
       assert.ok(fromCall);
       assert.strictEqual(fromCall.args[0], "consultations");
+    });
+
+    test("maps createClient() factory failure to ConsultationRepositoryError without exposing raw error or executing query", async () => {
+      const loggedMessages: string[] = [];
+      const originalConsoleError = console.error;
+      const originalConsoleLog = console.log;
+      const originalConsoleWarn = console.warn;
+
+      console.error = (...args: any[]) => loggedMessages.push(args.map(String).join(" "));
+      console.log = (...args: any[]) => loggedMessages.push(args.map(String).join(" "));
+      console.warn = (...args: any[]) => loggedMessages.push(args.map(String).join(" "));
+
+      // Create a mock query client to verify that no update query is executed when factory throws
+      const client = createMockClient({ queryData: null });
+      client._calls.length = 0;
+
+      // Configure mocked createClient() factory to throw an error with sensitive details
+      const sensitiveErrorMessage = "Missing Supabase env: NEXT_PUBLIC_SUPABASE_URL not configured. Secret=db_factory_secret_jwt";
+      mockCreateClientError = new Error(sensitiveErrorMessage);
+
+      try {
+        await assert.rejects(
+          async () => {
+            // Call without positional client, invoking the createClient() factory
+            await updateConsultationStatus(SAMPLE_CONSULTATION.id, "contacted");
+          },
+          (err: unknown) => {
+            assert.ok(
+              err instanceof ConsultationRepositoryError,
+              "Must throw ConsultationRepositoryError on createClient failure"
+            );
+            assert.strictEqual(
+              (err as Error).message,
+              "Failed to update consultation status in database.",
+              "Must return generic repository error message"
+            );
+            assert.ok(
+              !(err as Error).message.includes(sensitiveErrorMessage),
+              "Raw factory error must not be exposed"
+            );
+            assert.ok(
+              !(err as Error).message.includes("db_factory_secret_jwt"),
+              "Sensitive secrets must not be exposed"
+            );
+            return true;
+          }
+        );
+
+        // Assert no update query is executed
+        assert.strictEqual(
+          client._calls.length,
+          0,
+          "No update query should be executed when createClient() throws"
+        );
+
+        // Assert raw factory error message is not logged
+        const combinedLogs = loggedMessages.join("\n");
+        assert.ok(
+          !combinedLogs.includes(sensitiveErrorMessage),
+          "Raw factory error must not be logged"
+        );
+        assert.ok(
+          !combinedLogs.includes("db_factory_secret_jwt"),
+          "Secret must not be logged"
+        );
+      } finally {
+        console.error = originalConsoleError;
+        console.log = originalConsoleLog;
+        console.warn = originalConsoleWarn;
+      }
     });
   });
 });
