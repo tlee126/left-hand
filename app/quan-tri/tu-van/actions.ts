@@ -56,4 +56,3 @@ export async function updateConsultationStatusAction(
   revalidatePath(INBOX_PATH);
   redirect(`${INBOX_PATH}/${id}?success=1`);
 }
-

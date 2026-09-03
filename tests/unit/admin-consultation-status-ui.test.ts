@@ -508,4 +508,3 @@ describe("Task 4.2-E-C: Admin consultation status UI & server action", () => {
     });
   });
 });
-
