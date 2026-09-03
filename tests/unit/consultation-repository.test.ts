@@ -8,22 +8,27 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type {
   Consultation,
-  ListConsultationsOptions
+  ListConsultationsOptions,
+  UpdatedConsultationStatus
 } from "../../lib/repositories/consultation-repository";
 
 let listConsultations: any;
 let getConsultationById: any;
+let updateConsultationStatus: any;
 let isValidUuid: any;
 let ConsultationInputError: any;
 let ConsultationRepositoryError: any;
 let VALID_CONSULTATION_STATUSES: any;
 let CONSULTATION_COLUMNS: any;
 let CONSULTATION_SELECT_COLUMNS: any;
+let CONSULTATION_STATUS_UPDATE_COLUMNS: any;
+let CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS: any;
 let DEFAULT_CONSULTATION_PAGE_LIMIT: any;
 let MAX_CONSULTATION_PAGE_LIMIT: any;
 let MAX_SEARCH_LENGTH: any;
 
 let mockClientInstance: any = null;
+let mockCreateClientError: any = null;
 
 before(async () => {
   const serverPath = require.resolve("../../lib/supabase/server");
@@ -33,25 +38,36 @@ before(async () => {
     filename: serverPath,
     loaded: true,
     exports: {
-      createClient: async () => mockClientInstance
+      createClient: async () => {
+        if (mockCreateClientError) {
+          throw mockCreateClientError;
+        }
+        return mockClientInstance;
+      }
     }
   } as any;
 
   const repo = await import("../../lib/repositories/consultation-repository");
   listConsultations = repo.listConsultations;
   getConsultationById = repo.getConsultationById;
+  updateConsultationStatus = repo.updateConsultationStatus;
   isValidUuid = repo.isValidUuid;
   ConsultationInputError = repo.ConsultationInputError;
   ConsultationRepositoryError = repo.ConsultationRepositoryError;
   VALID_CONSULTATION_STATUSES = repo.VALID_CONSULTATION_STATUSES;
   CONSULTATION_COLUMNS = repo.CONSULTATION_COLUMNS;
   CONSULTATION_SELECT_COLUMNS = repo.CONSULTATION_SELECT_COLUMNS;
+  CONSULTATION_STATUS_UPDATE_COLUMNS = repo.CONSULTATION_STATUS_UPDATE_COLUMNS;
+  CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS = repo.CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS;
   DEFAULT_CONSULTATION_PAGE_LIMIT = repo.DEFAULT_CONSULTATION_PAGE_LIMIT;
   MAX_CONSULTATION_PAGE_LIMIT = repo.MAX_CONSULTATION_PAGE_LIMIT;
   MAX_SEARCH_LENGTH = repo.MAX_SEARCH_LENGTH;
 });
 
-afterEach(() => { mockClientInstance = null; });
+afterEach(() => {
+  mockClientInstance = null;
+  mockCreateClientError = null;
+});
 
 interface MockQueryCall {
   method: string;
@@ -68,6 +84,10 @@ function createMockClient(options?: {
     _calls: calls,
     select: (...args: any[]) => {
       calls.push({ method: "select", args });
+      return queryBuilder;
+    },
+    update: (...args: any[]) => {
+      calls.push({ method: "update", args });
       return queryBuilder;
     },
     eq: (...args: any[]) => {
@@ -625,36 +645,47 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
       );
     });
 
-    test("no mutation methods are exposed in repository", async () => {
+    test("repository still has no general mutation methods", async () => {
       const repo = await import("../../lib/repositories/consultation-repository");
       const exportedKeys = Object.keys(repo);
 
-      // Check mutation method names do not exist
+      // Check general mutation method names do not exist
       const forbiddenMutationNames = [
         "createConsultation",
         "insertConsultation",
         "updateConsultation",
-        "updateConsultationStatus",
         "deleteConsultation",
-        "patchConsultation"
+        "patchConsultation",
+        "bulkUpdateConsultations",
+        "upsertConsultation"
       ];
 
       for (const forbidden of forbiddenMutationNames) {
         assert.ok(
           !exportedKeys.includes(forbidden),
-          `Repository must not expose mutation method "${forbidden}"`
+          `Repository must not expose general mutation method "${forbidden}"`
         );
       }
 
-      // Check file content for mutation operations
+      // Verify updateConsultationStatus IS exported
+      assert.ok(
+        exportedKeys.includes("updateConsultationStatus"),
+        "Repository must expose updateConsultationStatus"
+      );
+
+      // Check file content for forbidden mutation operations
       const repoFilePath = path.resolve(
         process.cwd(),
         "lib/repositories/consultation-repository.ts"
       );
       const fileContent = await fs.readFile(repoFilePath, "utf-8");
       assert.ok(!fileContent.includes(".insert("), "Repository must not perform .insert()");
-      assert.ok(!fileContent.includes(".update("), "Repository must not perform .update()");
       assert.ok(!fileContent.includes(".delete("), "Repository must not perform .delete()");
+
+      // Verify only status update is performed, not general update
+      const updateMatches = fileContent.match(/\.update\(([^)]*)\)/g) || [];
+      assert.strictEqual(updateMatches.length, 1, "Only one .update() call must exist");
+      assert.ok(updateMatches[0].includes("{ status }"), "Update call must be strictly { status }");
     });
 
     test("repository selects only explicit consultation columns matching 0006 schema", () => {
@@ -706,6 +737,474 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         migrationSql.includes("profiles.id = auth.uid()"),
         "Admin policy must check profiles.id = auth.uid()"
       );
+    });
+  });
+
+  describe("10. updateConsultationStatus: Status Mutation Operations", () => {
+    test("valid status update sends exactly { status }", async () => {
+      const client = createMockClient({
+        queryData: {
+          id: SAMPLE_CONSULTATION.id,
+          status: "contacted",
+          updated_at: "2026-09-03T10:00:00Z"
+        }
+      });
+      const result = await updateConsultationStatus(
+        SAMPLE_CONSULTATION.id,
+        "contacted",
+        client
+      );
+
+      assert.ok(result);
+      assert.strictEqual(result.status, "contacted");
+
+      const fromCall = client._calls.find((c) => c.method === "from");
+      assert.ok(fromCall, "Must call .from()");
+      assert.strictEqual(fromCall.args[0], "consultations");
+
+      const updateCall = client._calls.find((c) => c.method === "update");
+      assert.ok(updateCall, "Must call .update()");
+      assert.deepStrictEqual(updateCall.args, [{ status: "contacted" }]);
+      assert.strictEqual(
+        Object.keys(updateCall.args[0]).length,
+        1,
+        "Update payload must contain exactly one property"
+      );
+      assert.strictEqual(updateCall.args[0].status, "contacted");
+    });
+
+    test("valid UUID is passed to .eq('id', id)", async () => {
+      const client = createMockClient({
+        queryData: {
+          id: SAMPLE_CONSULTATION.id,
+          status: "qualified",
+          updated_at: "2026-09-03T10:00:00Z"
+        }
+      });
+      await updateConsultationStatus(
+        SAMPLE_CONSULTATION.id,
+        "qualified",
+        client
+      );
+
+      const eqCall = client._calls.find((c) => c.method === "eq");
+      assert.ok(eqCall, "Must call .eq()");
+      assert.deepStrictEqual(eqCall.args, ["id", SAMPLE_CONSULTATION.id]);
+    });
+
+    test("result contains only the minimal returned fields (id, status, updated_at)", async () => {
+      const client = createMockClient({
+        queryData: {
+          id: SAMPLE_CONSULTATION.id,
+          status: "qualified",
+          updated_at: "2026-09-03T10:00:00Z",
+          full_name: "Nguyễn Văn A",
+          phone: "0901234567",
+          note: "Secret note"
+        }
+      });
+      const result = await updateConsultationStatus(
+        SAMPLE_CONSULTATION.id,
+        "qualified",
+        client
+      );
+
+      assert.ok(result);
+      assert.deepStrictEqual(result, {
+        id: SAMPLE_CONSULTATION.id,
+        status: "qualified",
+        updated_at: "2026-09-03T10:00:00Z"
+      });
+      assert.deepStrictEqual(
+        Object.keys(result!).sort(),
+        ["id", "status", "updated_at"]
+      );
+      assert.strictEqual((result as any).full_name, undefined);
+      assert.strictEqual((result as any).phone, undefined);
+      assert.strictEqual((result as any).note, undefined);
+
+      const selectCall = client._calls.find((c) => c.method === "select");
+      assert.ok(selectCall, "Must call .select()");
+      assert.strictEqual(
+        selectCall.args[0],
+        CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS
+      );
+      assert.strictEqual(selectCall.args[0], "id, status, updated_at");
+    });
+
+    test("all four valid statuses are accepted and updated", async () => {
+      for (const status of VALID_CONSULTATION_STATUSES) {
+        const client = createMockClient({
+          queryData: {
+            id: SAMPLE_CONSULTATION.id,
+            status,
+            updated_at: "2026-09-03T12:00:00Z"
+          }
+        });
+        const result = await updateConsultationStatus(
+          SAMPLE_CONSULTATION.id,
+          status,
+          client
+        );
+
+        assert.ok(result);
+        assert.strictEqual(result.status, status);
+
+        const updateCall = client._calls.find((c) => c.method === "update");
+        assert.ok(updateCall);
+        assert.deepStrictEqual(updateCall.args, [{ status }]);
+      }
+    });
+
+    test("invalid UUID rejects before DB call with ConsultationInputError", async () => {
+      const invalidIds = [
+        "not-a-uuid",
+        "123",
+        "",
+        "   ",
+        "550e8400-e29b-41d4-a716-44665544000",
+        "550e8400-e29b-41d4-a716-4466554400000",
+        "550e8400-e29b-41d4-a716-44665544000z",
+        "'; DROP TABLE consultations; --",
+        null as any,
+        undefined as any,
+        12345 as any,
+        {} as any,
+        [] as any
+      ];
+
+      for (const id of invalidIds) {
+        const client = createMockClient({ queryData: null });
+        await assert.rejects(
+          async () => {
+            await updateConsultationStatus(id, "contacted", client);
+          },
+          (err: unknown) => {
+            assert.ok(err instanceof ConsultationInputError);
+            assert.match((err as Error).message, /must be a valid UUID/i);
+            return true;
+          },
+          `ID "${id}" must be rejected as invalid UUID`
+        );
+        assert.strictEqual(
+          client._calls.length,
+          0,
+          `DB must not be called for invalid UUID "${id}"`
+        );
+      }
+    });
+
+    test("invalid status rejects before DB call with ConsultationInputError", async () => {
+      const invalidStatuses = [
+        "invalid_status",
+        "pending",
+        "deleted",
+        "admin",
+        "active",
+        "NEW",
+        "Contacted",
+        "QUALIFIED",
+        "Closed",
+        "",
+        "   ",
+        123 as any,
+        null as any,
+        undefined as any,
+        {} as any,
+        [] as any,
+        true as any
+      ];
+
+      for (const status of invalidStatuses) {
+        const client = createMockClient({ queryData: null });
+        await assert.rejects(
+          async () => {
+            await updateConsultationStatus(SAMPLE_CONSULTATION.id, status, client);
+          },
+          (err: unknown) => {
+            assert.ok(err instanceof ConsultationInputError);
+            assert.match((err as Error).message, /invalid status/i);
+            return true;
+          },
+          `Status "${String(status)}" must be rejected`
+        );
+        assert.strictEqual(
+          client._calls.length,
+          0,
+          `DB must not be called for invalid status "${String(status)}"`
+        );
+      }
+    });
+
+    test("no arbitrary or server-managed fields can enter the update payload", async () => {
+      const client = createMockClient({
+        queryData: {
+          id: SAMPLE_CONSULTATION.id,
+          status: "closed",
+          updated_at: "2026-09-03T10:00:00Z"
+        }
+      });
+
+      // Attempting to pass an object payload with extra fields as status is rejected before DB
+      const maliciousStatusPayloads = [
+        { status: "contacted", phone: "0999999999" } as any,
+        { status: "closed", full_name: "Hacker" } as any,
+        { status: "new", note: "malicious note" } as any,
+        { status: "qualified", request_id: "fake-req" } as any,
+        { status: "contacted", id: "550e8400-e29b-41d4-a716-446655440099" } as any,
+        { status: "closed", created_at: "2020-01-01T00:00:00Z" } as any,
+        { status: "closed", updated_at: "2020-01-01T00:00:00Z" } as any
+      ];
+
+      for (const malicious of maliciousStatusPayloads) {
+        const testClient = createMockClient({ queryData: null });
+        await assert.rejects(
+          async () => {
+            await updateConsultationStatus(SAMPLE_CONSULTATION.id, malicious, testClient);
+          },
+          ConsultationInputError
+        );
+        assert.strictEqual(testClient._calls.length, 0);
+      }
+
+      // In a valid call, ensure only status is passed and server-managed fields are never present
+      await updateConsultationStatus(SAMPLE_CONSULTATION.id, "closed", client);
+      const updateCall = client._calls.find((c) => c.method === "update");
+      assert.ok(updateCall);
+      const payloadKeys = Object.keys(updateCall.args[0]);
+      assert.deepStrictEqual(payloadKeys, ["status"]);
+
+      const forbiddenFields = [
+        "id",
+        "request_id",
+        "full_name",
+        "phone",
+        "faculty",
+        "interest",
+        "need",
+        "major",
+        "note",
+        "source_path",
+        "selected_product_slug",
+        "selected_subject_slug",
+        "created_at",
+        "updated_at",
+        "role",
+        "userId",
+        "user_id"
+      ];
+      for (const forbidden of forbiddenFields) {
+        assert.strictEqual(
+          forbidden in updateCall.args[0],
+          false,
+          `Field "${forbidden}" must never exist in update payload`
+        );
+      }
+    });
+
+    test("no row returns null when record is not found or blocked by RLS", async () => {
+      const client = createMockClient({ queryData: null });
+      const result = await updateConsultationStatus(
+        SAMPLE_CONSULTATION.id,
+        "closed",
+        client
+      );
+
+      assert.strictEqual(result, null);
+    });
+
+    test("database error becomes generic ConsultationRepositoryError without exposing details", async () => {
+      // 1. Supabase client returning an error
+      const clientWithError = createMockClient({
+        queryError: {
+          message: "permission denied for table consultations: admin check failed",
+          code: "42501",
+          details: "row level security policy violation"
+        }
+      });
+
+      await assert.rejects(
+        async () => {
+          await updateConsultationStatus(
+            SAMPLE_CONSULTATION.id,
+            "closed",
+            clientWithError
+          );
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof ConsultationRepositoryError);
+          assert.strictEqual(
+            (err as Error).message,
+            "Failed to update consultation status in database."
+          );
+          assert.ok(!((err as Error).message.includes("42501")));
+          assert.ok(!((err as Error).message.includes("permission denied")));
+          assert.ok(!((err as Error).message.includes("security policy")));
+          return true;
+        }
+      );
+
+      // 2. Thrown exception (network drop / connection refused)
+      const throwingClient = {
+        _calls: [],
+        from: () => {
+          throw new Error("connect ECONNREFUSED 127.0.0.1:5432");
+        }
+      };
+
+      await assert.rejects(
+        async () => {
+          await updateConsultationStatus(
+            SAMPLE_CONSULTATION.id,
+            "contacted",
+            throwingClient as any
+          );
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof ConsultationRepositoryError);
+          assert.strictEqual(
+            (err as Error).message,
+            "Failed to update consultation status in database."
+          );
+          assert.ok(!((err as Error).message.includes("ECONNREFUSED")));
+          assert.ok(!((err as Error).message.includes("5432")));
+          return true;
+        }
+      );
+    });
+
+    test("raw database message and PII are not logged or exposed", async () => {
+      const loggedMessages: string[] = [];
+      const originalConsoleError = console.error;
+      const originalConsoleLog = console.log;
+      const originalConsoleWarn = console.warn;
+
+      console.error = (...args: any[]) => loggedMessages.push(args.map(String).join(" "));
+      console.log = (...args: any[]) => loggedMessages.push(args.map(String).join(" "));
+      console.warn = (...args: any[]) => loggedMessages.push(args.map(String).join(" "));
+
+      try {
+        const client = createMockClient({
+          queryError: {
+            message: "FATAL: error on 0901234567 with name Nguyễn Văn A and token secret_admin_jwt",
+            code: "P0001",
+            details: "sensitive SQL statement: UPDATE consultations SET status = 'closed'"
+          }
+        });
+
+        await assert.rejects(
+          async () => {
+            await updateConsultationStatus(
+              SAMPLE_CONSULTATION.id,
+              "closed",
+              client
+            );
+          },
+          ConsultationRepositoryError
+        );
+
+        const combinedLogs = loggedMessages.join("\n");
+        assert.ok(!combinedLogs.includes("0901234567"), "Phone number must not be logged");
+        assert.ok(!combinedLogs.includes("Nguyễn Văn A"), "Full name must not be logged");
+        assert.ok(!combinedLogs.includes("secret_admin_jwt"), "Secret must not be logged");
+        assert.ok(!combinedLogs.includes("UPDATE consultations"), "SQL must not be logged");
+        assert.ok(!combinedLogs.includes("P0001"), "Error code must not be logged");
+      } finally {
+        console.error = originalConsoleError;
+        console.log = originalConsoleLog;
+        console.warn = originalConsoleWarn;
+      }
+    });
+
+    test("uses server Supabase client createClient() when positional mock client is omitted", async () => {
+      const client = createMockClient({
+        queryData: {
+          id: SAMPLE_CONSULTATION.id,
+          status: "new",
+          updated_at: "2026-09-03T10:00:00Z"
+        }
+      });
+      // client is registered to mockClientInstance by createMockClient
+      const result = await updateConsultationStatus(
+        SAMPLE_CONSULTATION.id,
+        "new"
+      );
+
+      assert.ok(result);
+      assert.strictEqual(result.status, "new");
+      const fromCall = client._calls.find((c) => c.method === "from");
+      assert.ok(fromCall);
+      assert.strictEqual(fromCall.args[0], "consultations");
+    });
+
+    test("maps createClient() factory failure to ConsultationRepositoryError without exposing raw error or executing query", async () => {
+      const loggedMessages: string[] = [];
+      const originalConsoleError = console.error;
+      const originalConsoleLog = console.log;
+      const originalConsoleWarn = console.warn;
+
+      console.error = (...args: any[]) => loggedMessages.push(args.map(String).join(" "));
+      console.log = (...args: any[]) => loggedMessages.push(args.map(String).join(" "));
+      console.warn = (...args: any[]) => loggedMessages.push(args.map(String).join(" "));
+
+      // Create a mock query client to verify that no update query is executed when factory throws
+      const client = createMockClient({ queryData: null });
+      client._calls.length = 0;
+
+      // Configure mocked createClient() factory to throw an error with sensitive details
+      const sensitiveErrorMessage = "Missing Supabase env: NEXT_PUBLIC_SUPABASE_URL not configured. Secret=db_factory_secret_jwt";
+      mockCreateClientError = new Error(sensitiveErrorMessage);
+
+      try {
+        await assert.rejects(
+          async () => {
+            // Call without positional client, invoking the createClient() factory
+            await updateConsultationStatus(SAMPLE_CONSULTATION.id, "contacted");
+          },
+          (err: unknown) => {
+            assert.ok(
+              err instanceof ConsultationRepositoryError,
+              "Must throw ConsultationRepositoryError on createClient failure"
+            );
+            assert.strictEqual(
+              (err as Error).message,
+              "Failed to update consultation status in database.",
+              "Must return generic repository error message"
+            );
+            assert.ok(
+              !(err as Error).message.includes(sensitiveErrorMessage),
+              "Raw factory error must not be exposed"
+            );
+            assert.ok(
+              !(err as Error).message.includes("db_factory_secret_jwt"),
+              "Sensitive secrets must not be exposed"
+            );
+            return true;
+          }
+        );
+
+        // Assert no update query is executed
+        assert.strictEqual(
+          client._calls.length,
+          0,
+          "No update query should be executed when createClient() throws"
+        );
+
+        // Assert raw factory error message is not logged
+        const combinedLogs = loggedMessages.join("\n");
+        assert.ok(
+          !combinedLogs.includes(sensitiveErrorMessage),
+          "Raw factory error must not be logged"
+        );
+        assert.ok(
+          !combinedLogs.includes("db_factory_secret_jwt"),
+          "Secret must not be logged"
+        );
+      } finally {
+        console.error = originalConsoleError;
+        console.log = originalConsoleLog;
+        console.warn = originalConsoleWarn;
+      }
     });
   });
 });
