@@ -59,6 +59,10 @@ export default async function StudentDashboardPage({
     redirect("/cho-duyet?status=missing-profile");
   }
 
+  if (access.profile?.role === "admin") {
+    redirect("/quan-tri");
+  }
+
   return (
     <StudentDashboardClient
       initialProfile={access.profile}
