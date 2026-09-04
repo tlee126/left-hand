@@ -669,6 +669,38 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       assert.throws(() => assertConsultationUpdatedByMigrationContract(sql.replace("auth.uid()", "NULL")), /auth\.uid/i);
     });
 
+    test("rejects SECURITY DEFINER in every part of the canonical updater function", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
+      const languageAndAs = "LANGUAGE plpgsql\nAS $$";
+      const fixtures = [
+        sql.replace(languageAndAs, "LANGUAGE plpgsql SECURITY DEFINER\nAS $$"),
+        sql.replace(languageAndAs, "LANGUAGE plpgsql\nSECURITY DEFINER\nAS $$"),
+        sql.replace("BEGIN\n  NEW.updated_by", "BEGIN\n  SECURITY DEFINER\n  NEW.updated_by"),
+        sql.replace("  RETURN NEW;", "  SECURITY DEFINER\n  RETURN NEW;"),
+        sql.replace("  NEW.updated_by = auth.uid();", "  NEW.updated_by = auth.uid();\n  SECURITY DEFINER"),
+        sql.replace("  RETURN NEW;", "  PERFORM 'SECURITY DEFINER';\n  RETURN NEW;")
+      ];
+
+      for (const fixture of fixtures) {
+        assert.throws(
+          () => assertConsultationUpdatedByMigrationContract(fixture),
+          /SECURITY DEFINER/i
+        );
+      }
+    });
+
+    test("ignores SECURITY DEFINER text in SQL comments but rejects it in SQL text", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
+      assert.doesNotThrow(() => assertConsultationUpdatedByMigrationContract(`${sql}\n-- SECURITY DEFINER`));
+      assert.doesNotThrow(() => assertConsultationUpdatedByMigrationContract(
+        sql.replace("  NEW.updated_by = auth.uid();", "  -- SECURITY DEFINER\n  NEW.updated_by = auth.uid();")
+      ));
+      assert.throws(
+        () => assertConsultationUpdatedByMigrationContract(`${sql}\nSELECT 'SECURITY DEFINER';`),
+        /SECURITY DEFINER/i
+      );
+    });
+
     test("rejects privileged execution, RLS bypasses, and unsafe grants or policies", async () => {
       const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
       const fixtures = [

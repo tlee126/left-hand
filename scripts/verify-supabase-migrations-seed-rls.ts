@@ -38,6 +38,19 @@ function stripSqlCommentsAndSplitStatements(sql: string): string[] {
     const next = sql[index + 1];
 
     if (dollarTag) {
+      if (character === "-" && next === "-") {
+        index += 2;
+        while (index < sql.length && sql[index] !== "\n") index += 1;
+        current += " ";
+        continue;
+      }
+      if (character === "/" && next === "*") {
+        index += 2;
+        while (index < sql.length && !(sql[index] === "*" && sql[index + 1] === "/")) index += 1;
+        index += 1;
+        current += " ";
+        continue;
+      }
       current += character;
       if (sql.startsWith(dollarTag, index) && index > 0) {
         current += sql.slice(index + 1, index + dollarTag.length);
@@ -128,6 +141,12 @@ export function assertConsultationUpdatedByMigrationContract(sql0009: string): v
   const fail = (condition: boolean, message: string) => {
     if (!condition) throw new Error(message);
   };
+
+  const sqlWithoutComments = stripSqlCommentsAndSplitStatements(sql0009).join(" ");
+  fail(
+    !/\bSECURITY\s+DEFINER\b/i.test(sqlWithoutComments),
+    "Migration 0009 must not contain SECURITY DEFINER"
+  );
 
   const statements = stripSqlCommentsAndSplitStatements(sql0009);
   const normalized = statements.map(normalizeMigrationStatement);
