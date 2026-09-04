@@ -31,6 +31,7 @@ export type Database = {
           source_path: string | null
           status: string
           updated_at: string
+          updated_by: string | null
         }
         Insert: {
           created_at?: string
@@ -48,6 +49,7 @@ export type Database = {
           source_path?: string | null
           status?: string
           updated_at?: string
+          updated_by?: string | null
         }
         Update: {
           created_at?: string
@@ -65,6 +67,7 @@ export type Database = {
           source_path?: string | null
           status?: string
           updated_at?: string
+          updated_by?: string | null
         }
         Relationships: []
       }

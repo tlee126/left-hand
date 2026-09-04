@@ -6,6 +6,8 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { materials, courses, tutors } from "../data/catalog";
 import { CANONICAL_SUBJECTS } from "../lib/domain/subjects";
 import { parseVND } from "../lib/domain/product-types";
@@ -18,6 +20,7 @@ interface AuditResult {
 }
 
 const expectedAdminPredicate = "EXISTS ( SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin' )";
+const execFileAsync = promisify(execFile);
 
 function normalizeSql(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -70,13 +73,14 @@ async function runAudit(): Promise<void> {
       "0005_account_approval_gate.sql",
       "0006_consultations.sql",
       "0007_consultation_admin_rls.sql",
-      "0008_consultation_admin_status_update.sql"
+      "0008_consultation_admin_status_update.sql",
+      "0009_consultation_updated_by.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 8 migration files exist in strict topological order",
+      check: "All 9 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -289,7 +293,43 @@ async function runAudit(): Promise<void> {
       details: "Both predicates require profiles.id = auth.uid() and profiles.role = 'admin'"
     });
 
-    // 9. Audit supabase/seed.sql
+    // 9. Audit 0009_consultation_updated_by.sql
+    const sql0009 = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
+    const code0009 = sql0009.replace(/--.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    const hasUpdatedByColumn = /ALTER\s+TABLE\s+consultations\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+updated_by\s+UUID\s+REFERENCES\s+auth\.users\s*\(\s*id\s*\)\s+ON\s+DELETE\s+SET\s+NULL/i.test(code0009);
+    const updaterFunction = /CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+set_consultations_updated_by\s*\(\s*\)\s+RETURNS\s+TRIGGER[\s\S]*?NEW\.updated_by\s*=\s*auth\.uid\s*\(\s*\)\s*;[\s\S]*?RETURN\s+NEW\s*;/i.test(code0009);
+    const updaterTriggers = code0009.match(/CREATE\s+TRIGGER[\s\S]*?;/gi) || [];
+    const hasDedicatedUpdaterTrigger = updaterTriggers.length === 1
+      && /CREATE\s+TRIGGER\s+trg_consultations_updated_by\s+BEFORE\s+UPDATE\s+ON\s+consultations\s+FOR\s+EACH\s+ROW\s+EXECUTE\s+FUNCTION\s+set_consultations_updated_by\s*\(\s*\)\s*;/i.test(updaterTriggers[0]);
+    const noUnsafe0009 = !/\bservice_role\b|SECURITY\s+DEFINER|\bBYPASSRLS\b|\b(?:SET|ALTER)\s+ROLE\b/i.test(code0009)
+      && !/\b(?:password|secret|token|bearer|apikey|api_key|credential)\b\s*[:=]/i.test(code0009)
+      && !/GRANT\s+UPDATE\s+ON\s+(?:TABLE\s+)?consultations\b/i.test(code0009)
+      && !/GRANT\s+UPDATE\s*\([^)]*\bupdated_by\b[^)]*\)/i.test(code0009)
+      && !/GRANT\s+(?:SELECT|INSERT|DELETE|ALL)\b/i.test(code0009)
+      && !/CREATE\s+POLICY\b/i.test(code0009);
+    const noStatusChanges0009 = !/(?:CREATE\s+TYPE|ADD\s+CONSTRAINT|CHECK\s*\([^)]*status|chk_consultations_status)/i.test(code0009);
+    const repoSource = await fs.readFile(path.join(rootDir, "lib/repositories/consultation-repository.ts"), "utf-8");
+    const repositoryDoesNotAcceptUpdater = /export\s+async\s+function\s+updateConsultationStatus\s*\(\s*id:\s*string\s*,\s*status:\s*ConsultationStatus\s*,\s*client\?:\s*any\s*\)/.test(repoSource)
+      && /\.update\(\{\s*status\s*\}\)/.test(repoSource)
+      && !/\.update\(\{[^}]*\b(?:userId|user_id|updatedBy|updated_by)\b/i.test(repoSource);
+    const migration0008Unchanged = await execFileAsync("git", ["diff", "--quiet", "main", "--", "supabase/migrations/0008_consultation_admin_status_update.sql"], { cwd: rootDir })
+      .then(() => true)
+      .catch(() => false);
+
+    results.push({
+      category: "0009_consultation_updated_by",
+      check: "Adds nullable updated_by UUID reference and a dedicated auth.uid() BEFORE UPDATE trigger",
+      passed: hasUpdatedByColumn && updaterFunction && hasDedicatedUpdaterTrigger,
+      details: "updated_by references auth.users(id) ON DELETE SET NULL and is assigned by the database"
+    });
+    results.push({
+      category: "0009_consultation_updated_by",
+      check: "Rejects updater grants, policies, privilege escalation, and client-supplied identity",
+      passed: noUnsafe0009 && noStatusChanges0009 && repositoryDoesNotAcceptUpdater && migration0008Unchanged,
+      details: "No updater grant/policy/bypass; 0008 is unchanged; repository sends only { status }"
+    });
+
+    // 10. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
     const isTxn = /^\s*(?:--[^\n]*\n\s*)*BEGIN\s*;/im.test(sqlSeed) && /COMMIT\s*;\s*$/i.test(sqlSeed.trim());
     const subjectsSeed = CANONICAL_SUBJECTS.every((s) => sqlSeed.includes(`'${s.slug}'`));
