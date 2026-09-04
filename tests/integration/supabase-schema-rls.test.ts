@@ -17,6 +17,7 @@ import { promisify } from "node:util";
 import { materials, courses, tutors } from "../../data/catalog";
 import { CANONICAL_SUBJECTS } from "../../lib/domain/subjects";
 import { parseVND } from "../../lib/domain/product-types";
+import { assertConsultationUpdatedByMigrationContract } from "../../scripts/verify-supabase-migrations-seed-rls";
 
 const expectedAdminPredicate = "EXISTS ( SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin' )";
 const execFileAsync = promisify(execFile);
@@ -173,30 +174,6 @@ function assertMigration0008Contract(
       "Canonical status constraint from migration 0006 must remain intact"
     );
   }
-}
-
-function assertMigration0009Contract(sql0009: string): void {
-  const code = sql0009.replace(/--.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
-
-  assert.ok(
-    /ALTER\s+TABLE\s+consultations\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+updated_by\s+UUID\s+REFERENCES\s+auth\.users\s*\(\s*id\s*\)\s+ON\s+DELETE\s+SET\s+NULL/i.test(code),
-    "Must add nullable updated_by UUID referencing auth.users(id) ON DELETE SET NULL"
-  );
-  assert.ok(
-    /CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+set_consultations_updated_by\s*\(\s*\)\s+RETURNS\s+TRIGGER[\s\S]*?NEW\.updated_by\s*=\s*auth\.uid\s*\(\s*\)\s*;/i.test(code),
-    "Updater trigger function must assign NEW.updated_by = auth.uid()"
-  );
-  const triggers = code.match(/CREATE\s+TRIGGER[\s\S]*?;/gi) || [];
-  assert.strictEqual(triggers.length, 1, "Must create exactly one dedicated updater trigger");
-  assert.ok(
-    /CREATE\s+TRIGGER\s+trg_consultations_updated_by\s+BEFORE\s+UPDATE\s+ON\s+consultations\s+FOR\s+EACH\s+ROW\s+EXECUTE\s+FUNCTION\s+set_consultations_updated_by\s*\(\s*\)\s*;/i.test(triggers[0]),
-    "Updater trigger must run BEFORE UPDATE on consultations and execute its dedicated function"
-  );
-  assert.ok(!/SECURITY\s+DEFINER|\bservice_role\b|\bBYPASSRLS\b|\b(?:SET|ALTER)\s+ROLE\b/i.test(code), "Must not use privileged execution or RLS bypass");
-  assert.ok(!/GRANT\s+UPDATE\s+ON\s+(?:TABLE\s+)?consultations\b/i.test(code), "Must not grant table-wide UPDATE");
-  assert.ok(!/GRANT\s+UPDATE\s*\([^)]*\bupdated_by\b[^)]*\)/i.test(code), "Must not grant UPDATE(updated_by)");
-  assert.ok(!/GRANT\s+(?:SELECT|INSERT|DELETE|ALL)\b/i.test(code) && !/CREATE\s+POLICY\b/i.test(code), "Must not add SELECT/INSERT/DELETE grants or policies");
-  assert.ok(!/(?:CREATE\s+TYPE|ADD\s+CONSTRAINT|CHECK\s*\([^)]*status|chk_consultations_status)/i.test(code), "Must not add status types or constraints");
 }
 
 function assertMigration0008Unchanged(candidate: string, canonical: string): void {
@@ -403,7 +380,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
 
     test("0009_consultation_updated_by.sql records the authenticated updater without changing 0008", async () => {
       const sql0009 = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
-      assertMigration0009Contract(sql0009);
+      assertConsultationUpdatedByMigrationContract(sql0009);
       await assert.doesNotReject(
         execFileAsync("git", ["diff", "--quiet", "main", "--", "supabase/migrations/0008_consultation_admin_status_update.sql"], { cwd: process.cwd() })
       );
@@ -675,21 +652,21 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
   describe("5. Migration 0009 Updater Audit Trail (Negative Fixtures)", () => {
     test("rejects a missing updated_by column or an incorrect UUID reference", async () => {
       const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
-      assert.throws(() => assertMigration0009Contract(sql.replace(/ALTER\s+TABLE[\s\S]*?;/i, "")), /updated_by UUID/i);
-      assert.throws(() => assertMigration0009Contract(sql.replace("updated_by UUID", "updated_by TEXT")), /updated_by UUID/i);
-      assert.throws(() => assertMigration0009Contract(sql.replace("REFERENCES auth.users(id)", "REFERENCES public.profiles(id)")), /auth\.users/i);
+      assert.throws(() => assertConsultationUpdatedByMigrationContract(sql.replace(/ALTER\s+TABLE[\s\S]*?;/i, "")), /updated_by UUID/i);
+      assert.throws(() => assertConsultationUpdatedByMigrationContract(sql.replace("updated_by UUID", "updated_by TEXT")), /updated_by UUID/i);
+      assert.throws(() => assertConsultationUpdatedByMigrationContract(sql.replace("REFERENCES auth.users(id)", "REFERENCES public.profiles(id)")), /auth\.users/i);
     });
 
     test("rejects updater triggers with wrong timing, table, or function", async () => {
       const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
-      assert.throws(() => assertMigration0009Contract(sql.replace("BEFORE UPDATE", "AFTER UPDATE")), /BEFORE UPDATE/i);
-      assert.throws(() => assertMigration0009Contract(sql.replace("ON consultations", "ON profiles")), /consultations/i);
-      assert.throws(() => assertMigration0009Contract(sql.replace("set_consultations_updated_by();", "another_trigger_function();")), /dedicated function/i);
+      assert.throws(() => assertConsultationUpdatedByMigrationContract(sql.replace("BEFORE UPDATE", "AFTER UPDATE")), /immediately before recreating/i);
+      assert.throws(() => assertConsultationUpdatedByMigrationContract(sql.replace("ON consultations", "ON profiles")), /immediately before recreating/i);
+      assert.throws(() => assertConsultationUpdatedByMigrationContract(sql.replace("set_consultations_updated_by();", "another_trigger_function();")), /immediately before recreating/i);
     });
 
     test("rejects a trigger function that does not use auth.uid()", async () => {
       const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
-      assert.throws(() => assertMigration0009Contract(sql.replace("auth.uid()", "NULL")), /auth\.uid/i);
+      assert.throws(() => assertConsultationUpdatedByMigrationContract(sql.replace("auth.uid()", "NULL")), /auth\.uid/i);
     });
 
     test("rejects privileged execution, RLS bypasses, and unsafe grants or policies", async () => {
@@ -706,8 +683,16 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "CREATE POLICY updater_leak ON consultations FOR SELECT TO authenticated USING (true);"
       ];
       for (const fixture of fixtures) {
-        assert.throws(() => assertMigration0009Contract(`${sql}\n${fixture}`));
+        assert.throws(() => assertConsultationUpdatedByMigrationContract(`${sql}\n${fixture}`));
       }
+    });
+
+    test("the real verifier rejects a migration without rerunnable trigger replacement", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
+      assert.throws(
+        () => assertConsultationUpdatedByMigrationContract(sql.replace("DROP TRIGGER IF EXISTS trg_consultations_updated_by ON consultations;\n", "")),
+        /drop the updater trigger immediately before recreating/i
+      );
     });
 
     test("rejects a modified migration 0008 fixture", async () => {

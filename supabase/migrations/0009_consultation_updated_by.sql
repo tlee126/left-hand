@@ -15,6 +15,7 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS trg_consultations_updated_by ON consultations;
 CREATE TRIGGER trg_consultations_updated_by
   BEFORE UPDATE ON consultations
   FOR EACH ROW

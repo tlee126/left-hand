@@ -50,6 +50,33 @@ function extractPolicyClause(policy: string, clauseName: "USING" | "WITH CHECK")
   return null;
 }
 
+/** Pure contract used by both the CLI audit and integration tests. */
+export function assertConsultationUpdatedByMigrationContract(sql0009: string): void {
+  const code = sql0009.replace(/--.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+
+  fail(
+    /ALTER\s+TABLE\s+consultations\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+updated_by\s+UUID\s+REFERENCES\s+auth\.users\s*\(\s*id\s*\)\s+ON\s+DELETE\s+SET\s+NULL/i.test(code),
+    "Migration 0009 must add nullable updated_by UUID referencing auth.users(id) ON DELETE SET NULL"
+  );
+  fail(
+    /CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+set_consultations_updated_by\s*\(\s*\)\s+RETURNS\s+TRIGGER[\s\S]*?NEW\.updated_by\s*=\s*auth\.uid\s*\(\s*\)\s*;[\s\S]*?RETURN\s+NEW\s*;/i.test(code),
+    "Migration 0009 updater function must assign NEW.updated_by = auth.uid()"
+  );
+  fail(
+    /DROP\s+TRIGGER\s+IF\s+EXISTS\s+trg_consultations_updated_by\s+ON\s+consultations\s*;\s*CREATE\s+TRIGGER\s+trg_consultations_updated_by\s+BEFORE\s+UPDATE\s+ON\s+consultations\s+FOR\s+EACH\s+ROW\s+EXECUTE\s+FUNCTION\s+set_consultations_updated_by\s*\(\s*\)\s*;/i.test(code),
+    "Migration 0009 must drop the updater trigger immediately before recreating it"
+  );
+  fail(!/SECURITY\s+DEFINER|\bservice_role\b|\bBYPASSRLS\b|\b(?:SET|ALTER)\s+ROLE\b/i.test(code), "Migration 0009 must not use privileged execution or RLS bypass");
+  fail(!/\b(?:password|secret|token|bearer|apikey|api_key|credential)\b\s*[:=]/i.test(code), "Migration 0009 must not contain credentials");
+  fail(!/GRANT\s+UPDATE\s+ON\s+(?:TABLE\s+)?consultations\b/i.test(code), "Migration 0009 must not grant table-wide UPDATE");
+  fail(!/GRANT\s+UPDATE\s*\([^)]*\bupdated_by\b[^)]*\)/i.test(code), "Migration 0009 must not grant UPDATE(updated_by)");
+  fail(!/GRANT\s+(?:SELECT|INSERT|DELETE|ALL)\b/i.test(code) && !/CREATE\s+POLICY\b/i.test(code), "Migration 0009 must not add SELECT/INSERT/DELETE grants or policies");
+  fail(!/(?:CREATE\s+TYPE|ADD\s+CONSTRAINT|CHECK\s*\([^)]*status|chk_consultations_status)/i.test(code), "Migration 0009 must not add status types or constraints");
+}
+
 async function runAudit(): Promise<void> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -295,19 +322,12 @@ async function runAudit(): Promise<void> {
 
     // 9. Audit 0009_consultation_updated_by.sql
     const sql0009 = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
-    const code0009 = sql0009.replace(/--.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
-    const hasUpdatedByColumn = /ALTER\s+TABLE\s+consultations\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+updated_by\s+UUID\s+REFERENCES\s+auth\.users\s*\(\s*id\s*\)\s+ON\s+DELETE\s+SET\s+NULL/i.test(code0009);
-    const updaterFunction = /CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+set_consultations_updated_by\s*\(\s*\)\s+RETURNS\s+TRIGGER[\s\S]*?NEW\.updated_by\s*=\s*auth\.uid\s*\(\s*\)\s*;[\s\S]*?RETURN\s+NEW\s*;/i.test(code0009);
-    const updaterTriggers = code0009.match(/CREATE\s+TRIGGER[\s\S]*?;/gi) || [];
-    const hasDedicatedUpdaterTrigger = updaterTriggers.length === 1
-      && /CREATE\s+TRIGGER\s+trg_consultations_updated_by\s+BEFORE\s+UPDATE\s+ON\s+consultations\s+FOR\s+EACH\s+ROW\s+EXECUTE\s+FUNCTION\s+set_consultations_updated_by\s*\(\s*\)\s*;/i.test(updaterTriggers[0]);
-    const noUnsafe0009 = !/\bservice_role\b|SECURITY\s+DEFINER|\bBYPASSRLS\b|\b(?:SET|ALTER)\s+ROLE\b/i.test(code0009)
-      && !/\b(?:password|secret|token|bearer|apikey|api_key|credential)\b\s*[:=]/i.test(code0009)
-      && !/GRANT\s+UPDATE\s+ON\s+(?:TABLE\s+)?consultations\b/i.test(code0009)
-      && !/GRANT\s+UPDATE\s*\([^)]*\bupdated_by\b[^)]*\)/i.test(code0009)
-      && !/GRANT\s+(?:SELECT|INSERT|DELETE|ALL)\b/i.test(code0009)
-      && !/CREATE\s+POLICY\b/i.test(code0009);
-    const noStatusChanges0009 = !/(?:CREATE\s+TYPE|ADD\s+CONSTRAINT|CHECK\s*\([^)]*status|chk_consultations_status)/i.test(code0009);
+    let migration0009ContractValid = true;
+    try {
+      assertConsultationUpdatedByMigrationContract(sql0009);
+    } catch {
+      migration0009ContractValid = false;
+    }
     const repoSource = await fs.readFile(path.join(rootDir, "lib/repositories/consultation-repository.ts"), "utf-8");
     const repositoryDoesNotAcceptUpdater = /export\s+async\s+function\s+updateConsultationStatus\s*\(\s*id:\s*string\s*,\s*status:\s*ConsultationStatus\s*,\s*client\?:\s*any\s*\)/.test(repoSource)
       && /\.update\(\{\s*status\s*\}\)/.test(repoSource)
@@ -319,13 +339,13 @@ async function runAudit(): Promise<void> {
     results.push({
       category: "0009_consultation_updated_by",
       check: "Adds nullable updated_by UUID reference and a dedicated auth.uid() BEFORE UPDATE trigger",
-      passed: hasUpdatedByColumn && updaterFunction && hasDedicatedUpdaterTrigger,
+      passed: migration0009ContractValid,
       details: "updated_by references auth.users(id) ON DELETE SET NULL and is assigned by the database"
     });
     results.push({
       category: "0009_consultation_updated_by",
       check: "Rejects updater grants, policies, privilege escalation, and client-supplied identity",
-      passed: noUnsafe0009 && noStatusChanges0009 && repositoryDoesNotAcceptUpdater && migration0008Unchanged,
+      passed: migration0009ContractValid && repositoryDoesNotAcceptUpdater && migration0008Unchanged,
       details: "No updater grant/policy/bypass; 0008 is unchanged; repository sends only { status }"
     });
 
@@ -384,4 +404,6 @@ async function runAudit(): Promise<void> {
   }
 }
 
-runAudit();
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename)) {
+  void runAudit();
+}
