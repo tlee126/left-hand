@@ -15,6 +15,7 @@ type AccessScenario =
   | "pending"
   | "rejected"
   | "suspended"
+  | "profile-missing"
   | "admin";
 
 type ActionScenario = {
@@ -30,6 +31,7 @@ type ActionResult = {
   accessCalls: number;
   repositoryCalls: unknown[][];
   revalidateCalls: string[];
+  timeline: string[];
   error?: string;
 };
 
@@ -42,6 +44,7 @@ const scenario = JSON.parse(process.argv[1]);
 const ADMIN_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const repositoryCalls = [];
 const revalidateCalls = [];
+const timeline = [];
 let accessCalls = 0;
 
 const access = scenario.access === "anonymous"
@@ -54,6 +57,8 @@ const access = scenario.access === "anonymous"
         ? { status: "rejected", user: { id: ADMIN_ID }, profile: { id: ADMIN_ID, role: "admin" } }
         : scenario.access === "suspended"
           ? { status: "suspended", user: { id: ADMIN_ID }, profile: { id: ADMIN_ID, role: "admin" } }
+          : scenario.access === "profile-missing"
+            ? { status: "profile_missing", user: { id: ADMIN_ID }, profile: null }
           : { status: "approved", user: { id: ADMIN_ID }, profile: { id: ADMIN_ID, role: "admin" } };
 
 const authModule = "data:text/javascript,admin-approval-auth";
@@ -65,6 +70,7 @@ mock.module(authModule, {
   namedExports: {
     getAccountAccess: async () => {
       accessCalls += 1;
+      timeline.push("guard");
       return access;
     }
   }
@@ -73,6 +79,7 @@ mock.module(repositoryModule, {
   namedExports: {
     isValidUuid: (id) => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
     updateAccountApproval: async (...args) => {
+      timeline.push("repository");
       repositoryCalls.push(args);
       if (scenario.repositoryError) {
         throw new Error("RAW SQL password=secret nguyen@example.test 0901234567");
@@ -83,13 +90,13 @@ mock.module(repositoryModule, {
 });
 mock.module(navigationModule, {
   namedExports: {
-    redirect: (location) => { throw new Error("REDIRECT:" + location); },
-    notFound: () => { throw new Error("NOT_FOUND"); }
+    redirect: (location) => { timeline.push("redirect"); throw new Error("REDIRECT:" + location); },
+    notFound: () => { timeline.push("notFound"); throw new Error("NOT_FOUND"); }
   }
 });
 mock.module(cacheModule, {
   namedExports: {
-    revalidatePath: (path) => { revalidateCalls.push(path); }
+    revalidatePath: (path) => { timeline.push("revalidate"); revalidateCalls.push(path); }
   }
 });
 
@@ -102,17 +109,23 @@ try {
     .replaceAll("next/cache", cacheModule);
   const compiled = await transform(source, { loader: "ts", format: "esm", sourcefile: "actions.ts" });
   const mod = await import("data:text/javascript," + encodeURIComponent(compiled.code));
-  const formData = new FormData();
-  for (const [key, value] of Object.entries(scenario.formData || {})) {
-    formData.append(key, value);
-  }
-  if (scenario.fileReason) {
-    formData.append("rejection_reason", new Blob(["file reason"], { type: "text/plain" }), "reason.txt");
-  }
+  let validationRecorded = false;
+  const formData = {
+    get(key) {
+      if (!validationRecorded) {
+        validationRecorded = true;
+        timeline.push("validation");
+      }
+      if (scenario.fileReason && key === "rejection_reason") {
+        return new Blob(["file reason"], { type: "text/plain" });
+      }
+      return scenario.formData?.[key] ?? null;
+    }
+  };
   await mod.updateAccountApprovalAction(scenario.id, formData);
-  console.log(JSON.stringify({ accessCalls, repositoryCalls, revalidateCalls, error: "COMPLETED" }));
+  console.log(JSON.stringify({ accessCalls, repositoryCalls, revalidateCalls, timeline, error: "COMPLETED" }));
 } catch (error) {
-  console.log(JSON.stringify({ accessCalls, repositoryCalls, revalidateCalls, error: String(error?.message ?? error) }));
+  console.log(JSON.stringify({ accessCalls, repositoryCalls, revalidateCalls, timeline, error: String(error?.message ?? error) }));
 }
 `;
 
@@ -152,6 +165,7 @@ describe("Task 3.1-F-B: admin account approval server actions", () => {
     assert.equal(result.accessCalls, 1);
     assert.deepEqual(result.repositoryCalls, []);
     assert.deepEqual(result.revalidateCalls, []);
+    assert.deepEqual(result.timeline, ["guard", "redirect"]);
   });
 
   test("non-admin and every unapproved admin status are blocked before the repository", async () => {
@@ -161,13 +175,23 @@ describe("Task 3.1-F-B: admin account approval server actions", () => {
       assert.equal(result.accessCalls, 1);
       assert.deepEqual(result.repositoryCalls, []);
       assert.deepEqual(result.revalidateCalls, []);
+      assert.deepEqual(result.timeline, ["guard", "notFound"]);
     }
+  });
+
+  test("profile-missing access is blocked before validation and the repository", async () => {
+    const result = await runAction({ access: "profile-missing", id: ACCOUNT_ID, formData: { status: "approved" } });
+    assert.equal(result.error, "NOT_FOUND");
+    assert.deepEqual(result.timeline, ["guard", "notFound"]);
+    assert.deepEqual(result.repositoryCalls, []);
+    assert.deepEqual(result.revalidateCalls, []);
   });
 
   test("an admin cannot change their own account status", async () => {
     const result = await runAction({ access: "admin", id: ADMIN_ID, formData: { status: "suspended" } });
     assert.equal(result.error, "NOT_FOUND");
     assert.deepEqual(result.repositoryCalls, []);
+    assert.deepEqual(result.timeline, ["guard", "notFound"]);
   });
 
   test("invalid UUIDs and invalid statuses do not call the repository", async () => {
@@ -175,12 +199,14 @@ describe("Task 3.1-F-B: admin account approval server actions", () => {
       const result = await runAction({ access: "admin", id, formData: { status: "approved" } });
       assertRedirect(result, "/quan-tri/tai-khoan?error=1");
       assert.deepEqual(result.repositoryCalls, []);
+      assert.deepEqual(result.timeline, ["guard", "validation", "redirect"]);
     }
 
     for (const status of ["", "pending", "deleted", "admin"]) {
       const result = await runAction({ access: "admin", id: ACCOUNT_ID, formData: { status } });
       assertRedirect(result, "/quan-tri/tai-khoan?error=1");
       assert.deepEqual(result.repositoryCalls, []);
+      assert.deepEqual(result.timeline, ["guard", "validation", "redirect"]);
     }
   });
 
@@ -189,6 +215,7 @@ describe("Task 3.1-F-B: admin account approval server actions", () => {
       const result = await runAction({ access: "admin", id: ACCOUNT_ID, formData: { status } });
       assert.deepEqual(result.repositoryCalls, [[ACCOUNT_ID, { account_status: status, rejection_reason: null }]]);
       assertRedirect(result, "/quan-tri/tai-khoan?success=1");
+      assert.deepEqual(result.timeline, ["guard", "validation", "repository", "revalidate", "redirect"]);
     }
   });
 
@@ -240,18 +267,21 @@ describe("Task 3.1-F-B: admin account approval server actions", () => {
     const invalid = await runAction({ access: "admin", id: ACCOUNT_ID, formData: { status: "rejected" }, fileReason: true });
     assertRedirect(invalid, "/quan-tri/tai-khoan?error=1");
     assert.deepEqual(invalid.repositoryCalls, []);
+    assert.deepEqual(invalid.timeline, ["guard", "validation", "redirect"]);
 
     const longReason = " x ".repeat(400);
     const bounded = await runAction({ access: "admin", id: ACCOUNT_ID, formData: { status: "rejected", rejection_reason: longReason } });
     assert.equal(bounded.repositoryCalls.length, 1);
     const payload = bounded.repositoryCalls[0][1] as { rejection_reason: string };
     assert.ok(payload.rejection_reason.length <= 500);
+    assert.deepEqual(bounded.timeline, ["guard", "validation", "repository", "revalidate", "redirect"]);
   });
 
   test("maps a missing account to a fixed not_found redirect", async () => {
     const result = await runAction({ access: "admin", id: ACCOUNT_ID, formData: { status: "approved" }, repositoryReturnsNull: true });
     assertRedirect(result, "/quan-tri/tai-khoan?error=not_found");
     assert.deepEqual(result.revalidateCalls, []);
+    assert.deepEqual(result.timeline, ["guard", "validation", "repository", "redirect"]);
   });
 
   test("maps repository errors to a fixed generic error without leaking raw data", async () => {
@@ -261,19 +291,23 @@ describe("Task 3.1-F-B: admin account approval server actions", () => {
     assert.ok(!result.error?.includes("nguyen@example.test"));
     assert.ok(!result.error?.includes("0901234567"));
     assert.deepEqual(result.revalidateCalls, []);
+    assert.deepEqual(result.timeline, ["guard", "validation", "repository", "redirect"]);
   });
 
   test("revalidates the account path and redirects with a fixed success flag", async () => {
     const result = await runAction({ access: "admin", id: ACCOUNT_ID, formData: { status: "approved" } });
     assert.deepEqual(result.revalidateCalls, ["/quan-tri/tai-khoan"]);
     assertRedirect(result, "/quan-tri/tai-khoan?success=1");
+    assert.deepEqual(result.timeline, ["guard", "validation", "repository", "revalidate", "redirect"]);
   });
 
   test("preserves redirect and notFound control-flow exceptions", async () => {
     const anonymous = await runAction({ access: "anonymous", id: "not-a-uuid", formData: {} });
     assert.equal(anonymous.error, "REDIRECT:/dang-nhap?next=/quan-tri/tai-khoan");
+    assert.deepEqual(anonymous.timeline, ["guard", "redirect"]);
 
     const blocked = await runAction({ access: "non-admin", id: "not-a-uuid", formData: {} });
     assert.equal(blocked.error, "NOT_FOUND");
+    assert.deepEqual(blocked.timeline, ["guard", "notFound"]);
   });
 });
