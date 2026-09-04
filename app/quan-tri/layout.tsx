@@ -42,6 +42,12 @@ export default async function AdminLayout({
               >
                 Hộp thư tư vấn
               </Link>
+              <Link
+                href="/quan-tri/tai-khoan"
+                className="text-slate-600 hover:text-slate-900 transition"
+              >
+                Quản lý tài khoản
+              </Link>
             </nav>
           </div>
           {access.profile?.fullName ? (
