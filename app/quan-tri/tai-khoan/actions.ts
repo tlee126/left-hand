@@ -40,8 +40,14 @@ export async function updateAccountApprovalAction(
     notFound();
   }
 
-  if (access.user?.id === id || access.profile?.id === id) {
-    notFound();
+  if (isValidUuid(id)) {
+    const normalizedId = id.toLowerCase();
+    const isSelf =
+      access.user?.id?.toLowerCase() === normalizedId ||
+      access.profile?.id?.toLowerCase() === normalizedId;
+    if (isSelf) {
+      notFound();
+    }
   }
 
   const rawStatus = formData.get("status");

@@ -16,6 +16,8 @@ type AccessScenario =
   | "rejected"
   | "suspended"
   | "profile-missing"
+  | "admin-user-case"
+  | "admin-profile-case"
   | "admin";
 
 type ActionScenario = {
@@ -59,6 +61,10 @@ const access = scenario.access === "anonymous"
           ? { status: "suspended", user: { id: ADMIN_ID }, profile: { id: ADMIN_ID, role: "admin" } }
           : scenario.access === "profile-missing"
             ? { status: "profile_missing", user: { id: ADMIN_ID }, profile: null }
+          : scenario.access === "admin-user-case"
+            ? { status: "approved", user: { id: ADMIN_ID }, profile: { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", role: "admin" } }
+          : scenario.access === "admin-profile-case"
+            ? { status: "approved", user: { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" }, profile: { id: ADMIN_ID, role: "admin" } }
           : { status: "approved", user: { id: ADMIN_ID }, profile: { id: ADMIN_ID, role: "admin" } };
 
 const authModule = "data:text/javascript,admin-approval-auth";
@@ -191,6 +197,22 @@ describe("Task 3.1-F-B: admin account approval server actions", () => {
     const result = await runAction({ access: "admin", id: ADMIN_ID, formData: { status: "suspended" } });
     assert.equal(result.error, "NOT_FOUND");
     assert.deepEqual(result.repositoryCalls, []);
+    assert.deepEqual(result.timeline, ["guard", "notFound"]);
+  });
+
+  test("blocks case-insensitive self-approval through the admin user id", async () => {
+    const result = await runAction({ access: "admin-user-case", id: ADMIN_ID.toUpperCase(), formData: { status: "approved" } });
+    assert.equal(result.error, "NOT_FOUND");
+    assert.deepEqual(result.repositoryCalls, []);
+    assert.deepEqual(result.revalidateCalls, []);
+    assert.deepEqual(result.timeline, ["guard", "notFound"]);
+  });
+
+  test("blocks case-insensitive self-approval through the admin profile id", async () => {
+    const result = await runAction({ access: "admin-profile-case", id: ADMIN_ID.toUpperCase(), formData: { status: "approved" } });
+    assert.equal(result.error, "NOT_FOUND");
+    assert.deepEqual(result.repositoryCalls, []);
+    assert.deepEqual(result.revalidateCalls, []);
     assert.deepEqual(result.timeline, ["guard", "notFound"]);
   });
 
