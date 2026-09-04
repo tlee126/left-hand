@@ -695,6 +695,33 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       );
     });
 
+    test("the real verifier rejects updated_at trigger/function changes and every privilege statement", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
+      const fixtures = [
+        "DROP TRIGGER IF EXISTS trg_consultations_updated_at ON consultations;",
+        "DROP TRIGGER trg_consultations_updated_at ON consultations;",
+        "CREATE OR REPLACE FUNCTION update_updated_at_column() RETURNS TRIGGER AS $$ BEGIN RETURN NEW; END; $$ LANGUAGE plpgsql;",
+        "DROP FUNCTION update_updated_at_column();",
+        "ALTER FUNCTION update_updated_at_column() RENAME TO changed_updated_at;",
+        "CREATE TRIGGER another_updated_at BEFORE UPDATE ON consultations FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();",
+        "ALTER TRIGGER trg_consultations_updated_at ON consultations RENAME TO changed_updated_at;",
+        "GRANT UPDATE(status) TO authenticated;",
+        "GRANT UPDATE ON TABLE consultations TO authenticated;",
+        "GRANT USAGE ON SCHEMA public TO authenticated;",
+        "GRANT SELECT, INSERT, DELETE, ALL ON TABLE consultations TO authenticated;",
+        "REVOKE UPDATE ON TABLE consultations FROM authenticated;",
+        "GRANT SELECT ON TABLE profiles TO authenticated;"
+      ];
+
+      for (const fixture of fixtures) {
+        assert.throws(
+          () => assertConsultationUpdatedByMigrationContract(`${sql}\n${fixture}`),
+          /four audit-trail statements|updated_by UUID|updater function|trigger/i,
+          `verifier must reject: ${fixture}`
+        );
+      }
+    });
+
     test("rejects a modified migration 0008 fixture", async () => {
       const sql0008 = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
       assert.throws(

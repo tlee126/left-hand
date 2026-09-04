@@ -26,6 +26,79 @@ function normalizeSql(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function stripSqlCommentsAndSplitStatements(sql: string): string[] {
+  const statements: string[] = [];
+  let current = "";
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let dollarTag: string | null = null;
+
+  for (let index = 0; index < sql.length; index += 1) {
+    const character = sql[index];
+    const next = sql[index + 1];
+
+    if (dollarTag) {
+      current += character;
+      if (sql.startsWith(dollarTag, index) && index > 0) {
+        current += sql.slice(index + 1, index + dollarTag.length);
+        index += dollarTag.length - 1;
+        dollarTag = null;
+      }
+      continue;
+    }
+
+    if (!inSingleQuote && !inDoubleQuote && character === "-" && next === "-") {
+      index += 2;
+      while (index < sql.length && sql[index] !== "\n") index += 1;
+      current += " ";
+      continue;
+    }
+    if (!inSingleQuote && !inDoubleQuote && character === "/" && next === "*") {
+      index += 2;
+      while (index < sql.length && !(sql[index] === "*" && sql[index + 1] === "/")) index += 1;
+      index += 1;
+      current += " ";
+      continue;
+    }
+
+    if (!inSingleQuote && !inDoubleQuote && character === "$" && sql.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/)) {
+      const tagMatch = sql.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/);
+      dollarTag = tagMatch![0];
+      current += dollarTag;
+      index += dollarTag.length - 1;
+      continue;
+    }
+    if (character === "'" && !inDoubleQuote) {
+      current += character;
+      if (inSingleQuote && next === "'") {
+        current += next;
+        index += 1;
+      } else {
+        inSingleQuote = !inSingleQuote;
+      }
+      continue;
+    }
+    if (character === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+      current += character;
+      continue;
+    }
+    if (character === ";" && !inSingleQuote && !inDoubleQuote) {
+      if (normalizeSql(current)) statements.push(current);
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+
+  if (normalizeSql(current)) statements.push(current);
+  return statements;
+}
+
+function normalizeMigrationStatement(statement: string): string {
+  return normalizeSql(statement).replace(/"([A-Za-z_][A-Za-z0-9_$]*)"/g, "$1").toLowerCase();
+}
+
 function extractPolicyClause(policy: string, clauseName: "USING" | "WITH CHECK"): string | null {
   const clauseStart = new RegExp(`\\b${clauseName}\\s*\\(`, "i").exec(policy);
   if (!clauseStart) return null;
@@ -52,29 +125,34 @@ function extractPolicyClause(policy: string, clauseName: "USING" | "WITH CHECK")
 
 /** Pure contract used by both the CLI audit and integration tests. */
 export function assertConsultationUpdatedByMigrationContract(sql0009: string): void {
-  const code = sql0009.replace(/--.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
   const fail = (condition: boolean, message: string) => {
     if (!condition) throw new Error(message);
   };
 
+  const statements = stripSqlCommentsAndSplitStatements(sql0009);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const alterTable = normalized.find((statement) => statement.startsWith("alter table "));
+  const updaterFunction = normalized.find((statement) => statement.startsWith("create or replace function set_consultations_updated_by"));
+  const dropTrigger = normalized.find((statement) => statement.startsWith("drop trigger "));
+  const createTrigger = normalized.find((statement) => statement.startsWith("create trigger "));
+
   fail(
-    /ALTER\s+TABLE\s+consultations\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+updated_by\s+UUID\s+REFERENCES\s+auth\.users\s*\(\s*id\s*\)\s+ON\s+DELETE\s+SET\s+NULL/i.test(code),
+    alterTable === "alter table consultations add column if not exists updated_by uuid references auth.users(id) on delete set null",
     "Migration 0009 must add nullable updated_by UUID referencing auth.users(id) ON DELETE SET NULL"
   );
   fail(
-    /CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+set_consultations_updated_by\s*\(\s*\)\s+RETURNS\s+TRIGGER[\s\S]*?NEW\.updated_by\s*=\s*auth\.uid\s*\(\s*\)\s*;[\s\S]*?RETURN\s+NEW\s*;/i.test(code),
+    Boolean(updaterFunction && /returns trigger[\s\S]*new\.updated_by\s*=\s*auth\.uid\s*\(\s*\)\s*;[\s\S]*return new\s*;/i.test(updaterFunction)),
     "Migration 0009 updater function must assign NEW.updated_by = auth.uid()"
   );
   fail(
-    /DROP\s+TRIGGER\s+IF\s+EXISTS\s+trg_consultations_updated_by\s+ON\s+consultations\s*;\s*CREATE\s+TRIGGER\s+trg_consultations_updated_by\s+BEFORE\s+UPDATE\s+ON\s+consultations\s+FOR\s+EACH\s+ROW\s+EXECUTE\s+FUNCTION\s+set_consultations_updated_by\s*\(\s*\)\s*;/i.test(code),
+    dropTrigger === "drop trigger if exists trg_consultations_updated_by on consultations",
     "Migration 0009 must drop the updater trigger immediately before recreating it"
   );
-  fail(!/SECURITY\s+DEFINER|\bservice_role\b|\bBYPASSRLS\b|\b(?:SET|ALTER)\s+ROLE\b/i.test(code), "Migration 0009 must not use privileged execution or RLS bypass");
-  fail(!/\b(?:password|secret|token|bearer|apikey|api_key|credential)\b\s*[:=]/i.test(code), "Migration 0009 must not contain credentials");
-  fail(!/GRANT\s+UPDATE\s+ON\s+(?:TABLE\s+)?consultations\b/i.test(code), "Migration 0009 must not grant table-wide UPDATE");
-  fail(!/GRANT\s+UPDATE\s*\([^)]*\bupdated_by\b[^)]*\)/i.test(code), "Migration 0009 must not grant UPDATE(updated_by)");
-  fail(!/GRANT\s+(?:SELECT|INSERT|DELETE|ALL)\b/i.test(code) && !/CREATE\s+POLICY\b/i.test(code), "Migration 0009 must not add SELECT/INSERT/DELETE grants or policies");
-  fail(!/(?:CREATE\s+TYPE|ADD\s+CONSTRAINT|CHECK\s*\([^)]*status|chk_consultations_status)/i.test(code), "Migration 0009 must not add status types or constraints");
+  fail(
+    createTrigger === "create trigger trg_consultations_updated_by before update on consultations for each row execute function set_consultations_updated_by()",
+    "Migration 0009 must drop the updater trigger immediately before recreating it"
+  );
+  fail(statements.length === 4, "Migration 0009 must contain only its four audit-trail statements");
 }
 
 async function runAudit(): Promise<void> {
