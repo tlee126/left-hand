@@ -17,7 +17,10 @@ import { promisify } from "node:util";
 import { materials, courses, tutors } from "../../data/catalog";
 import { CANONICAL_SUBJECTS } from "../../lib/domain/subjects";
 import { parseVND } from "../../lib/domain/product-types";
-import { assertConsultationUpdatedByMigrationContract } from "../../scripts/verify-supabase-migrations-seed-rls";
+import {
+  assertAdminAccountApprovalMigrationContract,
+  assertConsultationUpdatedByMigrationContract
+} from "../../scripts/verify-supabase-migrations-seed-rls";
 
 const expectedAdminPredicate = "EXISTS ( SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin' )";
 const execFileAsync = promisify(execFile);
@@ -198,7 +201,8 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "0006_consultations.sql",
         "0007_consultation_admin_rls.sql",
         "0008_consultation_admin_status_update.sql",
-        "0009_consultation_updated_by.sql"
+        "0009_consultation_updated_by.sql",
+        "0010_admin_account_approval_rls.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -760,6 +764,79 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         () => assertMigration0008Unchanged(`${sql0008}\n-- modified`, sql0008),
         /remain unchanged/i
       );
+    });
+  });
+
+  describe("6. Migration 0010 Admin Account Approval (Positive & Negative Fixtures)", () => {
+    test("accepts the canonical admin account approval migration", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0010_admin_account_approval_rls.sql"), "utf-8");
+      assert.doesNotThrow(() => assertAdminAccountApprovalMigrationContract(sql));
+    });
+
+    test("rejects broad/protected/anonymous grants and non-authenticated policy targets", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0010_admin_account_approval_rls.sql"), "utf-8");
+      const fixtures = [
+        `${sql}\nGRANT UPDATE ON TABLE profiles TO authenticated;`,
+        `${sql}\nGRANT UPDATE (role) ON TABLE profiles TO authenticated;`,
+        `${sql}\nGRANT UPDATE (email) ON TABLE profiles TO authenticated;`,
+        `${sql}\nGRANT UPDATE (id) ON TABLE profiles TO authenticated;`,
+        `${sql}\nGRANT UPDATE (approved_by) ON TABLE profiles TO authenticated;`,
+        `${sql}\nGRANT UPDATE (approved_at) ON TABLE profiles TO authenticated;`,
+        `${sql}\nGRANT UPDATE (account_status) ON TABLE profiles TO anon;`,
+        `${sql}\nGRANT SELECT ON TABLE profiles TO anon;`,
+        sql.replace("FOR SELECT\nTO authenticated", "FOR SELECT\nTO public")
+      ];
+
+      for (const [index, fixture] of fixtures.entries()) {
+        assert.throws(() => assertAdminAccountApprovalMigrationContract(fixture), /./, `fixture ${index}`);
+      }
+    });
+
+    test("rejects missing approved-admin checks, self-update protection, or unsafe recursion helpers", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0010_admin_account_approval_rls.sql"), "utf-8");
+      const fixtures = [
+        sql.replace("AND profiles.account_status = 'approved'", "AND profiles.account_status = 'pending'"),
+        sql.replace(/\n  AND profiles\.id <> auth\.uid\(\)/g, ""),
+        sql.replace("SET search_path = pg_catalog, public", "SET search_path = public"),
+        `${sql}\nCREATE OR REPLACE FUNCTION unsafe() RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER AS $$ SELECT true; $$;`,
+        `${sql}\nALTER ROLE authenticated BYPASSRLS;`,
+        `${sql}\nSET ROLE postgres;`
+      ];
+
+      for (const [index, fixture] of fixtures.entries()) {
+        assert.throws(() => assertAdminAccountApprovalMigrationContract(fixture), /./, `fixture ${index}`);
+      }
+    });
+
+    test("rejects missing/wrong audit trigger behavior and updated_at changes", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0010_admin_account_approval_rls.sql"), "utf-8");
+      const fixtures = [
+        sql.replace("NEW.approved_by = auth.uid();", "NEW.approved_by = OLD.id;"),
+        sql.replace("NEW.approved_at = timezone('utc'::text, now());", "NEW.approved_at = OLD.approved_at;"),
+        sql.replace("BEFORE UPDATE ON profiles", "AFTER UPDATE ON profiles"),
+        `${sql}\nCREATE TRIGGER another_updated_at BEFORE UPDATE ON profiles FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();`,
+        `${sql}\nCREATE OR REPLACE FUNCTION update_updated_at_column() RETURNS TRIGGER LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$;`
+      ];
+
+      for (const [index, fixture] of fixtures.entries()) {
+        assert.throws(() => assertAdminAccountApprovalMigrationContract(fixture), /./, `fixture ${index}`);
+      }
+    });
+
+    test("rejects non-canonical account status values and privilege escalation", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0010_admin_account_approval_rls.sql"), "utf-8");
+      const fixtures = [
+        `${sql}\nALTER TABLE profiles ADD CONSTRAINT extra_status CHECK (account_status IN ('pending', 'approved', 'rejected', 'suspended', 'active'));`,
+        `${sql}\nSELECT 'pending_review' AS invalid_status;`,
+        `${sql}\nGRANT UPDATE (account_status) ON TABLE profiles TO service_role;`,
+        `${sql}\nSELECT 'secret=admin_password';`,
+        `${sql}\nGRANT ALL ON TABLE profiles TO postgres;`,
+        `${sql}\nALTER TABLE profiles DISABLE ROW LEVEL SECURITY;`
+      ];
+
+      for (const [index, fixture] of fixtures.entries()) {
+        assert.throws(() => assertAdminAccountApprovalMigrationContract(fixture), /./, `fixture ${index}`);
+      }
     });
   });
 });

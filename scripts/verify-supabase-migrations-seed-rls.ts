@@ -174,7 +174,169 @@ export function assertConsultationUpdatedByMigrationContract(sql0009: string): v
   fail(statements.length === 4, "Migration 0009 must contain only its four audit-trail statements");
 }
 
-async function runAudit(): Promise<void> {
+/** Pure contract used by the CLI audit and integration tests for migration 0010. */
+export function assertAdminAccountApprovalMigrationContract(sql0010: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+
+  const statements = stripSqlCommentsAndSplitStatements(sql0010);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const code = statements.join(" ; ");
+
+  fail(!/\bservice_role\b/i.test(code), "Migration 0010 must not reference service_role");
+  fail(
+    !/\b(?:password|secret|token|bearer|apikey|api_key|service_role_key|anon_key)\b\s*[:=]/i.test(code)
+      && !/'ey[a-zA-Z0-9._-]{20,}'/.test(code),
+    "Migration 0010 must not contain credentials or hardcoded secrets"
+  );
+  fail(!/\bBYPASSRLS\b/i.test(code), "Migration 0010 must not include BYPASSRLS");
+  fail(!/\b(?:SET|ALTER)\s+ROLE\b/i.test(code), "Migration 0010 must not use SET ROLE or ALTER ROLE");
+  fail(!/\b(?:ALTER\s+SYSTEM|OWNER\s+TO)\b/i.test(code), "Migration 0010 must not escalate privileges");
+  fail(
+    !/GRANT\s+[^;]*?\bTO\s+[^;]*?\b(?:postgres|supabase_admin|service_role|authenticator|dashboard_user)\b/i.test(code),
+    "Migration 0010 must not grant privileges to system roles"
+  );
+  fail(
+    !/\bGRANT\s+[^;]*?\bTO\s+[^;]*?\b(?:anon|public)\b/i.test(code),
+    "Migration 0010 must not grant privileges to anon or public"
+  );
+  fail(!/DISABLE\s+ROW\s+LEVEL\s+SECURITY/i.test(code), "Migration 0010 must not disable RLS");
+  fail(!/\bEXECUTE\s+(?:IMMEDIATE|format)\b/i.test(code), "Migration 0010 must not use dynamic SQL");
+  fail(!/\b(?:GRANT|REVOKE)\s+[^;]*\bON\s+(?:SCHEMA|DATABASE)\b/i.test(code), "Migration 0010 must not alter unrelated schema/database privileges");
+  fail(
+    !/(?:DROP|CREATE(?:\s+OR\s+REPLACE)?|ALTER)\s+(?:TRIGGER|FUNCTION)\s+(?:trg_profiles_updated_at|update_updated_at_column|[a-zA-Z_]\w*updated_at\b)/i.test(code),
+    "Migration 0010 must not modify the established updated_at trigger or function"
+  );
+
+  const grantTables = [...code.matchAll(/GRANT\s+[^;]*?\bON\s+(?!FUNCTION\b)(?:TABLE\s+)?([a-zA-Z_]\w*)/gi)]
+    .map((match) => match[1].toLowerCase());
+  const revokeTables = [...code.matchAll(/REVOKE\s+[^;]*?\bON\s+(?!FUNCTION\b)(?:TABLE\s+)?([a-zA-Z_]\w*)/gi)]
+    .map((match) => match[1].toLowerCase());
+  fail(
+    grantTables.every((table) => table === "profiles")
+      && revokeTables.every((table) => table === "profiles"),
+    "Migration 0010 privilege statements must target profiles only"
+  );
+
+  const updateGrants = normalized.filter((statement) => /^grant\s+update\b/i.test(statement));
+  fail(
+    updateGrants.length === 1
+      && updateGrants[0] === "grant update (account_status, rejection_reason) on table profiles to authenticated",
+    "Migration 0010 must grant UPDATE only on account_status and rejection_reason to authenticated"
+  );
+  fail(
+    !/grant\s+update\s+on\s+(?:table\s+)?profiles\b/i.test(code),
+    "Migration 0010 must not grant table-wide UPDATE on profiles"
+  );
+  fail(
+    !/grant\s+update\s*\([^)]*\b(?:role|email|id|full_name|phone|approved_at|approved_by)\b/i.test(code),
+    "Migration 0010 must not grant UPDATE on protected profile columns"
+  );
+  fail(
+    /revoke update on table profiles from authenticated/i.test(code),
+    "Migration 0010 must keep table-wide UPDATE revoked"
+  );
+  fail(
+    /grant select on table profiles to authenticated/i.test(code),
+    "Migration 0010 must grant profile SELECT to authenticated"
+  );
+
+  const policyStatements = normalized.filter((statement) => /^create policy\b/i.test(statement));
+  fail(policyStatements.length === 2, "Migration 0010 must create exactly one admin SELECT and one admin UPDATE policy");
+  fail(
+    policyStatements.every((statement) => /\bon profiles for (?:select|update) to authenticated\b/i.test(statement)),
+    "Migration 0010 policies must target profiles and authenticated only"
+  );
+  fail(
+    !policyStatements.some((statement) => /\bto\s+(?:anon|public)\b/i.test(statement)),
+    "Migration 0010 must not create anon or public policies"
+  );
+
+  const selectPolicy = policyStatements.find((statement) => /\bon profiles for select\b/i.test(statement)) || "";
+  const updatePolicy = policyStatements.find((statement) => /\bon profiles for update\b/i.test(statement)) || "";
+  fail(
+    extractPolicyClause(selectPolicy, "USING")?.trim().toLowerCase() === "public.is_approved_admin()",
+    "Admin SELECT policy must use the approved-admin helper"
+  );
+  const expectedUpdatePredicate = "public.is_approved_admin() AND profiles.id <> auth.uid()";
+  fail(
+    extractPolicyClause(updatePolicy, "USING")?.replace(/\s+/g, " ").trim().toLowerCase() === expectedUpdatePredicate.toLowerCase()
+      && extractPolicyClause(updatePolicy, "WITH CHECK")?.replace(/\s+/g, " ").trim().toLowerCase() === expectedUpdatePredicate.toLowerCase(),
+    "Admin UPDATE policy must require an approved admin and forbid self-updates"
+  );
+  fail(
+    /\bon profiles for select to authenticated\b/i.test(selectPolicy)
+      && /\bon profiles for update to authenticated\b/i.test(updatePolicy),
+    "Admin policies must target authenticated only"
+  );
+
+  const helper = normalized.find((statement) => statement.startsWith("create or replace function public.is_approved_admin")) || "";
+  fail(
+    /returns boolean[\s\S]*security definer[\s\S]*set search_path = pg_catalog, public[\s\S]*select exists[\s\S]*from public\.profiles[\s\S]*profiles\.id = auth\.uid\s*\(\s*\s*\)[\s\S]*profiles\.role = 'admin'[\s\S]*profiles\.account_status = 'approved'/i.test(helper),
+    "Admin helper must be a fixed-search-path SECURITY DEFINER check for an approved admin"
+  );
+  fail(
+    normalized.filter((statement) => /\bsecurity definer\b/i.test(statement)).length === 1
+      && helper.length > 0,
+    "Only the admin-check helper may use SECURITY DEFINER"
+  );
+  fail(
+    normalized.includes("drop function if exists public.is_approved_admin()")
+      && normalized.includes("revoke execute on function public.is_approved_admin() from public, anon")
+      && normalized.includes("grant execute on function public.is_approved_admin() to authenticated"),
+    "Admin helper execution must be revoked from public/anon and granted only to authenticated"
+  );
+
+  const approvalFunction = normalized.find((statement) => statement.startsWith("create or replace function public.set_profiles_approval_audit")) || "";
+  fail(
+    normalized.includes("drop function if exists public.set_profiles_approval_audit()"),
+    "Approval trigger function must be safely replaceable"
+  );
+  fail(
+    /new\.approved_by\s*=\s*auth\.uid\s*\(\s*\s*\)\s*;/i.test(approvalFunction)
+      && /new\.approved_at\s*=\s*timezone\s*\(\s*'utc'::text\s*,\s*now\s*\(\s*\s*\)\s*\)\s*;/i.test(approvalFunction)
+      && /new\.account_status\s+is\s+distinct\s+from\s+old\.account_status/i.test(approvalFunction)
+      && /new\.rejection_reason\s+is\s+distinct\s+from\s+old\.rejection_reason/i.test(approvalFunction),
+    "Approval trigger must stamp approved_by from auth.uid() and approved_at from the UTC clock"
+  );
+  fail(
+    /old\.id\s*=\s*auth\.uid\s*\(\s*\s*\)/i.test(approvalFunction)
+      && /public\.is_approved_admin\s*\(\s*\s*\)/i.test(approvalFunction)
+      && /new\.role\s+is\s+distinct\s+from\s+old\.role/i.test(approvalFunction),
+    "Approval trigger must reject self/non-admin approval changes and protect role"
+  );
+  fail(
+    normalized.includes("drop trigger if exists trg_profiles_approval_audit on profiles")
+      && normalized.includes("create trigger trg_profiles_approval_audit before update on profiles for each row execute function public.set_profiles_approval_audit()"),
+    "Approval audit trigger must be safely replaceable and run before profile updates"
+  );
+
+  const canonicalLiterals = new Set([
+    "pending",
+    "approved",
+    "rejected",
+    "suspended",
+    "admin",
+    "utc",
+    "text",
+    "profile approval updates may change only approval fields",
+    "profile approval update is not permitted"
+  ]);
+  const allLiterals = normalized.flatMap((statement) =>
+    statement.match(/'([^']+)'/g)?.map((value) => value.slice(1, -1)) || []
+  );
+  fail(
+    allLiterals.every((value) => canonicalLiterals.has(value)),
+    "Migration 0010 must not introduce account statuses outside the canonical set"
+  );
+  fail(
+    !/CREATE\s+TYPE|ADD\s+CONSTRAINT/i.test(code),
+    "Migration 0010 must not add a second status type or constraint"
+  );
+}
+
+export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
   const migrationsDir = path.join(rootDir, "supabase/migrations");
@@ -198,13 +360,14 @@ async function runAudit(): Promise<void> {
       "0006_consultations.sql",
       "0007_consultation_admin_rls.sql",
       "0008_consultation_admin_status_update.sql",
-      "0009_consultation_updated_by.sql"
+      "0009_consultation_updated_by.sql",
+      "0010_admin_account_approval_rls.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 9 migration files exist in strict topological order",
+      check: "All 10 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -446,7 +609,22 @@ async function runAudit(): Promise<void> {
       details: "No updater grant/policy/bypass; 0008 is unchanged; repository sends only { status }"
     });
 
-    // 10. Audit supabase/seed.sql
+    // 10. Audit 0010_admin_account_approval_rls.sql
+    const sql0010 = await fs.readFile(path.join(migrationsDir, "0010_admin_account_approval_rls.sql"), "utf-8");
+    let migration0010ContractValid = true;
+    try {
+      assertAdminAccountApprovalMigrationContract(sql0010);
+    } catch {
+      migration0010ContractValid = false;
+    }
+    results.push({
+      category: "0010_admin_account_approval_rls",
+      check: "Adds approved-admin profile SELECT/approval UPDATE RLS with safe grants and audit trigger",
+      passed: migration0010ContractValid,
+      details: "Admin approval is limited to account_status/rejection_reason; approved_by/approved_at are database-managed"
+    });
+
+    // 11. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
     const isTxn = /^\s*(?:--[^\n]*\n\s*)*BEGIN\s*;/im.test(sqlSeed) && /COMMIT\s*;\s*$/i.test(sqlSeed.trim());
     const subjectsSeed = CANONICAL_SUBJECTS.every((s) => sqlSeed.includes(`'${s.slug}'`));
@@ -495,12 +673,11 @@ async function runAudit(): Promise<void> {
   }
   console.log("================================================================================\n");
 
-  const allPassed = results.every((r) => r.passed);
-  if (!allPassed) {
-    process.exit(1);
-  }
+  return results.every((r) => r.passed);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename)) {
-  void runAudit();
+  void runAudit().then((passed) => {
+    if (!passed) process.exitCode = 1;
+  });
 }
