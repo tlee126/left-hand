@@ -20,6 +20,12 @@ export default function AdminLandingPage() {
           >
             Hộp thư tư vấn
           </Link>
+          <Link
+            href="/quan-tri/tai-khoan"
+            className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+          >
+            Quản lý tài khoản
+          </Link>
         </div>
       </div>
     </main>
