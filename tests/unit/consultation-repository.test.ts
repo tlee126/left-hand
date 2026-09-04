@@ -153,7 +153,8 @@ const SAMPLE_CONSULTATION: Consultation = {
   selected_subject_slug: "ke-toan-tai-chinh-1",
   status: "new",
   created_at: "2026-09-01T10:00:00Z",
-  updated_at: "2026-09-01T10:00:00Z"
+  updated_at: "2026-09-01T10:00:00Z",
+  updated_by: null
 };
 
 describe("Task 4.2-B: Server-side Consultation Repository", () => {
@@ -792,12 +793,13 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
       assert.deepStrictEqual(eqCall.args, ["id", SAMPLE_CONSULTATION.id]);
     });
 
-    test("result contains only the minimal returned fields (id, status, updated_at)", async () => {
+    test("result contains only the minimal returned fields (id, status, updated_at, updated_by)", async () => {
       const client = createMockClient({
         queryData: {
           id: SAMPLE_CONSULTATION.id,
           status: "qualified",
           updated_at: "2026-09-03T10:00:00Z",
+          updated_by: "550e8400-e29b-41d4-a716-446655440001",
           full_name: "Nguyễn Văn A",
           phone: "0901234567",
           note: "Secret note"
@@ -813,11 +815,12 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
       assert.deepStrictEqual(result, {
         id: SAMPLE_CONSULTATION.id,
         status: "qualified",
-        updated_at: "2026-09-03T10:00:00Z"
+        updated_at: "2026-09-03T10:00:00Z",
+        updated_by: "550e8400-e29b-41d4-a716-446655440001"
       });
       assert.deepStrictEqual(
         Object.keys(result!).sort(),
-        ["id", "status", "updated_at"]
+        ["id", "status", "updated_at", "updated_by"]
       );
       assert.strictEqual((result as any).full_name, undefined);
       assert.strictEqual((result as any).phone, undefined);
@@ -829,7 +832,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         selectCall.args[0],
         CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS
       );
-      assert.strictEqual(selectCall.args[0], "id, status, updated_at");
+      assert.strictEqual(selectCall.args[0], "id, status, updated_at, updated_by");
     });
 
     test("all four valid statuses are accepted and updated", async () => {
@@ -953,7 +956,10 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         { status: "qualified", request_id: "fake-req" } as any,
         { status: "contacted", id: "550e8400-e29b-41d4-a716-446655440099" } as any,
         { status: "closed", created_at: "2020-01-01T00:00:00Z" } as any,
-        { status: "closed", updated_at: "2020-01-01T00:00:00Z" } as any
+        { status: "closed", updated_at: "2020-01-01T00:00:00Z" } as any,
+        { status: "closed", updatedBy: "550e8400-e29b-41d4-a716-446655440001" } as any,
+        { status: "closed", updated_by: "550e8400-e29b-41d4-a716-446655440001" } as any,
+        { status: "closed", userId: "550e8400-e29b-41d4-a716-446655440001" } as any
       ];
 
       for (const malicious of maliciousStatusPayloads) {
@@ -989,6 +995,8 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         "selected_subject_slug",
         "created_at",
         "updated_at",
+        "updated_by",
+        "updatedBy",
         "role",
         "userId",
         "user_id"

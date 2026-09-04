@@ -38,7 +38,8 @@ export const CONSULTATION_SELECT_COLUMNS = CONSULTATION_COLUMNS.join(", ");
 export const CONSULTATION_STATUS_UPDATE_COLUMNS = [
   "id",
   "status",
-  "updated_at"
+  "updated_at",
+  "updated_by"
 ] as const;
 
 export const CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS =
@@ -48,6 +49,7 @@ export interface UpdatedConsultationStatus {
   id: string;
   status: ConsultationStatus;
   updated_at: string;
+  updated_by: string | null;
 }
 
 const UUID_REGEX =
@@ -263,7 +265,7 @@ export async function getConsultationById(
  * - Invalid UUID/status throws ConsultationInputError without querying the database.
  * - Uses server Supabase client (createClient()), with optional positional mock client for testing.
  * - Update payload is strictly { status } - never accepts arbitrary objects or updates other columns.
- * - Queries only consultations, filters by validated UUID, and selects minimal fields (id, status, updated_at).
+ * - Queries only consultations, filters by validated UUID, and selects minimal fields (id, status, updated_at, updated_by).
  * - Returns null when no matching row is returned.
  * - Maps all database/network exceptions to ConsultationRepositoryError without exposing raw DB errors or PII.
  */
@@ -318,6 +320,7 @@ export async function updateConsultationStatus(
   return {
     id: String(row.id),
     status: row.status as ConsultationStatus,
-    updated_at: String(row.updated_at)
+    updated_at: String(row.updated_at),
+    updated_by: row.updated_by == null ? null : String(row.updated_by)
   };
 }

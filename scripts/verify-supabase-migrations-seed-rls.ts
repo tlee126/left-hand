@@ -6,6 +6,8 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { materials, courses, tutors } from "../data/catalog";
 import { CANONICAL_SUBJECTS } from "../lib/domain/subjects";
 import { parseVND } from "../lib/domain/product-types";
@@ -18,9 +20,96 @@ interface AuditResult {
 }
 
 const expectedAdminPredicate = "EXISTS ( SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin' )";
+const execFileAsync = promisify(execFile);
 
 function normalizeSql(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function stripSqlCommentsAndSplitStatements(sql: string): string[] {
+  const statements: string[] = [];
+  let current = "";
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let dollarTag: string | null = null;
+
+  for (let index = 0; index < sql.length; index += 1) {
+    const character = sql[index];
+    const next = sql[index + 1];
+
+    if (dollarTag) {
+      if (character === "-" && next === "-") {
+        index += 2;
+        while (index < sql.length && sql[index] !== "\n") index += 1;
+        current += " ";
+        continue;
+      }
+      if (character === "/" && next === "*") {
+        index += 2;
+        while (index < sql.length && !(sql[index] === "*" && sql[index + 1] === "/")) index += 1;
+        index += 1;
+        current += " ";
+        continue;
+      }
+      current += character;
+      if (sql.startsWith(dollarTag, index) && index > 0) {
+        current += sql.slice(index + 1, index + dollarTag.length);
+        index += dollarTag.length - 1;
+        dollarTag = null;
+      }
+      continue;
+    }
+
+    if (!inSingleQuote && !inDoubleQuote && character === "-" && next === "-") {
+      index += 2;
+      while (index < sql.length && sql[index] !== "\n") index += 1;
+      current += " ";
+      continue;
+    }
+    if (!inSingleQuote && !inDoubleQuote && character === "/" && next === "*") {
+      index += 2;
+      while (index < sql.length && !(sql[index] === "*" && sql[index + 1] === "/")) index += 1;
+      index += 1;
+      current += " ";
+      continue;
+    }
+
+    if (!inSingleQuote && !inDoubleQuote && character === "$" && sql.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/)) {
+      const tagMatch = sql.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/);
+      dollarTag = tagMatch![0];
+      current += dollarTag;
+      index += dollarTag.length - 1;
+      continue;
+    }
+    if (character === "'" && !inDoubleQuote) {
+      current += character;
+      if (inSingleQuote && next === "'") {
+        current += next;
+        index += 1;
+      } else {
+        inSingleQuote = !inSingleQuote;
+      }
+      continue;
+    }
+    if (character === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+      current += character;
+      continue;
+    }
+    if (character === ";" && !inSingleQuote && !inDoubleQuote) {
+      if (normalizeSql(current)) statements.push(current);
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+
+  if (normalizeSql(current)) statements.push(current);
+  return statements;
+}
+
+function normalizeMigrationStatement(statement: string): string {
+  return normalizeSql(statement).replace(/"([A-Za-z_][A-Za-z0-9_$]*)"/g, "$1").toLowerCase();
 }
 
 function extractPolicyClause(policy: string, clauseName: "USING" | "WITH CHECK"): string | null {
@@ -47,6 +136,44 @@ function extractPolicyClause(policy: string, clauseName: "USING" | "WITH CHECK")
   return null;
 }
 
+/** Pure contract used by both the CLI audit and integration tests. */
+export function assertConsultationUpdatedByMigrationContract(sql0009: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+
+  const sqlWithoutComments = stripSqlCommentsAndSplitStatements(sql0009).join(" ");
+  fail(
+    !/\bSECURITY\s+DEFINER\b/i.test(sqlWithoutComments),
+    "Migration 0009 must not contain SECURITY DEFINER"
+  );
+
+  const statements = stripSqlCommentsAndSplitStatements(sql0009);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const alterTable = normalized.find((statement) => statement.startsWith("alter table "));
+  const updaterFunction = normalized.find((statement) => statement.startsWith("create or replace function set_consultations_updated_by"));
+  const dropTrigger = normalized.find((statement) => statement.startsWith("drop trigger "));
+  const createTrigger = normalized.find((statement) => statement.startsWith("create trigger "));
+
+  fail(
+    alterTable === "alter table consultations add column if not exists updated_by uuid references auth.users(id) on delete set null",
+    "Migration 0009 must add nullable updated_by UUID referencing auth.users(id) ON DELETE SET NULL"
+  );
+  fail(
+    Boolean(updaterFunction && /returns trigger[\s\S]*new\.updated_by\s*=\s*auth\.uid\s*\(\s*\)\s*;[\s\S]*return new\s*;/i.test(updaterFunction)),
+    "Migration 0009 updater function must assign NEW.updated_by = auth.uid()"
+  );
+  fail(
+    dropTrigger === "drop trigger if exists trg_consultations_updated_by on consultations",
+    "Migration 0009 must drop the updater trigger immediately before recreating it"
+  );
+  fail(
+    createTrigger === "create trigger trg_consultations_updated_by before update on consultations for each row execute function set_consultations_updated_by()",
+    "Migration 0009 must drop the updater trigger immediately before recreating it"
+  );
+  fail(statements.length === 4, "Migration 0009 must contain only its four audit-trail statements");
+}
+
 async function runAudit(): Promise<void> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -70,13 +197,14 @@ async function runAudit(): Promise<void> {
       "0005_account_approval_gate.sql",
       "0006_consultations.sql",
       "0007_consultation_admin_rls.sql",
-      "0008_consultation_admin_status_update.sql"
+      "0008_consultation_admin_status_update.sql",
+      "0009_consultation_updated_by.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 8 migration files exist in strict topological order",
+      check: "All 9 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -289,7 +417,36 @@ async function runAudit(): Promise<void> {
       details: "Both predicates require profiles.id = auth.uid() and profiles.role = 'admin'"
     });
 
-    // 9. Audit supabase/seed.sql
+    // 9. Audit 0009_consultation_updated_by.sql
+    const sql0009 = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
+    let migration0009ContractValid = true;
+    try {
+      assertConsultationUpdatedByMigrationContract(sql0009);
+    } catch {
+      migration0009ContractValid = false;
+    }
+    const repoSource = await fs.readFile(path.join(rootDir, "lib/repositories/consultation-repository.ts"), "utf-8");
+    const repositoryDoesNotAcceptUpdater = /export\s+async\s+function\s+updateConsultationStatus\s*\(\s*id:\s*string\s*,\s*status:\s*ConsultationStatus\s*,\s*client\?:\s*any\s*\)/.test(repoSource)
+      && /\.update\(\{\s*status\s*\}\)/.test(repoSource)
+      && !/\.update\(\{[^}]*\b(?:userId|user_id|updatedBy|updated_by)\b/i.test(repoSource);
+    const migration0008Unchanged = await execFileAsync("git", ["diff", "--quiet", "main", "--", "supabase/migrations/0008_consultation_admin_status_update.sql"], { cwd: rootDir })
+      .then(() => true)
+      .catch(() => false);
+
+    results.push({
+      category: "0009_consultation_updated_by",
+      check: "Adds nullable updated_by UUID reference and a dedicated auth.uid() BEFORE UPDATE trigger",
+      passed: migration0009ContractValid,
+      details: "updated_by references auth.users(id) ON DELETE SET NULL and is assigned by the database"
+    });
+    results.push({
+      category: "0009_consultation_updated_by",
+      check: "Rejects updater grants, policies, privilege escalation, and client-supplied identity",
+      passed: migration0009ContractValid && repositoryDoesNotAcceptUpdater && migration0008Unchanged,
+      details: "No updater grant/policy/bypass; 0008 is unchanged; repository sends only { status }"
+    });
+
+    // 10. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
     const isTxn = /^\s*(?:--[^\n]*\n\s*)*BEGIN\s*;/im.test(sqlSeed) && /COMMIT\s*;\s*$/i.test(sqlSeed.trim());
     const subjectsSeed = CANONICAL_SUBJECTS.every((s) => sqlSeed.includes(`'${s.slug}'`));
@@ -344,4 +501,6 @@ async function runAudit(): Promise<void> {
   }
 }
 
-runAudit();
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename)) {
+  void runAudit();
+}

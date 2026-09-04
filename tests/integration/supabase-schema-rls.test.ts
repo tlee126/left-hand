@@ -12,11 +12,15 @@ import assert from "node:assert/strict";
 import { test, describe } from "node:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { materials, courses, tutors } from "../../data/catalog";
 import { CANONICAL_SUBJECTS } from "../../lib/domain/subjects";
 import { parseVND } from "../../lib/domain/product-types";
+import { assertConsultationUpdatedByMigrationContract } from "../../scripts/verify-supabase-migrations-seed-rls";
 
 const expectedAdminPredicate = "EXISTS ( SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin' )";
+const execFileAsync = promisify(execFile);
 
 function normalizeSql(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -172,6 +176,10 @@ function assertMigration0008Contract(
   }
 }
 
+function assertMigration0008Unchanged(candidate: string, canonical: string): void {
+  assert.strictEqual(candidate, canonical, "Migration 0008 must remain unchanged");
+}
+
 describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
   const migrationsDir = path.resolve(process.cwd(), "supabase/migrations");
   const seedPath = path.resolve(process.cwd(), "supabase/seed.sql");
@@ -189,7 +197,8 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "0005_account_approval_gate.sql",
         "0006_consultations.sql",
         "0007_consultation_admin_rls.sql",
-        "0008_consultation_admin_status_update.sql"
+        "0008_consultation_admin_status_update.sql",
+        "0009_consultation_updated_by.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -367,6 +376,14 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       const sql0006 = await fs.readFile(path.join(migrationsDir, "0006_consultations.sql"), "utf-8");
 
       assertMigration0008Contract(sql0008, { sql0004, sql0006 });
+    });
+
+    test("0009_consultation_updated_by.sql records the authenticated updater without changing 0008", async () => {
+      const sql0009 = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
+      assertConsultationUpdatedByMigrationContract(sql0009);
+      await assert.doesNotReject(
+        execFileAsync("git", ["diff", "--quiet", "main", "--", "supabase/migrations/0008_consultation_admin_status_update.sql"], { cwd: process.cwd() })
+      );
     });
   });
 
@@ -629,6 +646,120 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
 
       const crossTableRevokeSql = sql + "\nREVOKE UPDATE ON TABLE profiles FROM authenticated;";
       assert.throws(() => assertMigration0008Contract(crossTableRevokeSql), /only target consultations table/i);
+    });
+  });
+
+  describe("5. Migration 0009 Updater Audit Trail (Negative Fixtures)", () => {
+    test("rejects a missing updated_by column or an incorrect UUID reference", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
+      assert.throws(() => assertConsultationUpdatedByMigrationContract(sql.replace(/ALTER\s+TABLE[\s\S]*?;/i, "")), /updated_by UUID/i);
+      assert.throws(() => assertConsultationUpdatedByMigrationContract(sql.replace("updated_by UUID", "updated_by TEXT")), /updated_by UUID/i);
+      assert.throws(() => assertConsultationUpdatedByMigrationContract(sql.replace("REFERENCES auth.users(id)", "REFERENCES public.profiles(id)")), /auth\.users/i);
+    });
+
+    test("rejects updater triggers with wrong timing, table, or function", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
+      assert.throws(() => assertConsultationUpdatedByMigrationContract(sql.replace("BEFORE UPDATE", "AFTER UPDATE")), /immediately before recreating/i);
+      assert.throws(() => assertConsultationUpdatedByMigrationContract(sql.replace("ON consultations", "ON profiles")), /immediately before recreating/i);
+      assert.throws(() => assertConsultationUpdatedByMigrationContract(sql.replace("set_consultations_updated_by();", "another_trigger_function();")), /immediately before recreating/i);
+    });
+
+    test("rejects a trigger function that does not use auth.uid()", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
+      assert.throws(() => assertConsultationUpdatedByMigrationContract(sql.replace("auth.uid()", "NULL")), /auth\.uid/i);
+    });
+
+    test("rejects SECURITY DEFINER in every part of the canonical updater function", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
+      const languageAndAs = "LANGUAGE plpgsql\nAS $$";
+      const fixtures = [
+        sql.replace(languageAndAs, "LANGUAGE plpgsql SECURITY DEFINER\nAS $$"),
+        sql.replace(languageAndAs, "LANGUAGE plpgsql\nSECURITY DEFINER\nAS $$"),
+        sql.replace("BEGIN\n  NEW.updated_by", "BEGIN\n  SECURITY DEFINER\n  NEW.updated_by"),
+        sql.replace("  RETURN NEW;", "  SECURITY DEFINER\n  RETURN NEW;"),
+        sql.replace("  NEW.updated_by = auth.uid();", "  NEW.updated_by = auth.uid();\n  SECURITY DEFINER"),
+        sql.replace("  RETURN NEW;", "  PERFORM 'SECURITY DEFINER';\n  RETURN NEW;")
+      ];
+
+      for (const fixture of fixtures) {
+        assert.throws(
+          () => assertConsultationUpdatedByMigrationContract(fixture),
+          /SECURITY DEFINER/i
+        );
+      }
+    });
+
+    test("ignores SECURITY DEFINER text in SQL comments but rejects it in SQL text", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
+      assert.doesNotThrow(() => assertConsultationUpdatedByMigrationContract(`${sql}\n-- SECURITY DEFINER`));
+      assert.doesNotThrow(() => assertConsultationUpdatedByMigrationContract(
+        sql.replace("  NEW.updated_by = auth.uid();", "  -- SECURITY DEFINER\n  NEW.updated_by = auth.uid();")
+      ));
+      assert.throws(
+        () => assertConsultationUpdatedByMigrationContract(`${sql}\nSELECT 'SECURITY DEFINER';`),
+        /SECURITY DEFINER/i
+      );
+    });
+
+    test("rejects privileged execution, RLS bypasses, and unsafe grants or policies", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
+      const fixtures = [
+        "CREATE FUNCTION unsafe() RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$ BEGIN RETURN NEW; END; $$;",
+        "GRANT UPDATE (status) ON TABLE consultations TO service_role;",
+        "ALTER ROLE authenticated BYPASSRLS;",
+        "GRANT UPDATE ON TABLE consultations TO authenticated;",
+        "GRANT UPDATE (updated_by) ON TABLE consultations TO authenticated;",
+        "GRANT SELECT ON TABLE consultations TO authenticated;",
+        "GRANT INSERT (updated_by) ON TABLE consultations TO authenticated;",
+        "GRANT DELETE ON TABLE consultations TO authenticated;",
+        "CREATE POLICY updater_leak ON consultations FOR SELECT TO authenticated USING (true);"
+      ];
+      for (const fixture of fixtures) {
+        assert.throws(() => assertConsultationUpdatedByMigrationContract(`${sql}\n${fixture}`));
+      }
+    });
+
+    test("the real verifier rejects a migration without rerunnable trigger replacement", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
+      assert.throws(
+        () => assertConsultationUpdatedByMigrationContract(sql.replace("DROP TRIGGER IF EXISTS trg_consultations_updated_by ON consultations;\n", "")),
+        /drop the updater trigger immediately before recreating/i
+      );
+    });
+
+    test("the real verifier rejects updated_at trigger/function changes and every privilege statement", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
+      const fixtures = [
+        "DROP TRIGGER IF EXISTS trg_consultations_updated_at ON consultations;",
+        "DROP TRIGGER trg_consultations_updated_at ON consultations;",
+        "CREATE OR REPLACE FUNCTION update_updated_at_column() RETURNS TRIGGER AS $$ BEGIN RETURN NEW; END; $$ LANGUAGE plpgsql;",
+        "DROP FUNCTION update_updated_at_column();",
+        "ALTER FUNCTION update_updated_at_column() RENAME TO changed_updated_at;",
+        "CREATE TRIGGER another_updated_at BEFORE UPDATE ON consultations FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();",
+        "ALTER TRIGGER trg_consultations_updated_at ON consultations RENAME TO changed_updated_at;",
+        "GRANT UPDATE(status) TO authenticated;",
+        "GRANT UPDATE ON TABLE consultations TO authenticated;",
+        "GRANT USAGE ON SCHEMA public TO authenticated;",
+        "GRANT SELECT, INSERT, DELETE, ALL ON TABLE consultations TO authenticated;",
+        "REVOKE UPDATE ON TABLE consultations FROM authenticated;",
+        "GRANT SELECT ON TABLE profiles TO authenticated;"
+      ];
+
+      for (const fixture of fixtures) {
+        assert.throws(
+          () => assertConsultationUpdatedByMigrationContract(`${sql}\n${fixture}`),
+          /four audit-trail statements|updated_by UUID|updater function|trigger/i,
+          `verifier must reject: ${fixture}`
+        );
+      }
+    });
+
+    test("rejects a modified migration 0008 fixture", async () => {
+      const sql0008 = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
+      assert.throws(
+        () => assertMigration0008Unchanged(`${sql0008}\n-- modified`, sql0008),
+        /remain unchanged/i
+      );
     });
   });
 });
