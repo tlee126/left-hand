@@ -106,7 +106,7 @@ export default async function AdminConsultationInboxPage({
           <p className="eyebrow text-accent">
             Quản trị · Tư vấn
           </p>
-          <h1 className="mt-4 text-3xl font-black tracking-tight sm:text-4xl">Hộp thư tư vấn</h1>
+          <h1 className="mt-4 text-3xl font-black tracking-tight sm:text-4xl">Tư vấn</h1>
           <p className="mt-3 text-sm text-ink/65">Trang {page} · {consultations.length} yêu cầu trong trang này</p>
         </div>
       </header>

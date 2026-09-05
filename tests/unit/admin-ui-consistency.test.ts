@@ -194,9 +194,11 @@ describe("Task 3.1-F-D: admin UI visual consistency", () => {
     ]);
     assert.deepEqual(result.navLinks.map((link) => link.text), [
       "Tổng quan",
-      "Quản lý tài khoản",
+      "Tài khoản",
       "Tư vấn"
     ]);
+    assert.ok(!result.navLinks.some((link) => link.text === "Quản lý tài khoản"));
+    assert.ok(!result.navLinks.some((link) => link.text === "Hộp thư tư vấn"));
     assert.ok(result.classes.some((className) => className.includes("overflow-x-hidden")));
     assert.ok(result.classes.some((className) => className.includes("container-shell")));
   });
@@ -206,7 +208,7 @@ describe("Task 3.1-F-D: admin UI visual consistency", () => {
     assert.equal(result.error, undefined);
     const entryLinks = result.links.filter((link) => link.href.startsWith("/quan-tri/"));
     assert.equal(entryLinks.length, 2);
-    assert.ok(entryLinks[0].href === "/quan-tri/tai-khoan" && entryLinks[0].text.includes("Quản lý tài khoản"));
+    assert.equal(entryLinks[0].href, "/quan-tri/tai-khoan");
     assert.ok(entryLinks[1].href === "/quan-tri/tu-van" && entryLinks[1].text.includes("Tư vấn"));
     assert.ok(!entryLinks[1].text.includes("Hộp thư tư vấn"));
     for (const forbidden of ["gpa", "môn học", "kế hoạch học tập", "streak học tập"]) {
