@@ -225,6 +225,11 @@ describe("Task 3.1-F-D: admin UI visual consistency", () => {
     assert.ok(result.links.some((link) => link.href.includes("/quan-tri/tai-khoan?q=Nguyen+Van+A&status=approved&page=3")));
     assert.ok(result.text.includes("Lý do từ chối"));
     assert.ok(result.classes.some((className) => className.includes("notebook-input")));
+    const accountFieldClasses = result.classes.flatMap((className) => className.split(/\s+/));
+    assert.ok(accountFieldClasses.includes("text-ink/55"));
+    assert.ok(accountFieldClasses.includes("text-ink"));
+    assert.ok(!accountFieldClasses.includes("text-slate-500"));
+    assert.ok(!accountFieldClasses.includes("text-slate-900"));
   });
 
   test("consultation inbox and detail retain links, filters, status controls, and audit fields", async () => {
