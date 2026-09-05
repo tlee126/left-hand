@@ -35,7 +35,7 @@ export default function AdminLandingPage() {
           >
             <span className="flex items-center justify-between gap-4">
               <span>
-                <span className="block text-base font-black text-ink">Hộp thư tư vấn</span>
+                <span className="block text-base font-black text-ink">Tư vấn</span>
                 <span className="mt-1 block text-sm leading-6 text-ink/65">Theo dõi và cập nhật yêu cầu tư vấn.</span>
               </span>
               <span aria-hidden="true" className="text-xl text-violet transition group-hover:translate-x-1">→</span>

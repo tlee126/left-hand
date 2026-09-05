@@ -52,7 +52,6 @@ function ConsultationDetails({ consultation }: { consultation: Consultation }): 
       <DetailField label="Ghi chú" value={displayNullableValue(consultation.note)} />
       <DetailField label="Đường dẫn nguồn" value={displayNullableValue(consultation.source_path)} />
       <DetailField label="Slug sản phẩm đã chọn" value={displayNullableValue(consultation.selected_product_slug)} />
-      <DetailField label="Slug môn học đã chọn" value={displayNullableValue(consultation.selected_subject_slug)} />
       <div>
         <dt className="text-xs font-extrabold uppercase tracking-wide text-ink/55">Trạng thái</dt>
         <dd className="mt-2">

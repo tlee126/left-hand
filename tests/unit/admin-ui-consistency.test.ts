@@ -192,6 +192,11 @@ describe("Task 3.1-F-D: admin UI visual consistency", () => {
       "/quan-tri/tai-khoan",
       "/quan-tri/tu-van"
     ]);
+    assert.deepEqual(result.navLinks.map((link) => link.text), [
+      "Tổng quan",
+      "Quản lý tài khoản",
+      "Tư vấn"
+    ]);
     assert.ok(result.classes.some((className) => className.includes("overflow-x-hidden")));
     assert.ok(result.classes.some((className) => className.includes("container-shell")));
   });
@@ -202,7 +207,8 @@ describe("Task 3.1-F-D: admin UI visual consistency", () => {
     const entryLinks = result.links.filter((link) => link.href.startsWith("/quan-tri/"));
     assert.equal(entryLinks.length, 2);
     assert.ok(entryLinks[0].href === "/quan-tri/tai-khoan" && entryLinks[0].text.includes("Quản lý tài khoản"));
-    assert.ok(entryLinks[1].href === "/quan-tri/tu-van" && entryLinks[1].text.includes("Hộp thư tư vấn"));
+    assert.ok(entryLinks[1].href === "/quan-tri/tu-van" && entryLinks[1].text.includes("Tư vấn"));
+    assert.ok(!entryLinks[1].text.includes("Hộp thư tư vấn"));
     for (const forbidden of ["gpa", "môn học", "kế hoạch học tập", "streak học tập"]) {
       assert.ok(!result.text.toLowerCase().includes(forbidden), forbidden);
     }
@@ -255,6 +261,8 @@ describe("Task 3.1-F-D: admin UI visual consistency", () => {
       assert.ok(detail.text.includes(field), field);
     }
     assert.ok(detail.text.includes("Cập nhật trạng thái thành công."));
+    assert.ok(!detail.text.includes("Slug môn học đã chọn"));
+    assert.ok(!detail.text.includes("selected_subject_slug"));
   });
 
   test("server guards still run before repository access for every admin page", async () => {

@@ -319,7 +319,8 @@ describe("Task 4.2: Admin shell and role-aware routing", () => {
       const result = await runScenario({ target: "shell", access: "admin" });
       assert.equal(result.error, undefined, "Approved admin should not throw error");
       assert.ok(result.text?.includes("Quản trị LEFT HAND"));
-      assert.ok(result.text?.includes("Hộp thư tư vấn"));
+      assert.ok(result.text?.includes("Tư vấn"));
+      assert.ok(!result.text?.includes("Hộp thư tư vấn"));
     });
 
     test("admin shell contains links to /quan-tri and /quan-tri/tu-van", async () => {

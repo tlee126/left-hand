@@ -500,11 +500,12 @@ describe("Task 4.2-E-C: Admin consultation status UI & server action", () => {
         "Ghi chu hoc tap",
         "/khoa-hoc",
         "prod-slug",
-        "subj-slug",
         "Quay lại danh sách tư vấn"
       ]) {
         assert.ok(result.text?.includes(value), `Should include ${value}`);
       }
+      assert.ok(!result.text?.includes("subj-slug"));
+      assert.ok(!result.text?.includes("Slug môn học đã chọn"));
     });
   });
 });
