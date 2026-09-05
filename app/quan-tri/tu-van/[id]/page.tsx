@@ -32,15 +32,15 @@ function formatTimestamp(value: string): string {
 function DetailField({ label, value }: { label: string; value: string }): ReactNode {
   return (
     <div>
-      <dt className="text-sm font-semibold text-slate-600">{label}</dt>
-      <dd className="mt-1 whitespace-pre-wrap break-words text-slate-900">{value}</dd>
+      <dt className="text-xs font-extrabold uppercase tracking-wide text-ink/55">{label}</dt>
+      <dd className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-ink">{value}</dd>
     </div>
   );
 }
 
 function ConsultationDetails({ consultation }: { consultation: Consultation }): ReactNode {
   return (
-    <dl className="grid gap-6 sm:grid-cols-2">
+    <dl className="grid gap-x-8 gap-y-6 sm:grid-cols-2">
       <DetailField label="ID lead" value={consultation.id} />
       <DetailField label="Mã yêu cầu" value={consultation.request_id} />
       <DetailField label="Họ và tên" value={consultation.full_name} />
@@ -53,7 +53,14 @@ function ConsultationDetails({ consultation }: { consultation: Consultation }): 
       <DetailField label="Đường dẫn nguồn" value={displayNullableValue(consultation.source_path)} />
       <DetailField label="Slug sản phẩm đã chọn" value={displayNullableValue(consultation.selected_product_slug)} />
       <DetailField label="Slug môn học đã chọn" value={displayNullableValue(consultation.selected_subject_slug)} />
-      <DetailField label="Trạng thái" value={consultation.status} />
+      <div>
+        <dt className="text-xs font-extrabold uppercase tracking-wide text-ink/55">Trạng thái</dt>
+        <dd className="mt-2">
+          <span className="inline-flex rounded-full border border-accent/15 bg-accent/[0.07] px-2.5 py-1 text-xs font-extrabold text-ink/75">
+            {consultation.status}
+          </span>
+        </dd>
+      </div>
       <DetailField label="Thời gian tạo" value={formatTimestamp(consultation.created_at)} />
       <DetailField label="Thời gian cập nhật" value={formatTimestamp(consultation.updated_at)} />
     </dl>
@@ -98,13 +105,15 @@ export default async function AdminConsultationDetailPage({
     consultation = await getConsultationById(id);
   } catch {
     return (
-      <main className="mx-auto min-h-screen max-w-4xl px-6 py-12 text-slate-900">
-        <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+      <main className="container-shell min-h-screen px-4 pb-16 pt-8 text-ink sm:px-6 lg:px-8">
+        <section className="mx-auto max-w-4xl rounded-[26px] border border-rose-200 bg-rose-50/90 p-5 sm:p-6">
+        <p role="alert" className="text-sm font-semibold text-rose-700">
           Không thể tải thông tin tư vấn lúc này. Vui lòng thử lại sau.
         </p>
-        <Link href={INBOX_PATH} className="mt-6 inline-block font-semibold text-blue-600">
+        <Link href={INBOX_PATH} className="mt-6 inline-flex rounded-full border border-rose-200 bg-white/70 px-4 py-2 text-sm font-extrabold text-accent hover:bg-white">
           Quay lại danh sách tư vấn
         </Link>
+        </section>
       </main>
     );
   }
@@ -130,39 +139,45 @@ export default async function AdminConsultationDetailPage({
   );
 
   return (
-    <main className="mx-auto min-h-screen max-w-4xl px-6 py-12 text-slate-900">
-      <Link href={INBOX_PATH} className="font-semibold text-blue-600">
-        Quay lại danh sách tư vấn
+    <main className="container-shell min-h-screen px-4 pb-16 pt-8 text-ink sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-4xl">
+      <Link href={INBOX_PATH} className="inline-flex rounded-full border border-ink/10 bg-white/70 px-4 py-2 text-sm font-extrabold text-accent transition hover:border-accent/25 hover:bg-white">
+        ← Quay lại danh sách tư vấn
       </Link>
-      <h1 className="mt-6 text-3xl font-extrabold tracking-tight">Chi tiết tư vấn</h1>
+      <header className="mt-6">
+        <p className="eyebrow text-accent">Quản trị · Tư vấn</p>
+        <h1 className="mt-4 text-3xl font-black tracking-tight sm:text-4xl">Chi tiết tư vấn</h1>
+        <p className="mt-3 text-sm text-ink/65">Thông tin lead và lịch sử cập nhật trạng thái.</p>
+      </header>
 
       {successFlag && (
-        <p role="status" className="mt-6 rounded-lg border border-green-200 bg-green-50 p-4 text-sm text-green-800">
+        <p role="status" className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50/90 p-4 text-sm font-semibold text-emerald-800">
           Cập nhật trạng thái thành công.
         </p>
       )}
 
       {errorFlag && (
-        <p role="alert" className="mt-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+        <p role="alert" className="mt-6 rounded-2xl border border-rose-200 bg-rose-50/90 p-4 text-sm font-semibold text-rose-700">
           Không thể cập nhật trạng thái tư vấn. Vui lòng thử lại sau.
         </p>
       )}
 
-      <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6">
+      <section className="notebook-card notebook-paper-lines mt-8 rounded-[26px] p-5 sm:p-7" aria-labelledby="consultation-details-title">
+        <h2 id="consultation-details-title" className="mb-6 border-b border-ink/10 pb-4 text-lg font-black text-ink">Thông tin yêu cầu</h2>
         <ConsultationDetails consultation={consultation} />
-      </div>
+      </section>
 
-      <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6">
-        <h2 className="text-lg font-bold text-slate-900">Cập nhật trạng thái tư vấn</h2>
-        <form action={updateStatusWithId} className="mt-4 flex flex-wrap items-center gap-4">
-          <label htmlFor="status-select" className="text-sm font-medium text-slate-700">
+      <section className="surface-card mt-6 p-5 sm:p-7" aria-labelledby="consultation-status-title">
+        <h2 id="consultation-status-title" className="text-lg font-black text-ink">Cập nhật trạng thái tư vấn</h2>
+        <form action={updateStatusWithId} className="mt-5 grid gap-4 sm:grid-cols-[minmax(0,1fr)_12rem_auto] sm:items-end">
+          <label htmlFor="status-select" className="text-sm font-bold text-ink/70">
             Trạng thái hiện tại: <span className="font-semibold">{consultation.status}</span>
           </label>
           <select
             id="status-select"
             name="status"
             defaultValue={consultation.status}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="notebook-select"
           >
             {VALID_CONSULTATION_STATUSES.map((status) => (
               <option key={status} value={status}>
@@ -172,11 +187,12 @@ export default async function AdminConsultationDetailPage({
           </select>
           <button
             type="submit"
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+            className="inline-flex min-h-[50px] items-center justify-center rounded-full bg-accent px-5 text-sm font-extrabold text-white shadow-[0_8px_18px_rgba(23,101,233,0.16)] transition hover:bg-[#1258ce]"
           >
             Lưu trạng thái
           </button>
         </form>
+      </section>
       </div>
     </main>
   );
