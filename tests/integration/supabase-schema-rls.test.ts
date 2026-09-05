@@ -19,6 +19,7 @@ import { CANONICAL_SUBJECTS } from "../../lib/domain/subjects";
 import { parseVND } from "../../lib/domain/product-types";
 import {
   assertAdminAccountApprovalMigrationContract,
+  assertAdminCatalogMigrationContract,
   assertConsultationUpdatedByMigrationContract
 } from "../../scripts/verify-supabase-migrations-seed-rls";
 
@@ -202,7 +203,8 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "0007_consultation_admin_rls.sql",
         "0008_consultation_admin_status_update.sql",
         "0009_consultation_updated_by.sql",
-        "0010_admin_account_approval_rls.sql"
+        "0010_admin_account_approval_rls.sql",
+        "0011_admin_catalog_crud_rls.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -836,6 +838,63 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
 
       for (const [index, fixture] of fixtures.entries()) {
         assert.throws(() => assertAdminAccountApprovalMigrationContract(fixture), /./, `fixture ${index}`);
+      }
+    });
+  });
+
+  describe("7. Migration 0011 Admin Catalog CRUD RLS (Positive & Negative Fixtures)", () => {
+    test("accepts the canonical admin catalog CRUD migration and preserves published-only public reads", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0011_admin_catalog_crud_rls.sql"), "utf-8");
+      const publicReadSql = await fs.readFile(path.join(migrationsDir, "0002_public_catalog_read_policies.sql"), "utf-8");
+
+      assert.doesNotThrow(() => assertAdminCatalogMigrationContract(sql));
+      assert.match(publicReadSql, /publication_status\s*=\s*'published'/i);
+      assert.doesNotMatch(sql, /GRANT\s+SELECT|FOR\s+SELECT/i);
+    });
+
+    test("rejects broad, anonymous, cross-table, and SELECT privileges", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0011_admin_catalog_crud_rls.sql"), "utf-8");
+      const fixtures = [
+        `${sql}\nGRANT ALL ON TABLE subjects TO authenticated;`,
+        `${sql}\nGRANT UPDATE ON TABLE subjects TO authenticated;`,
+        `${sql}\nGRANT DELETE ON TABLE profiles TO authenticated;`,
+        `${sql}\nGRANT INSERT (slug) ON TABLE subjects TO anon;`,
+        `${sql}\nGRANT SELECT ON TABLE subjects TO authenticated;`,
+        `${sql}\nREVOKE UPDATE ON TABLE profiles FROM authenticated;`
+      ];
+
+      for (const fixture of fixtures) {
+        assert.throws(() => assertAdminCatalogMigrationContract(fixture), /./);
+      }
+    });
+
+    test("rejects missing mutation policies, weak admin predicates, unsafe roles, and OR true", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0011_admin_catalog_crud_rls.sql"), "utf-8");
+      const missingDeletePolicy = sql.replace(/CREATE POLICY "subjects_admin_delete"[\s\S]*?\n\);\n\nCREATE POLICY/, "CREATE POLICY");
+      const weakAdminPredicate = sql.replace(/AND profiles\.account_status = 'approved'/g, "AND profiles.account_status = 'pending'");
+      const anonymousPolicy = sql.replace("FOR INSERT\nTO authenticated", "FOR INSERT\nTO authenticated, anon");
+      const missingWithCheck = sql.replace("WITH CHECK (", "WITH CHECK (true OR true AND ");
+      const orTrue = sql.replace("profiles.account_status = 'approved'", "profiles.account_status = 'approved' OR true");
+      const fixtures = [missingDeletePolicy, weakAdminPredicate, anonymousPolicy, missingWithCheck, orTrue];
+
+      for (const fixture of fixtures) {
+        assert.throws(() => assertAdminCatalogMigrationContract(fixture), /./);
+      }
+    });
+
+    test("rejects SECURITY DEFINER, service role, bypass RLS, dynamic SQL, and duplicate schema objects", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0011_admin_catalog_crud_rls.sql"), "utf-8");
+      const fixtures = [
+        `${sql}\nCREATE FUNCTION unsafe() RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$ BEGIN RETURN; END; $$;`,
+        `${sql}\nGRANT DELETE ON TABLE subjects TO service_role;`,
+        `${sql}\nALTER ROLE authenticated BYPASSRLS;`,
+        `${sql}\nDO $$ BEGIN EXECUTE 'GRANT ALL ON subjects TO authenticated'; END $$;`,
+        `${sql}\nCREATE TYPE catalog_status AS ENUM ('draft', 'published');`,
+        `${sql}\nALTER TABLE subjects ADD CONSTRAINT duplicate_catalog_check CHECK (true);`
+      ];
+
+      for (const fixture of fixtures) {
+        assert.throws(() => assertAdminCatalogMigrationContract(fixture), /./);
       }
     });
   });
