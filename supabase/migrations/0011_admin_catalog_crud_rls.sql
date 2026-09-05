@@ -29,6 +29,76 @@ GRANT INSERT (product_id, name, faculty, format, availability, short_bio, streng
 GRANT UPDATE (name, faculty, format, availability, short_bio, strengths, tags, suitable_for, support_methods) ON TABLE tutors TO authenticated;
 GRANT DELETE ON TABLE tutors TO authenticated;
 
+CREATE POLICY "subjects_admin_select"
+ON subjects
+FOR SELECT
+TO authenticated
+USING (
+  EXISTS (
+    SELECT 1
+    FROM public.profiles
+    WHERE profiles.id = auth.uid()
+      AND profiles.role = 'admin'
+      AND profiles.account_status = 'approved'
+  )
+);
+
+CREATE POLICY "products_admin_select"
+ON products
+FOR SELECT
+TO authenticated
+USING (
+  EXISTS (
+    SELECT 1
+    FROM public.profiles
+    WHERE profiles.id = auth.uid()
+      AND profiles.role = 'admin'
+      AND profiles.account_status = 'approved'
+  )
+);
+
+CREATE POLICY "materials_admin_select"
+ON materials
+FOR SELECT
+TO authenticated
+USING (
+  EXISTS (
+    SELECT 1
+    FROM public.profiles
+    WHERE profiles.id = auth.uid()
+      AND profiles.role = 'admin'
+      AND profiles.account_status = 'approved'
+  )
+);
+
+CREATE POLICY "courses_admin_select"
+ON courses
+FOR SELECT
+TO authenticated
+USING (
+  EXISTS (
+    SELECT 1
+    FROM public.profiles
+    WHERE profiles.id = auth.uid()
+      AND profiles.role = 'admin'
+      AND profiles.account_status = 'approved'
+  )
+);
+
+CREATE POLICY "tutors_admin_select"
+ON tutors
+FOR SELECT
+TO authenticated
+USING (
+  EXISTS (
+    SELECT 1
+    FROM public.profiles
+    WHERE profiles.id = auth.uid()
+      AND profiles.role = 'admin'
+      AND profiles.account_status = 'approved'
+  )
+);
+
 CREATE POLICY "subjects_admin_insert"
 ON subjects
 FOR INSERT
