@@ -53,11 +53,20 @@ export default async function AdminLayout({
               </Link>
             </nav>
           </div>
-          {access.profile?.fullName ? (
-            <div className="max-w-full truncate rounded-full border border-ink/10 bg-white/70 px-3 py-1.5 text-sm font-bold text-ink/65 lg:max-w-56">
-              {access.profile.fullName}
-            </div>
-          ) : null}
+          <div className="flex w-full items-center justify-between gap-3 lg:w-auto lg:justify-end">
+            <Link
+              href="/"
+              aria-label="Về trang chủ"
+              className="nav-paper-link rounded-lg border border-ink/10 bg-white/70 px-3 py-2 text-sm font-extrabold text-ink hover:border-accent/20"
+            >
+              Về trang chủ
+            </Link>
+            {access.profile?.fullName ? (
+              <div className="max-w-full truncate rounded-full border border-ink/10 bg-white/70 px-3 py-1.5 text-sm font-bold text-ink/65 lg:max-w-56">
+                {access.profile.fullName}
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
       <div className="relative">{children}</div>

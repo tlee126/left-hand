@@ -335,6 +335,16 @@ describe("Task 4.2: Admin shell and role-aware routing", () => {
       assert.ok(result.text?.includes("Quản trị LEFT HAND"), "Shell must be titled 'Quản trị LEFT HAND'");
     });
 
+    test("approved admin shell contains an exact link back to the public home page", async () => {
+      const result = await runScenario({ target: "layout", access: "admin" });
+      assert.equal(result.error, undefined);
+
+      assert.ok(
+        result.links?.some((link) => link.href === "/" && link.text === "Về trang chủ"),
+        "Approved admin shell must contain a link to the public home page labeled 'Về trang chủ'"
+      );
+    });
+
     test("admin landing page shows admin area title and link to /quan-tri/tu-van", async () => {
       const result = await runScenario({ target: "page", access: "admin" });
       assert.equal(result.error, undefined);
