@@ -6,8 +6,7 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { createHash } from "node:crypto";
 import { materials, courses, tutors } from "../data/catalog";
 import { CANONICAL_SUBJECTS } from "../lib/domain/subjects";
 import { parseVND } from "../lib/domain/product-types";
@@ -20,7 +19,40 @@ interface AuditResult {
 }
 
 const expectedAdminPredicate = "EXISTS ( SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin' )";
-const execFileAsync = promisify(execFile);
+
+const immutableMigrationHashes = {
+  "0001_core_schema.sql": "4f8c5f8b256587d959fc03ead5187211d2e3d983b33114d3300a98baefe71dc3",
+  "0002_public_catalog_read_policies.sql": "52284e6a48d81a70b7393b644f89fa98111838fc40f369ac5e873769bbb6c21a",
+  "0003_public_catalog_table_grants.sql": "4e84c0c166aa21fd42815eaeaf570e55e982139e7e0f01c29b325ea8f1667a50",
+  "0004_profiles_schema_and_policies.sql": "4bb0cacad65ad5c8cf6a8264bc0347067793ff49e0cee2b8ae8aa7bbf04d0a04",
+  "0005_account_approval_gate.sql": "a876f5660c0835d22ac308b0d0390f4c58f8289c8827be656f0060130461f0b6",
+  "0006_consultations.sql": "a4c5c75e0b45f752f12f3cc71775f426dada33108e1bb7b8124a40d749e5a9f0",
+  "0007_consultation_admin_rls.sql": "93c003956a9b8f642605f239f4e805b79a5760daa00fe366bcb69eeeab6a9387",
+  "0008_consultation_admin_status_update.sql": "0705472f64d3a156d690d0ff5c51bfca378499b6738ed27b6bebf386b7052544",
+  "0009_consultation_updated_by.sql": "8c8bc38c4661bdd80b3451cae0f0dbd87d87c0df0e42a0a4ba7135f1d615b605",
+  "0010_admin_account_approval_rls.sql": "f13168186d1addb34c254525d61f51058e5b7386962063c0a9bb45f9e32987b8"
+} as const;
+
+export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
+
+function canonicalMigrationContent(content: string): string {
+  return content.replace(/\r\n?/g, "\n");
+}
+
+/** Pure assertion that protects the complete applied migration history from content changes. */
+export function assertMigrationHistoryUnchanged(contents: Readonly<Record<string, string>>): void {
+  for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
+    const content = contents[filename];
+    if (typeof content !== "string") {
+      throw new Error(`Immutable migration ${filename} is missing from the verification snapshot`);
+    }
+
+    const actualHash = createHash("sha256").update(canonicalMigrationContent(content), "utf8").digest("hex");
+    if (actualHash !== immutableMigrationHashes[filename]) {
+      throw new Error(`Immutable migration ${filename} must remain unchanged (canonical SHA-256 mismatch)`);
+    }
+  }
+}
 
 function normalizeSql(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -336,6 +368,93 @@ export function assertAdminAccountApprovalMigrationContract(sql0010: string): vo
   );
 }
 
+/** Pure contract used by the CLI audit and integration tests for migration 0011. */
+export function assertAdminCatalogMigrationContract(sql0011: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+
+  const statements = stripSqlCommentsAndSplitStatements(sql0011);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const code = statements.join(" ; ");
+  const catalogTables = ["subjects", "products", "materials", "courses", "tutors"];
+  const adminPredicate = "EXISTS ( SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin' AND profiles.account_status = 'approved' )";
+  const normalizedAdminPredicate = normalizeSql(adminPredicate).toLowerCase();
+
+  fail(!/\bservice_role\b/i.test(code), "Migration 0011 must not reference service_role");
+  fail(!/\b(?:password|secret|token|bearer|apikey|api_key|service_role_key|anon_key)\b\s*[:=]/i.test(code), "Migration 0011 must not contain credentials or secrets");
+  fail(!/\bBYPASSRLS\b/i.test(code), "Migration 0011 must not include BYPASSRLS");
+  fail(!/\b(?:SET|ALTER)\s+ROLE\b/i.test(code), "Migration 0011 must not use SET ROLE or ALTER ROLE");
+  fail(!/\bSECURITY\s+DEFINER\b/i.test(code), "Migration 0011 must not use SECURITY DEFINER");
+  fail(!/\b(?:EXECUTE\s+IMMEDIATE|EXECUTE\s+FORMAT|format\s*\()/i.test(code), "Migration 0011 must not use dynamic SQL");
+  fail(!/\bOR\s+TRUE\b/i.test(code), "Migration 0011 must not use OR true predicates");
+  fail(!/\bGRANT\s+ALL\b/i.test(code), "Migration 0011 must not grant ALL");
+  fail(!/\b(?:ALTER\s+SYSTEM|OWNER\s+TO|DISABLE\s+ROW\s+LEVEL\s+SECURITY)\b/i.test(code), "Migration 0011 must not escalate or bypass privileges");
+  fail(!/\bCREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\b/i.test(code), "Migration 0011 must not create functions");
+  fail(!/\b(?:CREATE\s+TYPE|ADD\s+CONSTRAINT)\b/i.test(code), "Migration 0011 must not create duplicate types or constraints");
+  fail(!/\bGRANT\s+SELECT\b/i.test(code), "Migration 0011 must not add SELECT grants");
+
+  const grantStatements = normalized.filter((statement) => /^grant\s+/i.test(statement));
+  const revokeStatements = normalized.filter((statement) => /^revoke\s+/i.test(statement));
+  const expectedRevokes = catalogTables.map(
+    (table) => `revoke insert, update, delete on table ${table} from anon, public, authenticated`
+  );
+  fail(revokeStatements.length === expectedRevokes.length, "Migration 0011 must revoke mutation privileges on exactly five catalog tables");
+  fail(expectedRevokes.every((statement) => revokeStatements.includes(statement)), "Migration 0011 has an unexpected revoke target or privilege");
+
+  const expectedGrants = [
+    "grant insert (slug, name, category, faculty_group, color_theme) on table subjects to authenticated",
+    "grant update (slug, name, category, faculty_group, color_theme) on table subjects to authenticated",
+    "grant delete on table subjects to authenticated",
+    "grant insert (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, is_contact_for_price, rating, is_hot, color_theme) on table products to authenticated",
+    "grant update (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, is_contact_for_price, rating, is_hot, color_theme) on table products to authenticated",
+    "grant delete on table products to authenticated",
+    "grant insert (product_id, pages, tags, includes, suitable_for) on table materials to authenticated",
+    "grant update (pages, tags, includes, suitable_for) on table materials to authenticated",
+    "grant delete on table materials to authenticated",
+    "grant insert (product_id, format, sessions, duration, schedule, enrollment_status, mentor, tags, curriculum, suitable_for, preparation) on table courses to authenticated",
+    "grant update (format, sessions, duration, schedule, enrollment_status, mentor, tags, curriculum, suitable_for, preparation) on table courses to authenticated",
+    "grant delete on table courses to authenticated",
+    "grant insert (product_id, name, faculty, format, availability, short_bio, strengths, tags, suitable_for, support_methods) on table tutors to authenticated",
+    "grant update (name, faculty, format, availability, short_bio, strengths, tags, suitable_for, support_methods) on table tutors to authenticated",
+    "grant delete on table tutors to authenticated"
+  ];
+  fail(grantStatements.length === expectedGrants.length, "Migration 0011 must contain only the explicit catalog mutation grants");
+  fail(expectedGrants.every((statement) => grantStatements.includes(statement)), "Migration 0011 has an unexpected grant, role, table, or column");
+  fail(
+    !grantStatements.some((statement) => /\b(?:anon|public)\b/.test(statement)),
+    "Migration 0011 must not grant mutation privileges to anon or public"
+  );
+
+  const policyStatements = normalized.filter((statement) => /^create policy\b/i.test(statement));
+  fail(policyStatements.length === catalogTables.length * 4, "Migration 0011 must create exactly SELECT, INSERT, UPDATE, and DELETE policies for each catalog table");
+  for (const table of catalogTables) {
+    for (const action of ["select", "insert", "update", "delete"] as const) {
+      const policy = policyStatements.find((statement) => new RegExp(`\\bon ${table} for ${action} to authenticated\\b`, "i").test(statement));
+      fail(Boolean(policy), `Migration 0011 is missing the authenticated ${action} policy for ${table}`);
+      const policyTarget = (policy || "").match(new RegExp(`\\bfor\\s+${action}\\s+to\\s+(.+?)\\s+(?:using|with check)\\b`, "i"))?.[1]?.trim();
+      fail(policyTarget === "authenticated", `Migration 0011 ${table} ${action} policy must target authenticated only`);
+      const using = extractPolicyClause(policy || "", "USING");
+      const withCheck = extractPolicyClause(policy || "", "WITH CHECK");
+      if (action === "select") {
+        fail(using !== null, `${table} SELECT policy must use an approved-admin USING predicate`);
+        fail(withCheck === null, `${table} SELECT policy must not use WITH CHECK`);
+        fail(normalizeSql(using || "").toLowerCase() === normalizedAdminPredicate, `${table} SELECT policy must require an approved admin`);
+        fail(!/publication_status/i.test(using || ""), `${table} admin SELECT policy must not limit publication_status`);
+      } else if (action === "insert") {
+        fail(using === null, `${table} INSERT policy must not use USING`);
+        fail(normalizeSql(withCheck || "").toLowerCase() === normalizedAdminPredicate, `${table} INSERT policy must require an approved admin`);
+      } else if (action === "update") {
+        fail(normalizeSql(using || "").toLowerCase() === normalizedAdminPredicate, `${table} UPDATE policy USING must require an approved admin`);
+        fail(normalizeSql(withCheck || "").toLowerCase() === normalizedAdminPredicate, `${table} UPDATE policy WITH CHECK must require an approved admin`);
+      } else {
+        fail(normalizeSql(using || "").toLowerCase() === normalizedAdminPredicate, `${table} DELETE policy must require an approved admin`);
+        fail(withCheck === null, `${table} DELETE policy must not use WITH CHECK`);
+      }
+    }
+  }
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -361,16 +480,46 @@ export async function runAudit(): Promise<boolean> {
       "0007_consultation_admin_rls.sql",
       "0008_consultation_admin_status_update.sql",
       "0009_consultation_updated_by.sql",
-      "0010_admin_account_approval_rls.sql"
+      "0010_admin_account_approval_rls.sql",
+      "0011_admin_catalog_crud_rls.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 10 migration files exist in strict topological order",
+      check: "All 11 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
+
+    const immutableMigrationSources = Object.fromEntries(
+      await Promise.all(
+        IMMUTABLE_MIGRATION_FILENAMES.map(async (filename) => [
+          filename,
+          await fs.readFile(path.join(migrationsDir, filename), "utf-8")
+        ])
+      )
+    );
+    let immutableHistoryValid = true;
+    try {
+      assertMigrationHistoryUnchanged(immutableMigrationSources);
+    } catch (error) {
+      immutableHistoryValid = false;
+      results.push({
+        category: "Migration History",
+        check: "Migrations 0001-0010 match their canonical LF-normalized SHA-256 snapshots",
+        passed: false,
+        details: error instanceof Error ? error.message : String(error)
+      });
+    }
+    if (immutableHistoryValid) {
+      results.push({
+        category: "Migration History",
+        check: "Migrations 0001-0010 match their canonical LF-normalized SHA-256 snapshots",
+        passed: true,
+        details: "Every applied migration is content-locked; migration 0011 is checked separately as new"
+      });
+    }
 
     // 2. Audit 0001_core_schema.sql
     const sql0001 = await fs.readFile(path.join(migrationsDir, "0001_core_schema.sql"), "utf-8");
@@ -592,10 +741,6 @@ export async function runAudit(): Promise<boolean> {
     const repositoryDoesNotAcceptUpdater = /export\s+async\s+function\s+updateConsultationStatus\s*\(\s*id:\s*string\s*,\s*status:\s*ConsultationStatus\s*,\s*client\?:\s*any\s*\)/.test(repoSource)
       && /\.update\(\{\s*status\s*\}\)/.test(repoSource)
       && !/\.update\(\{[^}]*\b(?:userId|user_id|updatedBy|updated_by)\b/i.test(repoSource);
-    const migration0008Unchanged = await execFileAsync("git", ["diff", "--quiet", "main", "--", "supabase/migrations/0008_consultation_admin_status_update.sql"], { cwd: rootDir })
-      .then(() => true)
-      .catch(() => false);
-
     results.push({
       category: "0009_consultation_updated_by",
       check: "Adds nullable updated_by UUID reference and a dedicated auth.uid() BEFORE UPDATE trigger",
@@ -605,8 +750,8 @@ export async function runAudit(): Promise<boolean> {
     results.push({
       category: "0009_consultation_updated_by",
       check: "Rejects updater grants, policies, privilege escalation, and client-supplied identity",
-      passed: migration0009ContractValid && repositoryDoesNotAcceptUpdater && migration0008Unchanged,
-      details: "No updater grant/policy/bypass; 0008 is unchanged; repository sends only { status }"
+      passed: migration0009ContractValid && repositoryDoesNotAcceptUpdater,
+      details: "No updater grant/policy/bypass; applied migration history is hash-locked; repository sends only { status }"
     });
 
     // 10. Audit 0010_admin_account_approval_rls.sql
@@ -622,6 +767,21 @@ export async function runAudit(): Promise<boolean> {
       check: "Adds approved-admin profile SELECT/approval UPDATE RLS with safe grants and audit trigger",
       passed: migration0010ContractValid,
       details: "Admin approval is limited to account_status/rejection_reason; approved_by/approved_at are database-managed"
+    });
+
+    // 11. Audit 0011_admin_catalog_crud_rls.sql
+    const sql0011 = await fs.readFile(path.join(migrationsDir, "0011_admin_catalog_crud_rls.sql"), "utf-8");
+    let migration0011ContractValid = true;
+    try {
+      assertAdminCatalogMigrationContract(sql0011);
+    } catch {
+      migration0011ContractValid = false;
+    }
+    results.push({
+      category: "0011_admin_catalog_crud_rls",
+      check: "Adds approved-admin CRUD RLS and explicit authenticated catalog grants without changing public read policy",
+      passed: migration0011ContractValid,
+      details: "Subjects, products, materials, courses, and tutors have explicit INSERT/UPDATE/DELETE controls"
     });
 
     // 11. Audit supabase/seed.sql

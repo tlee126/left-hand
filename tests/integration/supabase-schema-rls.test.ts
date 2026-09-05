@@ -12,18 +12,19 @@ import assert from "node:assert/strict";
 import { test, describe } from "node:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { materials, courses, tutors } from "../../data/catalog";
 import { CANONICAL_SUBJECTS } from "../../lib/domain/subjects";
 import { parseVND } from "../../lib/domain/product-types";
 import {
   assertAdminAccountApprovalMigrationContract,
-  assertConsultationUpdatedByMigrationContract
+  assertAdminCatalogMigrationContract,
+  assertConsultationUpdatedByMigrationContract,
+  assertMigrationHistoryUnchanged,
+  IMMUTABLE_MIGRATION_FILENAMES
 } from "../../scripts/verify-supabase-migrations-seed-rls";
 
 const expectedAdminPredicate = "EXISTS ( SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin' )";
-const execFileAsync = promisify(execFile);
+const expectedCatalogAdminPredicate = "EXISTS ( SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin' AND profiles.account_status = 'approved' )";
 
 function normalizeSql(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -179,10 +180,6 @@ function assertMigration0008Contract(
   }
 }
 
-function assertMigration0008Unchanged(candidate: string, canonical: string): void {
-  assert.strictEqual(candidate, canonical, "Migration 0008 must remain unchanged");
-}
-
 describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
   const migrationsDir = path.resolve(process.cwd(), "supabase/migrations");
   const seedPath = path.resolve(process.cwd(), "supabase/seed.sql");
@@ -202,10 +199,32 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "0007_consultation_admin_rls.sql",
         "0008_consultation_admin_status_update.sql",
         "0009_consultation_updated_by.sql",
-        "0010_admin_account_approval_rls.sql"
+        "0010_admin_account_approval_rls.sql",
+        "0011_admin_catalog_crud_rls.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
+    });
+
+    test("the canonical history verifier rejects a content mutation in every migration 0001-0010", async () => {
+      const snapshots: Record<string, string> = {};
+      for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
+        snapshots[filename] = await fs.readFile(path.join(migrationsDir, filename), "utf-8");
+      }
+
+      assert.doesNotThrow(() => assertMigrationHistoryUnchanged(snapshots));
+
+      for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
+        const mutated = {
+          ...snapshots,
+          [filename]: `${snapshots[filename]}\n-- immutable history mutation`
+        };
+        assert.throws(
+          () => assertMigrationHistoryUnchanged(mutated),
+          /canonical SHA-256 mismatch|must remain unchanged/i,
+          `${filename} mutation must be rejected by the verifier`
+        );
+      }
     });
 
     test("0001_core_schema.sql creates all 8 application tables with primary keys and constraints", async () => {
@@ -385,9 +404,6 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
     test("0009_consultation_updated_by.sql records the authenticated updater without changing 0008", async () => {
       const sql0009 = await fs.readFile(path.join(migrationsDir, "0009_consultation_updated_by.sql"), "utf-8");
       assertConsultationUpdatedByMigrationContract(sql0009);
-      await assert.doesNotReject(
-        execFileAsync("git", ["diff", "--quiet", "main", "--", "supabase/migrations/0008_consultation_admin_status_update.sql"], { cwd: process.cwd() })
-      );
     });
   });
 
@@ -758,13 +774,6 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       }
     });
 
-    test("rejects a modified migration 0008 fixture", async () => {
-      const sql0008 = await fs.readFile(path.join(migrationsDir, "0008_consultation_admin_status_update.sql"), "utf-8");
-      assert.throws(
-        () => assertMigration0008Unchanged(`${sql0008}\n-- modified`, sql0008),
-        /remain unchanged/i
-      );
-    });
   });
 
   describe("6. Migration 0010 Admin Account Approval (Positive & Negative Fixtures)", () => {
@@ -836,6 +845,90 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
 
       for (const [index, fixture] of fixtures.entries()) {
         assert.throws(() => assertAdminAccountApprovalMigrationContract(fixture), /./, `fixture ${index}`);
+      }
+    });
+  });
+
+  describe("7. Migration 0011 Admin Catalog CRUD RLS (Positive & Negative Fixtures)", () => {
+    test("accepts the canonical admin catalog CRUD migration and preserves published-only public reads", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0011_admin_catalog_crud_rls.sql"), "utf-8");
+      const publicReadSql = await fs.readFile(path.join(migrationsDir, "0002_public_catalog_read_policies.sql"), "utf-8");
+      const catalogTables = ["subjects", "products", "materials", "courses", "tutors"];
+
+      assert.doesNotThrow(() => assertAdminCatalogMigrationContract(sql));
+      for (const table of catalogTables) {
+        const policy = sql.match(new RegExp(`CREATE\\s+POLICY\\s+"${table}_admin_select"[\\s\\S]*?;`, "i"))?.[0] || "";
+        assert.ok(policy, `${table} must have an admin SELECT policy`);
+        assert.strictEqual(
+          normalizeSql(policy.match(/FOR\s+SELECT\s+TO\s+([\s\S]+?)\s+USING/i)?.[1] || ""),
+          "authenticated",
+          `${table} admin SELECT policy must target authenticated only`
+        );
+        assert.strictEqual(
+          normalizeSql(extractPolicyClause(policy, "USING") || "").toLowerCase(),
+          expectedCatalogAdminPredicate.toLowerCase(),
+          `${table} admin SELECT policy must require auth.uid(), admin role, and approved status`
+        );
+        assert.doesNotMatch(policy, /publication_status/i, `${table} admin SELECT must not filter publication_status`);
+      }
+
+      for (const table of ["products", "materials", "courses", "tutors"]) {
+        assert.match(
+          publicReadSql,
+          new RegExp(`ON\\s+${table}[\\s\\S]*?FOR\\s+SELECT\\s+TO\\s+anon,\\s*authenticated[\\s\\S]*?publication_status\\s*=\\s*'published'`, "i"),
+          `${table} must retain its public published-only SELECT policy`
+        );
+      }
+      assert.match(publicReadSql, /ON\s+subjects[\s\S]*?FOR\s+SELECT\s+TO\s+anon,\s*authenticated[\s\S]*?USING\s*\(\s*true\s*\)/i);
+    });
+
+    test("rejects broad, anonymous, cross-table, and SELECT privileges", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0011_admin_catalog_crud_rls.sql"), "utf-8");
+      const fixtures = [
+        `${sql}\nGRANT ALL ON TABLE subjects TO authenticated;`,
+        `${sql}\nGRANT UPDATE ON TABLE subjects TO authenticated;`,
+        `${sql}\nGRANT DELETE ON TABLE profiles TO authenticated;`,
+        `${sql}\nGRANT INSERT (slug) ON TABLE subjects TO anon;`,
+        `${sql}\nGRANT SELECT ON TABLE subjects TO authenticated;`,
+        `${sql}\nREVOKE UPDATE ON TABLE profiles FROM authenticated;`
+      ];
+
+      for (const fixture of fixtures) {
+        assert.throws(() => assertAdminCatalogMigrationContract(fixture), /./);
+      }
+    });
+
+    test("rejects missing or weak admin SELECT policies, unsafe roles, and OR true", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0011_admin_catalog_crud_rls.sql"), "utf-8");
+      const subjectsSelect = sql.match(/CREATE POLICY "subjects_admin_select"[\s\S]*?;/i)?.[0] || "";
+      assert.ok(subjectsSelect, "subjects SELECT policy fixture must exist");
+      const fixtures = [
+        sql.replace(subjectsSelect, ""),
+        sql.replace(subjectsSelect, subjectsSelect.replace("profiles.role = 'admin'", "profiles.role = 'moderator'")),
+        sql.replace(subjectsSelect, subjectsSelect.replace("TO authenticated", "TO authenticated, anon")),
+        sql.replace(subjectsSelect, subjectsSelect.replace("TO authenticated", "TO public")),
+        sql.replace(subjectsSelect, subjectsSelect.replace("profiles.account_status = 'approved'", "profiles.account_status = 'approved' OR true")),
+        sql.replace(subjectsSelect, subjectsSelect.replace("profiles.account_status = 'approved'", "profiles.account_status = 'approved' AND publication_status = 'published'"))
+      ];
+
+      for (const fixture of fixtures) {
+        assert.throws(() => assertAdminCatalogMigrationContract(fixture), /./);
+      }
+    });
+
+    test("rejects SECURITY DEFINER, service role, bypass RLS, dynamic SQL, and duplicate schema objects", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0011_admin_catalog_crud_rls.sql"), "utf-8");
+      const fixtures = [
+        `${sql}\nCREATE FUNCTION unsafe() RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$ BEGIN RETURN; END; $$;`,
+        `${sql}\nGRANT DELETE ON TABLE subjects TO service_role;`,
+        `${sql}\nALTER ROLE authenticated BYPASSRLS;`,
+        `${sql}\nDO $$ BEGIN EXECUTE 'GRANT ALL ON subjects TO authenticated'; END $$;`,
+        `${sql}\nCREATE TYPE catalog_status AS ENUM ('draft', 'published');`,
+        `${sql}\nALTER TABLE subjects ADD CONSTRAINT duplicate_catalog_check CHECK (true);`
+      ];
+
+      for (const fixture of fixtures) {
+        assert.throws(() => assertAdminCatalogMigrationContract(fixture), /./);
       }
     });
   });
