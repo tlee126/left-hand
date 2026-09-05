@@ -116,10 +116,11 @@ describe("Task 4.2-D: Admin consultation detail", () => {
       "new",
       "PII_NOTE_123",
       "product-secret",
-      "subject-secret",
       formatTimestamp("2026-01-01T00:00:00.000Z"),
       formatTimestamp("2026-01-02T00:00:00.000Z")
     ]) assert.ok(result.text?.includes(value));
+    assert.ok(!result.text?.includes("subject-secret"));
+    assert.ok(!result.text?.includes("Slug môn học đã chọn"));
     assert.ok(result.links?.some((link) => link.href === "/quan-tri/tu-van" && link.text.includes("Quay")));
   });
   test("renders fallback values for nullable consultation fields", async () => {
@@ -127,7 +128,7 @@ describe("Task 4.2-D: Admin consultation detail", () => {
     assert.deepEqual(result.calls, [validId]);
     assert.ok(result.text?.includes(validId));
     assert.ok(result.text?.includes("request-1"));
-    assert.equal(result.text?.match(/—/g)?.length, 5);
+    assert.equal(result.text?.match(/—/g)?.length, 4);
   });
   test("inbox lead name links to the lead UUID detail path", async () => {
     const result = await runPage({ access: "admin", id: validId, inbox: true });

@@ -79,6 +79,7 @@ function inspect(value, output) {
   if (Array.isArray(value)) { value.forEach((item) => inspect(item, output)); return; }
   if (typeof value.type === "function") { inspect(value.type(value.props), output); return; }
   if (value.props) {
+    if (value.type === "h1") output.headings.push(textOf(value.props.children));
     if (value.type === "a") output.links.push({ href: value.props.href, text: textOf(value.props.children) });
     inspect(value.props.children, output);
   }
@@ -97,7 +98,7 @@ try {
   const pageCode = compiled.code.replaceAll("react/jsx-runtime", jsxRuntimeModule);
   const page = (await import("data:text/javascript," + encodeURIComponent(pageCode))).default;
   const result = await page({ searchParams: Promise.resolve(scenario.params ?? {}) });
-  const output = { calls, text: "", links: [] };
+  const output = { calls, text: "", links: [], headings: [] };
   inspect(result, output);
   console.log(JSON.stringify(output));
 } catch (error) {
@@ -105,7 +106,7 @@ try {
 }
 `;
 
-async function runPage(scenario: Scenario): Promise<{ calls: unknown[]; text?: string; links?: { href: string; text: string }[]; error?: string }> {
+async function runPage(scenario: Scenario): Promise<{ calls: unknown[]; text?: string; links?: { href: string; text: string }[]; headings?: string[]; error?: string }> {
   const { stdout } = await execFileAsync(process.execPath, [
     "--experimental-test-module-mocks", "--import", "tsx/esm", "-e", runtimeHarness, JSON.stringify(scenario)
   ], { cwd: process.cwd(), maxBuffer: 1024 * 1024 });
@@ -154,6 +155,8 @@ describe("Task 4.2-C: Admin consultation inbox", () => {
   test("loads an approved inbox with a one-row lookahead and valid filters", async () => {
     const result = await runPage({ access: "admin", params: { q: "  Nguyen Van A ", status: "contacted", page: "3" }, rows: 21 });
     assert.deepEqual(result.calls, [{ search: "Nguyen Van A", status: "contacted", limit: 21, offset: 40 }]);
+    assert.deepEqual(result.headings, ["Tư vấn"]);
+    assert.ok(!(result.text ?? "").includes("Hộp thư tư vấn"));
     assert.equal(rowCount(result.text ?? ""), 20);
     assert.ok(result.links?.some((link) => link.href === "/quan-tri/tu-van?q=Nguyen+Van+A&status=contacted&page=4"));
     assert.ok(result.links?.some((link) => link.href === "/quan-tri/tu-van?q=Nguyen+Van+A&status=contacted&page=2"));
