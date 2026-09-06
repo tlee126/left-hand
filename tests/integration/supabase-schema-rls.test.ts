@@ -19,6 +19,7 @@ import {
   assertAdminAccountApprovalMigrationContract,
   assertAdminCatalogMigrationContract,
   assertConsultationUpdatedByMigrationContract,
+  assertMigration0012Contract,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
 } from "../../scripts/verify-supabase-migrations-seed-rls";
@@ -200,13 +201,14 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "0008_consultation_admin_status_update.sql",
         "0009_consultation_updated_by.sql",
         "0010_admin_account_approval_rls.sql",
-        "0011_admin_catalog_crud_rls.sql"
+        "0011_admin_catalog_crud_rls.sql",
+        "0012_private_material_storage.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
     });
 
-    test("the canonical history verifier rejects a content mutation in every migration 0001-0010", async () => {
+    test("the canonical history verifier rejects a content mutation in every migration 0001-0011", async () => {
       const snapshots: Record<string, string> = {};
       for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
         snapshots[filename] = await fs.readFile(path.join(migrationsDir, filename), "utf-8");
@@ -930,6 +932,149 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       for (const fixture of fixtures) {
         assert.throws(() => assertAdminCatalogMigrationContract(fixture), /./);
       }
+    });
+  });
+
+  describe("8. Migration 0012 Private Material Storage (Runtime Contract Fixtures)", () => {
+    const migrationPath = path.join(migrationsDir, "0012_private_material_storage.sql");
+
+    test("accepts the private materials bucket and exactly four approved-admin policies", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      assert.doesNotThrow(() => assertMigration0012Contract(sql));
+    });
+
+    test("rejects a public bucket or the wrong bucket id/name", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const fixtures = [
+        sql.replace("VALUES ('materials', 'materials', false)", "VALUES ('materials', 'materials', true)"),
+        sql.replace("public = false;", "public = true;"),
+        sql.replace("VALUES ('materials', 'materials', false)", "VALUES ('documents', 'materials', false)"),
+        sql.replace("VALUES ('materials', 'materials', false)", "VALUES ('materials', 'documents', false)"),
+        `${sql}\nINSERT INTO storage.buckets (id, name, public) VALUES ('extra', 'extra', false);`
+      ];
+
+      for (const fixture of fixtures) {
+        assert.throws(() => assertMigration0012Contract(fixture), /./);
+      }
+    });
+
+    test("rejects a missing or duplicated operation policy", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const selectPair = sql.match(/DROP POLICY IF EXISTS "materials_approved_admin_select"[\s\S]*?\n\);/i)?.[0] || "";
+      const selectPolicy = sql.match(/CREATE POLICY "materials_approved_admin_select"[\s\S]*?\n\);/i)?.[0] || "";
+      assert.ok(selectPair && selectPolicy, "SELECT policy fixtures must exist");
+
+      assert.throws(() => assertMigration0012Contract(sql.replace(selectPair, "")), /four|policy/i);
+      assert.throws(() => assertMigration0012Contract(`${sql}\n${selectPolicy}`), /four|policy/i);
+    });
+
+    test("rejects public, anon, and additional policy roles", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const fixtures = [
+        sql.replace("FOR SELECT\nTO authenticated", "FOR SELECT\nTO public"),
+        sql.replace("FOR SELECT\nTO authenticated", "FOR SELECT\nTO anon"),
+        sql.replace("FOR SELECT\nTO authenticated", "FOR SELECT\nTO authenticated, anon"),
+        sql.replace("FOR SELECT\nTO authenticated", "FOR SELECT\nTO authenticated, student"),
+        `${sql}\nCREATE POLICY public_materials_read ON storage.objects FOR SELECT TO public USING (bucket_id = 'materials');`
+      ];
+
+      for (const fixture of fixtures) {
+        assert.throws(() => assertMigration0012Contract(fixture), /role|authenticated|four|policy/i);
+      }
+    });
+
+    test("rejects missing admin role, approved account status, or auth.uid profile identity", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const fixtures = [
+        sql.replace(/\s+AND public\.profiles\.role = 'admin'/g, ""),
+        sql.replace(/\s+AND public\.profiles\.account_status = 'approved'/g, ""),
+        sql.replace(/public\.profiles\.id = auth\.uid\(\)/g, "public.profiles.id IS NOT NULL")
+      ];
+
+      for (const fixture of fixtures) {
+        assert.throws(() => assertMigration0012Contract(fixture), /approved-admin predicate/i);
+      }
+    });
+
+    test("rejects SELECT, INSERT, UPDATE, and DELETE predicate broadening", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      for (const action of ["select", "insert", "update", "delete"]) {
+        const policyPattern = new RegExp(`CREATE POLICY "materials_approved_admin_${action}"[\\s\\S]*?\\n\\);`, "i");
+        const policy = sql.match(policyPattern)?.[0] || "";
+        assert.ok(policy, `${action} policy fixture must exist`);
+        const broadened = policy.replace("bucket_id = 'materials'", "true OR bucket_id = 'materials'");
+        assert.throws(
+          () => assertMigration0012Contract(sql.replace(policy, broadened)),
+          /approved-admin|broaden/i,
+          `${action.toUpperCase()} broadening must fail`
+        );
+      }
+
+      assert.throws(
+        () => assertMigration0012Contract(sql.replace("FOR UPDATE\nTO authenticated\nUSING", "FOR UPDATE\nTO authenticated\nUSING (true)\nWITH CHECK")),
+        /approved-admin|broaden/i
+      );
+    });
+
+    test("rejects table-wide grants and cross-table privileges", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const fixtures = [
+        `${sql}\nGRANT ALL ON TABLE storage.objects TO authenticated;`,
+        `${sql}\nGRANT SELECT ON TABLE storage.objects TO authenticated;`,
+        `${sql}\nGRANT SELECT ON TABLE public.profiles TO authenticated;`,
+        `${sql}\nREVOKE DELETE ON TABLE public.products FROM authenticated;`
+      ];
+
+      for (const fixture of fixtures) {
+        assert.throws(() => assertMigration0012Contract(fixture), /grant|cross-table privileges/i);
+      }
+    });
+
+    test("rejects service role, SECURITY DEFINER, credentials, dynamic SQL, and RLS/role escalation", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const fixtures = [
+        `${sql}\nCREATE POLICY service_access ON storage.objects FOR SELECT TO service_role USING (true);`,
+        `${sql}\nCREATE FUNCTION unsafe() RETURNS void LANGUAGE sql SECURITY DEFINER AS $$ SELECT; $$;`,
+        `${sql}\nSELECT 'password=hardcoded;still-one-string';`,
+        `${sql}\nDO $body$ BEGIN EXECUTE 'GRANT ALL; ON storage.objects TO authenticated'; END $body$;`,
+        `${sql}\nALTER ROLE authenticated BYPASSRLS;`,
+        `${sql}\nSET ROLE postgres;`,
+        `${sql}\nALTER SYSTEM SET row_security = off;`,
+        `${sql}\nALTER TABLE storage.objects DISABLE ROW LEVEL SECURITY;`
+      ];
+
+      for (const fixture of fixtures) {
+        assert.throws(() => assertMigration0012Contract(fixture), /./);
+      }
+    });
+
+    test("rejects unrelated-table and unrelated-policy mutations", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const fixtures = [
+        `${sql}\nALTER TABLE public.products ADD COLUMN leaked text;`,
+        `${sql}\nDELETE FROM public.materials;`,
+        `${sql}\nCREATE POLICY unrelated ON public.products FOR SELECT TO authenticated USING (true);`,
+        `${sql}\nDROP POLICY IF EXISTS unrelated ON public.profiles;`
+      ];
+
+      for (const fixture of fixtures) {
+        assert.throws(() => assertMigration0012Contract(fixture), /./);
+      }
+    });
+
+    test("parses comments, quoted semicolons, and dollar-quoted bodies safely", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const comments = `${sql}\n-- GRANT ALL; SECURITY DEFINER; service_role\n/* nested /* public bucket */ SET ROLE postgres; */`;
+      assert.doesNotThrow(() => assertMigration0012Contract(comments));
+
+      assert.throws(
+        () => assertMigration0012Contract(`${sql}\nSELECT 'secret=value; GRANT ALL;';`),
+        /credentials|secret/i
+      );
+      assert.throws(
+        () => assertMigration0012Contract(`${sql}\nDO $$ BEGIN PERFORM 'one;two'; EXECUTE 'SELECT 1; SELECT 2'; END $$;`),
+        /dynamic SQL/i
+      );
     });
   });
 });
