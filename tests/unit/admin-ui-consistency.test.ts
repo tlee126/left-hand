@@ -190,12 +190,14 @@ describe("Task 3.1-F-D: admin UI visual consistency", () => {
     assert.deepEqual(result.navLinks.map((link) => link.href), [
       "/quan-tri",
       "/quan-tri/tai-khoan",
-      "/quan-tri/tu-van"
+      "/quan-tri/tu-van",
+      "/quan-tri/catalog"
     ]);
     assert.deepEqual(result.navLinks.map((link) => link.text), [
       "Tổng quan",
       "Tài khoản",
-      "Tư vấn"
+      "Tư vấn",
+      "Danh mục"
     ]);
     assert.ok(!result.navLinks.some((link) => link.text === "Quản lý tài khoản"));
     assert.ok(!result.navLinks.some((link) => link.text === "Hộp thư tư vấn"));

@@ -51,6 +51,12 @@ export default async function AdminLayout({
               >
                 Tư vấn
               </Link>
+              <Link
+                href="/quan-tri/catalog"
+                className="nav-paper-link rounded-lg border border-ink/10 bg-white/60 px-3 py-2 text-left text-ink/75 hover:border-accent/20"
+              >
+                Danh mục
+              </Link>
             </nav>
           </div>
           <div className="flex w-full items-center justify-between gap-3 lg:w-auto lg:justify-end">

@@ -420,6 +420,32 @@ describe("Task 5.1-B: admin catalog server actions", () => {
     }
   });
 
+  test("mojibake, ASCII, unsupported, and alias categories are rejected at runtime", async () => {
+    const invalidCategories = [
+      "Káº¿ toÃ¡n",
+      "Ke toan",
+      "Accounting",
+      "Other",
+      "unknown",
+      "accounting",
+      "Ketoan",
+      "Kế Toán",
+      "Kinh tế học"
+    ];
+    for (const category of invalidCategories) {
+      const result = await runAction({
+        action: "createSubjectAction",
+        access: "admin",
+        input: { ...subjectInput, category }
+      });
+      assert.equal(result.error, "REDIRECT:/quan-tri/catalog?error=1", category);
+      assert.deepEqual(result.repositoryCalls, [], category);
+      assert.deepEqual(result.revalidateCalls, [], category);
+      assert.deepEqual(result.timeline, ["guard", "validation", "redirect"], category);
+      assert.doesNotMatch(result.error, /RAW|SQL|secret|PII|0901234567/i, category);
+    }
+  });
+
   test("repository errors and false/null results use only the fixed generic error redirect", async () => {
     for (const action of ["createSubjectAction", "updateMaterialAction", "deleteCourseAction"] as const) {
       const result = await runAction({
