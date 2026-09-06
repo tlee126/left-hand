@@ -1,0 +1,347 @@
+/** Runtime-mock tests for the admin catalog server actions. */
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
+import { describe, test } from "node:test";
+
+const execFileAsync = promisify(execFile);
+const SUBJECT_ID = "11111111-1111-1111-1111-111111111111";
+const PRODUCT_ID = "22222222-2222-2222-2222-222222222222";
+const ADMIN_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+
+type ActionName =
+  | "createSubjectAction"
+  | "updateSubjectAction"
+  | "deleteSubjectAction"
+  | "createMaterialAction"
+  | "updateMaterialAction"
+  | "deleteMaterialAction"
+  | "createCourseAction"
+  | "updateCourseAction"
+  | "deleteCourseAction"
+  | "createTutorAction"
+  | "updateTutorAction"
+  | "deleteTutorAction";
+
+type Scenario = {
+  action: ActionName;
+  access?: "anonymous" | "non-admin" | "pending" | "rejected" | "suspended" | "profile-missing" | "admin";
+  id?: string;
+  input?: Record<string, unknown>;
+  repositoryError?: boolean;
+  repositoryReturnsNull?: boolean;
+  repositoryReturnsFalse?: boolean;
+};
+
+type Result = {
+  repositoryCalls: Array<{ name: string; args: unknown[] }>;
+  revalidateCalls: string[];
+  timeline: string[];
+  error: string;
+};
+
+const runtimeHarness = String.raw`
+import { readFile } from "node:fs/promises";
+import { transform } from "esbuild";
+import { mock } from "node:test";
+
+const scenario = JSON.parse(process.argv[1]);
+const repositoryCalls = [];
+const revalidateCalls = [];
+const timeline = [];
+let validationStarted = false;
+const markValidation = () => {
+  if (!validationStarted) {
+    validationStarted = true;
+    timeline.push("validation");
+  }
+};
+
+const access = scenario.access === "anonymous"
+  ? { status: "unauthenticated", user: null, profile: null }
+  : scenario.access === "non-admin"
+    ? { status: "approved", user: { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" }, profile: { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", role: "student" } }
+    : scenario.access === "pending"
+      ? { status: "pending", user: { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" }, profile: { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", role: "admin" } }
+      : scenario.access === "rejected"
+        ? { status: "rejected", user: { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" }, profile: { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", role: "admin" } }
+        : scenario.access === "suspended"
+          ? { status: "suspended", user: { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" }, profile: { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", role: "admin" } }
+          : scenario.access === "profile-missing"
+            ? { status: "profile_missing", user: { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" }, profile: null }
+            : { status: "approved", user: { id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" }, profile: { id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", role: "admin" } };
+
+const authModule = "data:text/javascript,admin-catalog-auth";
+const repositoryModule = "data:text/javascript,admin-catalog-repository";
+const navigationModule = "data:text/javascript,admin-catalog-navigation";
+const cacheModule = "data:text/javascript,admin-catalog-cache";
+
+mock.module(authModule, {
+  namedExports: {
+    getAccountAccess: async () => {
+      timeline.push("guard");
+      return access;
+    }
+  }
+});
+
+const recordRepository = (name, args) => {
+  markValidation();
+  timeline.push("repository");
+  repositoryCalls.push({ name, args });
+  if (scenario.repositoryError) throw new Error("RAW SQL secret=jwt PII@example.test 0901234567");
+  if (scenario.repositoryReturnsFalse) return false;
+  if (scenario.repositoryReturnsNull) return null;
+  return { id: args[0] ?? "created-id", slug: "safe-slug" };
+};
+
+mock.module(repositoryModule, {
+  namedExports: {
+    isValidUuid: (value) => {
+      markValidation();
+      return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+    },
+    isValidCatalogSlug: (value) => {
+      markValidation();
+      return typeof value === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value);
+    },
+    createAdminSubject: async (...args) => recordRepository("createAdminSubject", args),
+    updateAdminSubject: async (...args) => recordRepository("updateAdminSubject", args),
+    deleteAdminSubject: async (...args) => recordRepository("deleteAdminSubject", args),
+    createAdminMaterial: async (...args) => recordRepository("createAdminMaterial", args),
+    updateAdminMaterial: async (...args) => recordRepository("updateAdminMaterial", args),
+    deleteAdminMaterial: async (...args) => recordRepository("deleteAdminMaterial", args),
+    createAdminCourse: async (...args) => recordRepository("createAdminCourse", args),
+    updateAdminCourse: async (...args) => recordRepository("updateAdminCourse", args),
+    deleteAdminCourse: async (...args) => recordRepository("deleteAdminCourse", args),
+    createAdminTutor: async (...args) => recordRepository("createAdminTutor", args),
+    updateAdminTutor: async (...args) => recordRepository("updateAdminTutor", args),
+    deleteAdminTutor: async (...args) => recordRepository("deleteAdminTutor", args)
+  }
+});
+
+mock.module(navigationModule, {
+  namedExports: {
+    redirect: (location) => { timeline.push("redirect"); throw new Error("REDIRECT:" + location); },
+    notFound: () => { timeline.push("notFound"); throw new Error("NOT_FOUND"); }
+  }
+});
+mock.module(cacheModule, {
+  namedExports: {
+    revalidatePath: (path) => { timeline.push("revalidate"); revalidateCalls.push(path); }
+  }
+});
+
+try {
+  let source = await readFile(process.cwd() + "/app/quan-tri/catalog/actions.ts", "utf8");
+  source = source
+    .replaceAll("@/lib/auth/session", authModule)
+    .replaceAll("@/lib/repositories/admin-catalog-repository", repositoryModule)
+    .replaceAll("next/navigation", navigationModule)
+    .replaceAll("next/cache", cacheModule);
+  const compiled = await transform(source, { loader: "ts", format: "esm", sourcefile: "actions.ts" });
+  const mod = await import("data:text/javascript," + encodeURIComponent(compiled.code));
+  const rawInput = scenario.input ?? {};
+  const input = new Proxy(rawInput, {
+    ownKeys(target) {
+      markValidation();
+      return Reflect.ownKeys(target);
+    }
+  });
+  const action = mod[scenario.action];
+  if (scenario.action.startsWith("create")) {
+    await action(input);
+  } else if (scenario.action.startsWith("update")) {
+    await action(scenario.id, input);
+  } else {
+    await action(scenario.id);
+  }
+  console.log(JSON.stringify({ repositoryCalls, revalidateCalls, timeline, error: "COMPLETED" }));
+} catch (error) {
+  console.log(JSON.stringify({ repositoryCalls, revalidateCalls, timeline, error: String(error?.message ?? error) }));
+}
+`;
+
+async function runAction(scenario: Scenario): Promise<Result> {
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--experimental-test-module-mocks", "--import", "tsx/esm", "-e", runtimeHarness, JSON.stringify(scenario)],
+    { cwd: process.cwd(), maxBuffer: 1024 * 1024 }
+  );
+  return JSON.parse(stdout.trim()) as Result;
+}
+
+const subjectInput = {
+  slug: "marketing",
+  name: "Marketing",
+  category: "Marketing",
+  faculty_group: "Business",
+  color_theme: "marketing"
+};
+const productInput = {
+  slug: "marketing-foundation",
+  title: "Marketing Foundation",
+  description: "A bounded catalog description",
+  subject_id: SUBJECT_ID,
+  category: "Marketing",
+  delivery_kind: "digital_download",
+  publication_status: "draft",
+  price_vnd: 10000,
+  old_price_vnd: null,
+  is_contact_for_price: false,
+  rating: 5,
+  is_hot: false,
+  color_theme: "marketing"
+};
+const inputs: Record<string, Record<string, unknown>> = {
+  createSubjectAction: subjectInput,
+  updateSubjectAction: { name: "Updated Marketing" },
+  deleteSubjectAction: {},
+  createMaterialAction: { ...productInput, pages: 20, tags: ["tag"], includes: ["pdf"], suitable_for: ["students"] },
+  updateMaterialAction: { pages: 24 },
+  deleteMaterialAction: {},
+  createCourseAction: { ...productInput, delivery_kind: "live_session", format: "online", sessions: 4, duration: "4 weeks", schedule: "Saturday", mentor: "Mentor" },
+  updateCourseAction: { mentor: "Updated Mentor" },
+  deleteCourseAction: {},
+  createTutorAction: { ...productInput, delivery_kind: "one_on_one_tutoring", format: "1:1", name: "Tutor", faculty: "Business", availability: "Weekends", short_bio: "Tutor bio" },
+  updateTutorAction: { availability: "Weekdays" },
+  deleteTutorAction: {}
+};
+const allActions = Object.keys(inputs) as ActionName[];
+const updateActions = allActions.filter((action) => action.startsWith("update"));
+const deleteActions = allActions.filter((action) => action.startsWith("delete"));
+
+describe("Task 5.1-B: admin catalog server actions", () => {
+  test("has the server directive, typed CRUD action exports, and no unsafe access", async () => {
+    const source = await readFile("app/quan-tri/catalog/actions.ts", "utf8");
+    assert.match(source, /^"use server";/);
+    for (const action of allActions) assert.match(source, new RegExp(`export async function ${action}`));
+    assert.doesNotMatch(source, /@\/lib\/supabase\/browser|service_role|SUPABASE_SERVICE_ROLE_KEY/i);
+    assert.doesNotMatch(source, /\.from\(|\.rpc\(|dynamic SQL/i);
+  });
+
+  test("anonymous access redirects every action before validation and repository", async () => {
+    for (const action of allActions) {
+      const result = await runAction({ action, access: "anonymous", id: PRODUCT_ID, input: inputs[action] });
+      assert.equal(result.error, "REDIRECT:/dang-nhap?next=/quan-tri");
+      assert.deepEqual(result.repositoryCalls, []);
+      assert.deepEqual(result.revalidateCalls, []);
+      assert.deepEqual(result.timeline, ["guard", "redirect"]);
+    }
+  });
+
+  test("non-admin, unapproved, and missing-profile access is blocked before validation and repository", async () => {
+    for (const access of ["non-admin", "pending", "rejected", "suspended", "profile-missing"] as const) {
+      const result = await runAction({ action: "createSubjectAction", access, input: subjectInput });
+      assert.equal(result.error, "NOT_FOUND");
+      assert.deepEqual(result.repositoryCalls, []);
+      assert.deepEqual(result.timeline, ["guard", "notFound"]);
+    }
+  });
+
+  test("invalid UUIDs are rejected before repository for every update/delete action", async () => {
+    for (const action of [...updateActions, ...deleteActions]) {
+      const result = await runAction({ action, access: "admin", id: "not-a-uuid", input: inputs[action] });
+      assert.equal(result.error, "REDIRECT:/quan-tri/catalog?error=1", action);
+      assert.deepEqual(result.repositoryCalls, []);
+      assert.deepEqual(result.timeline, ["guard", "validation", "redirect"]);
+    }
+  });
+
+  test("invalid slug, status, required fields, and arbitrary fields are rejected before repository", async () => {
+    const invalidCases: Array<{ action: ActionName; input: Record<string, unknown> }> = [
+      { action: "createSubjectAction", input: { ...subjectInput, slug: "Bad Slug" } },
+      { action: "createMaterialAction", input: { ...inputs.createMaterialAction, publication_status: "pending" } },
+      { action: "createCourseAction", input: { ...inputs.createCourseAction, sessions: 0 } },
+      { action: "createTutorAction", input: { ...inputs.createTutorAction, short_bio: "" } },
+      { action: "updateMaterialAction", input: { role: "admin" } },
+      { action: "updateCourseAction", input: { arbitrary: "field" } },
+      { action: "updateTutorAction", input: { subject_id: "invalid" } },
+      { action: "updateSubjectAction", input: {} }
+    ];
+    for (const current of invalidCases) {
+      const result = await runAction({ action: current.action, access: "admin", id: PRODUCT_ID, input: current.input });
+      assert.equal(result.error, "REDIRECT:/quan-tri/catalog?error=1", current.action);
+      assert.deepEqual(result.repositoryCalls, []);
+      assert.equal(result.timeline.at(-1), "redirect");
+      assert.ok(result.timeline.indexOf("validation") < result.timeline.indexOf("redirect"));
+    }
+  });
+
+  test("create/update/delete calls every repository method with exact ID and allowed payload", async () => {
+    for (const action of allActions) {
+      const result = await runAction({ action, access: "admin", id: PRODUCT_ID, input: inputs[action] });
+      assert.equal(result.error, "REDIRECT:/quan-tri/catalog?success=1", action);
+      assert.equal(result.repositoryCalls.length, 1);
+      const call = result.repositoryCalls[0];
+      if (action.startsWith("delete")) {
+        assert.deepEqual(call.args, [PRODUCT_ID]);
+      } else if (action.startsWith("update")) {
+        assert.equal(call.args[0], PRODUCT_ID);
+        assert.deepEqual(Object.keys(call.args[1] as object).sort(), Object.keys(inputs[action]).sort());
+      } else {
+        assert.deepEqual(Object.keys(call.args[0] as object).sort(), Object.keys(inputs[action]).sort());
+      }
+      const serialized = JSON.stringify(call.args);
+      assert.doesNotMatch(serialized, /role|user_id|userId|approved_by|updated_by|arbitrary/);
+      assert.deepEqual(result.timeline.slice(0, 3), ["guard", "validation", "repository"]);
+    }
+  });
+
+  test("repository errors and false/null results use only the fixed generic error redirect", async () => {
+    for (const action of ["createSubjectAction", "updateMaterialAction", "deleteCourseAction"] as const) {
+      const result = await runAction({
+        action,
+        access: "admin",
+        id: PRODUCT_ID,
+        input: inputs[action],
+        repositoryError: true
+      });
+      assert.equal(result.error, "REDIRECT:/quan-tri/catalog?error=1");
+      assert.doesNotMatch(result.error, /RAW|secret|PII|0901234567|SQL/);
+      assert.deepEqual(result.revalidateCalls, []);
+    }
+    for (const [action, field] of [["updateSubjectAction", "repositoryReturnsNull"], ["deleteTutorAction", "repositoryReturnsFalse"]] as const) {
+      const result = await runAction({ action, access: "admin", id: PRODUCT_ID, input: inputs[action], [field]: true });
+      assert.equal(result.error, "REDIRECT:/quan-tri/catalog?error=1");
+      assert.deepEqual(result.revalidateCalls, []);
+      assert.deepEqual(result.timeline.slice(-1), ["redirect"]);
+    }
+  });
+
+  test("success revalidates the admin route and the corresponding public route", async () => {
+    const expected: Record<ActionName, string[]> = {
+      createSubjectAction: ["/quan-tri/catalog", "/tai-lieu", "/khoa-hoc", "/tutor"],
+      updateSubjectAction: ["/quan-tri/catalog", "/tai-lieu", "/khoa-hoc", "/tutor"],
+      deleteSubjectAction: ["/quan-tri/catalog", "/tai-lieu", "/khoa-hoc", "/tutor"],
+      createMaterialAction: ["/quan-tri/catalog", "/tai-lieu", "/tai-lieu/safe-slug"],
+      updateMaterialAction: ["/quan-tri/catalog", "/tai-lieu", "/tai-lieu/safe-slug"],
+      deleteMaterialAction: ["/quan-tri/catalog", "/tai-lieu"],
+      createCourseAction: ["/quan-tri/catalog", "/khoa-hoc", "/khoa-hoc/safe-slug"],
+      updateCourseAction: ["/quan-tri/catalog", "/khoa-hoc", "/khoa-hoc/safe-slug"],
+      deleteCourseAction: ["/quan-tri/catalog", "/khoa-hoc"],
+      createTutorAction: ["/quan-tri/catalog", "/tutor", "/tutor/safe-slug"],
+      updateTutorAction: ["/quan-tri/catalog", "/tutor", "/tutor/safe-slug"],
+      deleteTutorAction: ["/quan-tri/catalog", "/tutor"]
+    };
+    for (const action of allActions) {
+      const result = await runAction({ action, access: "admin", id: PRODUCT_ID, input: inputs[action] });
+      assert.deepEqual(result.revalidateCalls, expected[action], action);
+      assert.equal(result.error, "REDIRECT:/quan-tri/catalog?success=1");
+      assert.deepEqual(
+        result.timeline.slice(3),
+        [...expected[action].map(() => "revalidate"), "redirect"]
+      );
+    }
+  });
+
+  test("navigation control-flow exceptions are not converted into repository errors", async () => {
+    const anonymous = await runAction({ action: "deleteTutorAction", access: "anonymous", id: "not-a-uuid" });
+    assert.equal(anonymous.error, "REDIRECT:/dang-nhap?next=/quan-tri");
+    assert.deepEqual(anonymous.timeline, ["guard", "redirect"]);
+    const blocked = await runAction({ action: "deleteTutorAction", access: "non-admin", id: "not-a-uuid" });
+    assert.equal(blocked.error, "NOT_FOUND");
+    assert.deepEqual(blocked.timeline, ["guard", "notFound"]);
+  });
+});
