@@ -20,6 +20,7 @@ import {
   assertAdminCatalogMigrationContract,
   assertConsultationUpdatedByMigrationContract,
   assertMigration0012Contract,
+  assertMigration0013Contract,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
 } from "../../scripts/verify-supabase-migrations-seed-rls";
@@ -202,13 +203,14 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "0009_consultation_updated_by.sql",
         "0010_admin_account_approval_rls.sql",
         "0011_admin_catalog_crud_rls.sql",
-        "0012_private_material_storage.sql"
+        "0012_private_material_storage.sql",
+        "0013_material_asset_metadata.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
     });
 
-    test("the canonical history verifier rejects a content mutation in every migration 0001-0011", async () => {
+    test("the canonical history verifier rejects a content mutation in every migration 0001-0012", async () => {
       const snapshots: Record<string, string> = {};
       for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
         snapshots[filename] = await fs.readFile(path.join(migrationsDir, filename), "utf-8");
@@ -1075,6 +1077,40 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         () => assertMigration0012Contract(`${sql}\nDO $$ BEGIN PERFORM 'one;two'; EXECUTE 'SELECT 1; SELECT 2'; END $$;`),
         /dynamic SQL/i
       );
+    });
+  });
+
+  describe("9. Migration 0013 Material Asset Metadata (Runtime Contract Fixtures)", () => {
+    const migrationPath = path.join(migrationsDir, "0013_material_asset_metadata.sql");
+
+    test("accepts the exact immutable metadata, material-parent, and approved-admin contract", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      assert.doesNotThrow(() => assertMigration0013Contract(sql));
+    });
+
+    test("rejects metadata broadening, unsafe paths, non-material parents, and storage changes", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const fixtures = [
+        sql.replace("byte_size > 0", "byte_size >= 0"),
+        sql.replace("version >= 1", "version >= 0"),
+        sql.replace("visibility = 'private'", "visibility IN ('private', 'public')"),
+        sql.replace("REFERENCES public.materials(product_id) ON DELETE CASCADE", "REFERENCES public.products(id) ON DELETE CASCADE"),
+        sql.replace("/v[1-9][0-9]*/", "/files/"),
+        sql.replace("FOR INSERT\nTO authenticated", "FOR INSERT\nTO authenticated, anon"),
+        `${sql}\nCREATE POLICY material_assets_public_read ON public.material_assets FOR SELECT TO public USING (true);`,
+        `${sql}\nCREATE POLICY material_assets_update ON public.material_assets FOR UPDATE TO authenticated USING (true);`,
+        `${sql}\nINSERT INTO storage.buckets (id, name, public) VALUES ('materials', 'materials', true);`,
+        `${sql}\nCREATE FUNCTION unsafe() RETURNS void LANGUAGE sql SECURITY DEFINER AS $$ SELECT; $$;`,
+        `${sql}\nDO $$ BEGIN EXECUTE 'SELECT 1'; END $$;`
+      ];
+      for (const fixture of fixtures) assert.throws(() => assertMigration0013Contract(fixture), /./);
+    });
+
+    test("parses comments, quoted semicolons, and dollar-quoted unsafe statements safely", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      assert.doesNotThrow(() => assertMigration0013Contract(`${sql}\n-- service_role; SECURITY DEFINER\n/* nested /* public */ comment */`));
+      assert.throws(() => assertMigration0013Contract(`${sql}\nSELECT 'secret=value; still quoted';`), /credential/i);
+      assert.throws(() => assertMigration0013Contract(`${sql}\nDO $$ BEGIN EXECUTE 'SELECT 1; SELECT 2'; END $$;`), /dynamic/i);
     });
   });
 });
