@@ -179,6 +179,15 @@ const subjectInput = {
   faculty_group: " Business ",
   color_theme: "marketing"
 };
+const canonicalVietnameseCategories = [
+  "Kế toán",
+  "Kinh tế",
+  "Thống kê",
+  "Quản trị",
+  "Tài chính",
+  "Luật",
+  "Ngoại ngữ"
+] as const;
 const productInput = {
   slug: " marketing-foundation ",
   title: " Marketing Foundation ",
@@ -385,6 +394,28 @@ describe("Task 5.1-B: admin catalog server actions", () => {
       assert.deepStrictEqual(call.args, expectedRepositoryArguments[action]);
       const serialized = JSON.stringify(call.args);
       assert.doesNotMatch(serialized, /role|user_id|userId|approved_by|updated_by|arbitrary/);
+      assert.deepEqual(result.timeline.slice(0, 3), ["guard", "validation", "repository"]);
+    }
+  });
+
+  test("canonical Vietnamese categories are accepted and forwarded exactly", async () => {
+    for (const category of canonicalVietnameseCategories) {
+      const result = await runAction({
+        action: "createSubjectAction",
+        access: "admin",
+        input: { ...subjectInput, category }
+      });
+      assert.equal(result.error, "REDIRECT:/quan-tri/catalog?success=1", category);
+      assert.deepEqual(result.repositoryCalls, [{
+        name: "createAdminSubject",
+        args: [{
+          slug: "marketing",
+          name: "Marketing",
+          category,
+          faculty_group: "Business",
+          color_theme: "marketing"
+        }]
+      }]);
       assert.deepEqual(result.timeline.slice(0, 3), ["guard", "validation", "repository"]);
     }
   });

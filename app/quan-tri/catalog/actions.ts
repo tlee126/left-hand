@@ -34,15 +34,15 @@ const ERROR_REDIRECT = `${ADMIN_CATALOG_PATH}?error=1`;
 const SUCCESS_REDIRECT = `${ADMIN_CATALOG_PATH}?success=1`;
 
 const CATEGORIES = [
-  "Káº¿ toÃ¡n",
-  "Kinh táº¿",
-  "Thá»‘ng kÃª",
+  "Kế toán",
+  "Kinh tế",
+  "Thống kê",
   "Marketing",
-  "Quáº£n trá»‹",
-  "TÃ i chÃ­nh",
+  "Quản trị",
+  "Tài chính",
   "MIS",
-  "Luáº­t",
-  "Ngoáº¡i ngá»¯"
+  "Luật",
+  "Ngoại ngữ"
 ] as const;
 const COLOR_THEMES = [
   "accounting",
