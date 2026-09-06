@@ -30,7 +30,8 @@ const immutableMigrationHashes = {
   "0007_consultation_admin_rls.sql": "93c003956a9b8f642605f239f4e805b79a5760daa00fe366bcb69eeeab6a9387",
   "0008_consultation_admin_status_update.sql": "0705472f64d3a156d690d0ff5c51bfca378499b6738ed27b6bebf386b7052544",
   "0009_consultation_updated_by.sql": "8c8bc38c4661bdd80b3451cae0f0dbd87d87c0df0e42a0a4ba7135f1d615b605",
-  "0010_admin_account_approval_rls.sql": "f13168186d1addb34c254525d61f51058e5b7386962063c0a9bb45f9e32987b8"
+  "0010_admin_account_approval_rls.sql": "f13168186d1addb34c254525d61f51058e5b7386962063c0a9bb45f9e32987b8",
+  "0011_admin_catalog_crud_rls.sql": "2ce64ed6eeaa810d7e01671120b0ab761fda2efa29aa9da332f9346f302e0a5e"
 } as const;
 
 export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
@@ -62,14 +63,75 @@ function stripSqlCommentsAndSplitStatements(sql: string): string[] {
   const statements: string[] = [];
   let current = "";
   let inSingleQuote = false;
+  let singleQuoteBackslashEscapes = false;
   let inDoubleQuote = false;
   let dollarTag: string | null = null;
+  let dollarBodyInSingleQuote = false;
+  let dollarBodyInDoubleQuote = false;
+  let dollarBodyBlockCommentDepth = 0;
+  let blockCommentDepth = 0;
 
   for (let index = 0; index < sql.length; index += 1) {
     const character = sql[index];
     const next = sql[index + 1];
 
+    if (blockCommentDepth > 0) {
+      if (character === "/" && next === "*") {
+        blockCommentDepth += 1;
+        index += 1;
+      } else if (character === "*" && next === "/") {
+        blockCommentDepth -= 1;
+        index += 1;
+        if (blockCommentDepth === 0) current += " ";
+      }
+      continue;
+    }
+
     if (dollarTag) {
+      if (sql.startsWith(dollarTag, index)) {
+        current += dollarTag;
+        index += dollarTag.length - 1;
+        dollarTag = null;
+        dollarBodyInSingleQuote = false;
+        dollarBodyInDoubleQuote = false;
+        dollarBodyBlockCommentDepth = 0;
+        continue;
+      }
+
+      if (dollarBodyBlockCommentDepth > 0) {
+        if (character === "/" && next === "*") {
+          dollarBodyBlockCommentDepth += 1;
+          index += 1;
+        } else if (character === "*" && next === "/") {
+          dollarBodyBlockCommentDepth -= 1;
+          index += 1;
+          if (dollarBodyBlockCommentDepth === 0) current += " ";
+        }
+        continue;
+      }
+
+      if (dollarBodyInSingleQuote) {
+        current += character;
+        if (character === "'" && next === "'") {
+          current += next;
+          index += 1;
+        } else if (character === "'") {
+          dollarBodyInSingleQuote = false;
+        }
+        continue;
+      }
+
+      if (dollarBodyInDoubleQuote) {
+        current += character;
+        if (character === '"' && next === '"') {
+          current += next;
+          index += 1;
+        } else if (character === '"') {
+          dollarBodyInDoubleQuote = false;
+        }
+        continue;
+      }
+
       if (character === "-" && next === "-") {
         index += 2;
         while (index < sql.length && sql[index] !== "\n") index += 1;
@@ -77,17 +139,38 @@ function stripSqlCommentsAndSplitStatements(sql: string): string[] {
         continue;
       }
       if (character === "/" && next === "*") {
-        index += 2;
-        while (index < sql.length && !(sql[index] === "*" && sql[index + 1] === "/")) index += 1;
+        dollarBodyBlockCommentDepth = 1;
         index += 1;
-        current += " ";
         continue;
       }
+      if (character === "'") dollarBodyInSingleQuote = true;
+      if (character === '"') dollarBodyInDoubleQuote = true;
       current += character;
-      if (sql.startsWith(dollarTag, index) && index > 0) {
-        current += sql.slice(index + 1, index + dollarTag.length);
-        index += dollarTag.length - 1;
-        dollarTag = null;
+      continue;
+    }
+
+    if (inSingleQuote) {
+      current += character;
+      if (singleQuoteBackslashEscapes && character === "\\" && next !== undefined) {
+        current += next;
+        index += 1;
+      } else if (character === "'" && next === "'") {
+        current += next;
+        index += 1;
+      } else if (character === "'") {
+        inSingleQuote = false;
+        singleQuoteBackslashEscapes = false;
+      }
+      continue;
+    }
+
+    if (inDoubleQuote) {
+      current += character;
+      if (character === '"' && next === '"') {
+        current += next;
+        index += 1;
+      } else if (character === '"') {
+        inDoubleQuote = false;
       }
       continue;
     }
@@ -99,36 +182,33 @@ function stripSqlCommentsAndSplitStatements(sql: string): string[] {
       continue;
     }
     if (!inSingleQuote && !inDoubleQuote && character === "/" && next === "*") {
-      index += 2;
-      while (index < sql.length && !(sql[index] === "*" && sql[index + 1] === "/")) index += 1;
+      blockCommentDepth = 1;
       index += 1;
-      current += " ";
       continue;
     }
 
-    if (!inSingleQuote && !inDoubleQuote && character === "$" && sql.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/)) {
-      const tagMatch = sql.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/);
+    if (character === "$" && sql.slice(index).match(/^(?:\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$)/)) {
+      const tagMatch = sql.slice(index).match(/^(?:\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$)/);
       dollarTag = tagMatch![0];
       current += dollarTag;
       index += dollarTag.length - 1;
       continue;
     }
-    if (character === "'" && !inDoubleQuote) {
+    if (character === "'") {
+      const prefix = sql[index - 1];
+      const beforePrefix = sql[index - 2];
+      singleQuoteBackslashEscapes = (prefix === "E" || prefix === "e")
+        && (beforePrefix === undefined || !/[A-Za-z0-9_$]/.test(beforePrefix));
       current += character;
-      if (inSingleQuote && next === "'") {
-        current += next;
-        index += 1;
-      } else {
-        inSingleQuote = !inSingleQuote;
-      }
+      inSingleQuote = true;
       continue;
     }
-    if (character === '"' && !inSingleQuote) {
-      inDoubleQuote = !inDoubleQuote;
+    if (character === '"') {
+      inDoubleQuote = true;
       current += character;
       continue;
     }
-    if (character === ";" && !inSingleQuote && !inDoubleQuote) {
+    if (character === ";") {
       if (normalizeSql(current)) statements.push(current);
       current = "";
       continue;
@@ -136,6 +216,16 @@ function stripSqlCommentsAndSplitStatements(sql: string): string[] {
     current += character;
   }
 
+  if (inSingleQuote || inDoubleQuote || dollarTag || blockCommentDepth > 0) {
+    const context = inSingleQuote
+      ? "single-quoted string"
+      : inDoubleQuote
+        ? "double-quoted identifier"
+        : dollarTag
+          ? `dollar-quoted body ${dollarTag}`
+          : "block comment";
+    throw new Error(`SQL contains an unterminated ${context}`);
+  }
   if (normalizeSql(current)) statements.push(current);
   return statements;
 }
@@ -174,7 +264,15 @@ export function assertConsultationUpdatedByMigrationContract(sql0009: string): v
     if (!condition) throw new Error(message);
   };
 
-  const sqlWithoutComments = stripSqlCommentsAndSplitStatements(sql0009).join(" ");
+  let sqlWithoutComments: string;
+  try {
+    sqlWithoutComments = stripSqlCommentsAndSplitStatements(sql0009).join(" ");
+  } catch (error) {
+    if (/\bSECURITY\s+DEFINER\b/i.test(sql0009)) {
+      throw new Error("Migration 0009 must not contain SECURITY DEFINER");
+    }
+    throw error;
+  }
   fail(
     !/\bSECURITY\s+DEFINER\b/i.test(sqlWithoutComments),
     "Migration 0009 must not contain SECURITY DEFINER"
@@ -455,6 +553,120 @@ export function assertAdminCatalogMigrationContract(sql0011: string): void {
   }
 }
 
+/** Pure contract used by the CLI audit and integration tests for migration 0012. */
+export function assertMigration0012Contract(sql0012: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+
+  const statements = stripSqlCommentsAndSplitStatements(sql0012);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const code = statements.join(" ; ");
+
+  fail(!/\bservice_role\b/i.test(code), "Migration 0012 must not reference service_role");
+  fail(!/\bSECURITY\s+DEFINER\b/i.test(code), "Migration 0012 must not use SECURITY DEFINER");
+  fail(!/\bBYPASSRLS\b/i.test(code), "Migration 0012 must not include BYPASSRLS");
+  fail(!/\b(?:SET|ALTER)\s+ROLE\b/i.test(code), "Migration 0012 must not use SET ROLE or ALTER ROLE");
+  fail(
+    !/\b(?:password|secret|token|bearer|apikey|api_key|service_role_key|anon_key)\b\s*[:=]/i.test(code)
+      && !/'ey[a-zA-Z0-9._-]{20,}'/.test(code),
+    "Migration 0012 must not contain credentials or hardcoded secrets"
+  );
+  fail(
+    !/\b(?:EXECUTE\s+(?:IMMEDIATE|FORMAT)|EXECUTE\s+['$]|format\s*\()/i.test(code),
+    "Migration 0012 must not use dynamic SQL"
+  );
+  fail(!/\b(?:GRANT|REVOKE)\b/i.test(code), "Migration 0012 must not add grants or cross-table privileges");
+  fail(
+    !/\b(?:ALTER\s+SYSTEM|CREATE\s+ROLE|OWNER\s+TO|SET\s+SESSION\s+AUTHORIZATION|DISABLE\s+ROW\s+LEVEL\s+SECURITY)\b/i.test(code),
+    "Migration 0012 must not escalate privileges or disable RLS"
+  );
+  fail(
+    !/\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE|TRIGGER|TABLE|VIEW|TYPE|EXTENSION)\b/i.test(code),
+    "Migration 0012 must not create functions or unrelated schema objects"
+  );
+  fail(
+    !/\b(?:ALTER|DROP|TRUNCATE)\s+(?:TABLE|VIEW|SCHEMA|FUNCTION|PROCEDURE|TRIGGER|TYPE|EXTENSION)\b/i.test(code),
+    "Migration 0012 must not mutate unrelated schema objects"
+  );
+
+  fail(statements.length === 9, "Migration 0012 must contain exactly one bucket upsert and four DROP/CREATE policy pairs");
+
+  const expectedBucketUpsert = normalizeMigrationStatement(`
+    INSERT INTO storage.buckets (id, name, public)
+    VALUES ('materials', 'materials', false)
+    ON CONFLICT (id) DO UPDATE
+    SET name = EXCLUDED.name, public = false
+  `);
+  fail(
+    normalized[0] === expectedBucketUpsert,
+    "Migration 0012 must idempotently upsert exactly the private materials bucket with matching id/name"
+  );
+  fail(
+    normalized.filter((statement) => /^insert\s+into\s+storage\.buckets\b/.test(statement)).length === 1,
+    "Migration 0012 must create exactly one storage bucket"
+  );
+
+  const expectedPredicate = normalizeMigrationStatement(`
+    bucket_id = 'materials'
+    AND EXISTS (
+      SELECT 1
+      FROM public.profiles
+      WHERE public.profiles.id = auth.uid()
+        AND public.profiles.role = 'admin'
+        AND public.profiles.account_status = 'approved'
+    )
+  `);
+  const actions = ["select", "insert", "update", "delete"] as const;
+  const policyStatements = normalized.filter((statement) => /^create\s+policy\b/.test(statement));
+  const dropPolicyStatements = normalized.filter((statement) => /^drop\s+policy\b/.test(statement));
+
+  fail(policyStatements.length === 4, "Migration 0012 must create exactly four materials policies");
+  fail(dropPolicyStatements.length === 4, "Migration 0012 must safely replace exactly four materials policies");
+
+  for (const [actionIndex, action] of actions.entries()) {
+    const policyName = `materials_approved_admin_${action}`;
+    const dropIndex = 1 + actionIndex * 2;
+    const createIndex = dropIndex + 1;
+    fail(
+      normalized[dropIndex] === `drop policy if exists ${policyName} on storage.objects`,
+      `Migration 0012 must safely drop the ${action.toUpperCase()} policy on storage.objects before recreation`
+    );
+
+    const policy = normalized[createIndex] || "";
+    fail(
+      policy.startsWith(`create policy ${policyName} on storage.objects for ${action} to authenticated `),
+      `Migration 0012 ${action.toUpperCase()} policy must target storage.objects and authenticated only`
+    );
+
+    const roleTarget = policy.match(new RegExp(`\\bfor\\s+${action}\\s+to\\s+(.+?)\\s+(?:using|with check)\\b`, "i"))?.[1]?.trim();
+    fail(roleTarget === "authenticated", `Migration 0012 ${action.toUpperCase()} policy role must be exactly authenticated`);
+
+    const using = extractPolicyClause(policy, "USING");
+    const withCheck = extractPolicyClause(policy, "WITH CHECK");
+    const normalizedUsing = using === null ? null : normalizeMigrationStatement(using);
+    const normalizedWithCheck = withCheck === null ? null : normalizeMigrationStatement(withCheck);
+
+    if (action === "select" || action === "delete") {
+      fail(normalizedUsing === expectedPredicate, `Migration 0012 ${action.toUpperCase()} USING must require the materials bucket and approved-admin predicate`);
+      fail(withCheck === null, `Migration 0012 ${action.toUpperCase()} policy must not use WITH CHECK`);
+    } else if (action === "insert") {
+      fail(using === null, "Migration 0012 INSERT policy must not use USING");
+      fail(normalizedWithCheck === expectedPredicate, "Migration 0012 INSERT WITH CHECK must require the materials bucket and approved-admin predicate");
+    } else {
+      fail(normalizedUsing === expectedPredicate, "Migration 0012 UPDATE USING must require the materials bucket and approved-admin predicate");
+      fail(normalizedWithCheck === expectedPredicate, "Migration 0012 UPDATE WITH CHECK must require the materials bucket and approved-admin predicate");
+    }
+
+    const expectedPolicy = action === "insert"
+      ? `create policy ${policyName} on storage.objects for insert to authenticated with check ( ${expectedPredicate} )`
+      : action === "update"
+        ? `create policy ${policyName} on storage.objects for update to authenticated using ( ${expectedPredicate} ) with check ( ${expectedPredicate} )`
+        : `create policy ${policyName} on storage.objects for ${action} to authenticated using ( ${expectedPredicate} )`;
+    fail(policy === expectedPolicy, `Migration 0012 ${action.toUpperCase()} policy must not broaden its exact approved-admin contract`);
+  }
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -481,13 +693,14 @@ export async function runAudit(): Promise<boolean> {
       "0008_consultation_admin_status_update.sql",
       "0009_consultation_updated_by.sql",
       "0010_admin_account_approval_rls.sql",
-      "0011_admin_catalog_crud_rls.sql"
+      "0011_admin_catalog_crud_rls.sql",
+      "0012_private_material_storage.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 11 migration files exist in strict topological order",
+      check: "All 12 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -507,7 +720,7 @@ export async function runAudit(): Promise<boolean> {
       immutableHistoryValid = false;
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0010 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0011 match their canonical LF-normalized SHA-256 snapshots",
         passed: false,
         details: error instanceof Error ? error.message : String(error)
       });
@@ -515,9 +728,9 @@ export async function runAudit(): Promise<boolean> {
     if (immutableHistoryValid) {
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0010 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0011 match their canonical LF-normalized SHA-256 snapshots",
         passed: true,
-        details: "Every applied migration is content-locked; migration 0011 is checked separately as new"
+        details: "Every applied migration is content-locked; migration 0012 is checked separately as new"
       });
     }
 
@@ -784,7 +997,22 @@ export async function runAudit(): Promise<boolean> {
       details: "Subjects, products, materials, courses, and tutors have explicit INSERT/UPDATE/DELETE controls"
     });
 
-    // 11. Audit supabase/seed.sql
+    // 12. Audit 0012_private_material_storage.sql
+    const sql0012 = await fs.readFile(path.join(migrationsDir, "0012_private_material_storage.sql"), "utf-8");
+    let migration0012ContractValid = true;
+    try {
+      assertMigration0012Contract(sql0012);
+    } catch {
+      migration0012ContractValid = false;
+    }
+    results.push({
+      category: "0012_private_material_storage",
+      check: "Creates one private materials bucket with approved-admin-only object policies",
+      passed: migration0012ContractValid,
+      details: "Private bucket; exactly SELECT, INSERT, UPDATE, and DELETE policies on storage.objects for authenticated approved admins"
+    });
+
+    // 13. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
     const isTxn = /^\s*(?:--[^\n]*\n\s*)*BEGIN\s*;/im.test(sqlSeed) && /COMMIT\s*;\s*$/i.test(sqlSeed.trim());
     const subjectsSeed = CANONICAL_SUBJECTS.every((s) => sqlSeed.includes(`'${s.slug}'`));
