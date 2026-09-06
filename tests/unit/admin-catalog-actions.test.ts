@@ -173,16 +173,16 @@ async function runAction(scenario: Scenario): Promise<Result> {
 }
 
 const subjectInput = {
-  slug: "marketing",
-  name: "Marketing",
+  slug: " marketing ",
+  name: " Marketing ",
   category: "Marketing",
-  faculty_group: "Business",
+  faculty_group: " Business ",
   color_theme: "marketing"
 };
 const productInput = {
-  slug: "marketing-foundation",
-  title: "Marketing Foundation",
-  description: "A bounded catalog description",
+  slug: " marketing-foundation ",
+  title: " Marketing Foundation ",
+  description: " A bounded catalog description ",
   subject_id: SUBJECT_ID,
   category: "Marketing",
   delivery_kind: "digital_download",
@@ -196,21 +196,128 @@ const productInput = {
 };
 const inputs: Record<string, Record<string, unknown>> = {
   createSubjectAction: subjectInput,
-  updateSubjectAction: { name: "Updated Marketing" },
+  updateSubjectAction: { name: " Updated Marketing " },
   deleteSubjectAction: {},
-  createMaterialAction: { ...productInput, pages: 20, tags: ["tag"], includes: ["pdf"], suitable_for: ["students"] },
-  updateMaterialAction: { pages: 24 },
+  createMaterialAction: { ...productInput, pages: 20, tags: [" tag ", " second tag "], includes: [" pdf "], suitable_for: [" students "] },
+  updateMaterialAction: { pages: 24, tags: [" updated tag "] },
   deleteMaterialAction: {},
-  createCourseAction: { ...productInput, delivery_kind: "live_session", format: "online", sessions: 4, duration: "4 weeks", schedule: "Saturday", mentor: "Mentor" },
-  updateCourseAction: { mentor: "Updated Mentor" },
+  createCourseAction: { ...productInput, delivery_kind: "live_session", publication_status: "published", format: "online", sessions: 4, duration: " 4 weeks ", schedule: " Saturday ", enrollment_status: "coming-soon", mentor: " Mentor ", tags: [" live ", " cohort "], curriculum: [" basics "], suitable_for: [" students "], preparation: [" notebook "] },
+  updateCourseAction: { mentor: " Updated Mentor ", enrollment_status: "full" },
   deleteCourseAction: {},
-  createTutorAction: { ...productInput, delivery_kind: "one_on_one_tutoring", format: "1:1", name: "Tutor", faculty: "Business", availability: "Weekends", short_bio: "Tutor bio" },
-  updateTutorAction: { availability: "Weekdays" },
+  createTutorAction: { ...productInput, delivery_kind: "one_on_one_tutoring", format: " 1:1 ", name: " Tutor ", faculty: " Business ", availability: " Weekends ", short_bio: " Tutor bio ", strengths: [" exams ", " planning "], tags: [" mentor "], suitable_for: [" students "], support_methods: [" chat "] },
+  updateTutorAction: { availability: " Weekdays ", support_methods: [" video ", " chat "] },
   deleteTutorAction: {}
 };
 const allActions = Object.keys(inputs) as ActionName[];
 const updateActions = allActions.filter((action) => action.startsWith("update"));
 const deleteActions = allActions.filter((action) => action.startsWith("delete"));
+const actionIds: Record<ActionName, string> = {
+  createSubjectAction: SUBJECT_ID,
+  updateSubjectAction: SUBJECT_ID,
+  deleteSubjectAction: SUBJECT_ID,
+  createMaterialAction: PRODUCT_ID,
+  updateMaterialAction: PRODUCT_ID,
+  deleteMaterialAction: PRODUCT_ID,
+  createCourseAction: PRODUCT_ID,
+  updateCourseAction: PRODUCT_ID,
+  deleteCourseAction: PRODUCT_ID,
+  createTutorAction: PRODUCT_ID,
+  updateTutorAction: PRODUCT_ID,
+  deleteTutorAction: PRODUCT_ID
+};
+const expectedRepositoryArguments: Record<ActionName, unknown[]> = {
+  createSubjectAction: [
+    {
+      slug: "marketing",
+      name: "Marketing",
+      category: "Marketing",
+      faculty_group: "Business",
+      color_theme: "marketing"
+    }
+  ],
+  updateSubjectAction: [SUBJECT_ID, { name: "Updated Marketing" }],
+  deleteSubjectAction: [SUBJECT_ID],
+  createMaterialAction: [
+    {
+      slug: "marketing-foundation",
+      title: "Marketing Foundation",
+      description: "A bounded catalog description",
+      subject_id: SUBJECT_ID,
+      category: "Marketing",
+      delivery_kind: "digital_download",
+      publication_status: "draft",
+      price_vnd: 10000,
+      old_price_vnd: null,
+      is_contact_for_price: false,
+      rating: 5,
+      is_hot: false,
+      color_theme: "marketing",
+      pages: 20,
+      tags: ["tag", "second tag"],
+      includes: ["pdf"],
+      suitable_for: ["students"]
+    }
+  ],
+  updateMaterialAction: [PRODUCT_ID, { pages: 24, tags: ["updated tag"] }],
+  deleteMaterialAction: [PRODUCT_ID],
+  createCourseAction: [
+    {
+      slug: "marketing-foundation",
+      title: "Marketing Foundation",
+      description: "A bounded catalog description",
+      subject_id: SUBJECT_ID,
+      category: "Marketing",
+      delivery_kind: "live_session",
+      publication_status: "published",
+      price_vnd: 10000,
+      old_price_vnd: null,
+      is_contact_for_price: false,
+      rating: 5,
+      is_hot: false,
+      color_theme: "marketing",
+      format: "online",
+      sessions: 4,
+      duration: "4 weeks",
+      schedule: "Saturday",
+      enrollment_status: "coming-soon",
+      mentor: "Mentor",
+      tags: ["live", "cohort"],
+      curriculum: ["basics"],
+      suitable_for: ["students"],
+      preparation: ["notebook"]
+    }
+  ],
+  updateCourseAction: [PRODUCT_ID, { mentor: "Updated Mentor", enrollment_status: "full" }],
+  deleteCourseAction: [PRODUCT_ID],
+  createTutorAction: [
+    {
+      slug: "marketing-foundation",
+      title: "Marketing Foundation",
+      description: "A bounded catalog description",
+      subject_id: SUBJECT_ID,
+      category: "Marketing",
+      delivery_kind: "one_on_one_tutoring",
+      publication_status: "draft",
+      price_vnd: 10000,
+      old_price_vnd: null,
+      is_contact_for_price: false,
+      rating: 5,
+      is_hot: false,
+      color_theme: "marketing",
+      name: "Tutor",
+      faculty: "Business",
+      format: "1:1",
+      availability: "Weekends",
+      short_bio: "Tutor bio",
+      strengths: ["exams", "planning"],
+      tags: ["mentor"],
+      suitable_for: ["students"],
+      support_methods: ["chat"]
+    }
+  ],
+  updateTutorAction: [PRODUCT_ID, { availability: "Weekdays", support_methods: ["video", "chat"] }],
+  deleteTutorAction: [PRODUCT_ID]
+};
 
 describe("Task 5.1-B: admin catalog server actions", () => {
   test("has the server directive, typed CRUD action exports, and no unsafe access", async () => {
@@ -271,18 +378,11 @@ describe("Task 5.1-B: admin catalog server actions", () => {
 
   test("create/update/delete calls every repository method with exact ID and allowed payload", async () => {
     for (const action of allActions) {
-      const result = await runAction({ action, access: "admin", id: PRODUCT_ID, input: inputs[action] });
+      const result = await runAction({ action, access: "admin", id: actionIds[action], input: inputs[action] });
       assert.equal(result.error, "REDIRECT:/quan-tri/catalog?success=1", action);
       assert.equal(result.repositoryCalls.length, 1);
       const call = result.repositoryCalls[0];
-      if (action.startsWith("delete")) {
-        assert.deepEqual(call.args, [PRODUCT_ID]);
-      } else if (action.startsWith("update")) {
-        assert.equal(call.args[0], PRODUCT_ID);
-        assert.deepEqual(Object.keys(call.args[1] as object).sort(), Object.keys(inputs[action]).sort());
-      } else {
-        assert.deepEqual(Object.keys(call.args[0] as object).sort(), Object.keys(inputs[action]).sort());
-      }
+      assert.deepStrictEqual(call.args, expectedRepositoryArguments[action]);
       const serialized = JSON.stringify(call.args);
       assert.doesNotMatch(serialized, /role|user_id|userId|approved_by|updated_by|arbitrary/);
       assert.deepEqual(result.timeline.slice(0, 3), ["guard", "validation", "repository"]);
