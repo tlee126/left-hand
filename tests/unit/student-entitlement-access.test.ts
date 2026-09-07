@@ -7,6 +7,7 @@ import { purchasedSubjects } from "../../data/student-demo";
 const USER_ID = "550e8400-e29b-41d4-a716-446655440000";
 const OTHER_USER_ID = "750e8400-e29b-41d4-a716-446655440000";
 const SUBJECT_ID = "650e8400-e29b-41d4-a716-446655440000";
+const OTHER_SUBJECT_ID = "750e8400-e29b-41d4-a716-446655440001";
 const PRODUCT_ID = "850e8400-e29b-41d4-a716-446655440000";
 const OTHER_PRODUCT_ID = "950e8400-e29b-41d4-a716-446655440000";
 const STORAGE_PATH = `materials/${PRODUCT_ID}/v1/850e8400-e29b-41d4-a716-446655440000-private.pdf`;
@@ -36,6 +37,8 @@ let requestedSlug = "ke-toan";
 let subjectCalls: string[] = [];
 let productCalls: string[] = [];
 let entitlementCalls: Array<[string, string]> = [];
+let materialCalls: string[][] = [];
+let lessonCalls: string[][] = [];
 let capturedButtons: Array<Record<string, unknown>> = [];
 let renderedWorkspace: unknown = null;
 let clientInitialTab: "overview" | "documents" | null = null;
@@ -103,6 +106,8 @@ function reset() {
   subjectCalls = [];
   productCalls = [];
   entitlementCalls = [];
+  materialCalls = [];
+  lessonCalls = [];
 }
 
 function uuidEquals(left: unknown, right: unknown): boolean {
@@ -125,8 +130,11 @@ function resultForTable(table: string, filters: Array<[string, unknown]>): { dat
     if (entitlementOverride !== UNSET) return { data: entitlementOverride, error: null };
     const userId = filters.find(([field]) => field === "user_id")?.[1];
     const productId = filters.find(([field]) => field === "product_id")?.[1];
+    const status = filters.find(([field]) => field === "status")?.[1];
     const matchingRows = entitlementRows.filter((row) => (
-      uuidEquals(row.user_id, userId) && uuidEquals(row.product_id, productId)
+      uuidEquals(row.user_id, userId)
+      && uuidEquals(row.product_id, productId)
+      && (status === undefined || row.status === status)
     ));
     if (matchingRows.length > 1) return { data: null, error: queryError("multiple rows for entitlement") };
     return { data: matchingRows[0] ?? null, error: null };
@@ -159,8 +167,12 @@ function createSupabaseMock() {
                 if (queryErrors.product) return Promise.resolve({ data: null, error: queryError() });
                 return Promise.resolve({ data: products, error: null });
               }
-              if (table === "materials") return Promise.resolve({ data: materialRows, error: null });
+              if (table === "materials") {
+                materialCalls.push(_values.map(String));
+                return Promise.resolve({ data: materialRows, error: null });
+              }
               if (table === "course_lessons") {
+                lessonCalls.push(_values.map(String));
                 return { order: async () => ({ data: lessonRows, error: null }) };
               }
               return Promise.resolve({ data: [], error: null });
@@ -356,6 +368,33 @@ test("unknown database subject wins over a matching static purchasedSubjects ent
   assert.deepEqual(entitlementCalls, []);
 });
 
+test("cross-subject entitlement does not unlock the requested subject workspace", async () => {
+  products = [
+    { ...products[0] },
+    {
+      id: OTHER_PRODUCT_ID,
+      subject_id: OTHER_SUBJECT_ID,
+      kind: "material",
+      title: "Subject B private material",
+      description: "Not part of Subject A"
+    }
+  ];
+  entitlementRows = [activeEntitlement(USER_ID, OTHER_PRODUCT_ID)];
+
+  await expectNotFound(() => renderPage());
+
+  assert.deepEqual(timeline, ["session guard", "subject lookup", "product lookup", "entitlement lookup"]);
+  assert.deepEqual(subjectCalls, ["slug:ke-toan"]);
+  assert.deepEqual(productCalls, [`subject_id:${SUBJECT_ID}`]);
+  assert.deepEqual(entitlementCalls, [[USER_ID, PRODUCT_ID]]);
+  assert.deepEqual(materialCalls, []);
+  assert.deepEqual(lessonCalls, []);
+  assert.equal(renderedWorkspace, null);
+  assert.deepEqual(capturedButtons, []);
+  assert.equal(timeline.includes("authorized workspace data"), false);
+  assert.equal(timeline.includes("client render"), false);
+});
+
 test("repository errors stop before workspace data and render", async () => {
   for (const scenario of ["subject", "product", "entitlement"] as const) {
     queryErrors[scenario] = true;
@@ -406,6 +445,39 @@ test("multiple matching entitlement rows fail closed, while one valid row among 
     "client render"
   ]);
   assert.match(markup, /Học liệu đã được cấp quyền/);
+});
+
+test("multiple entitlement rows with zero valid matches fail closed before workspace or signed-url access", async () => {
+  entitlementRows = [
+    activeEntitlement(USER_ID, OTHER_PRODUCT_ID),
+    activeEntitlement(OTHER_USER_ID, PRODUCT_ID),
+    { ...activeEntitlement(), status: "revoked", revoked_at: "2026-01-01T00:00:00.000Z" },
+    { ...activeEntitlement(), expires_at: "2020-01-01T00:00:00.000Z" }
+  ];
+
+  const fetchCalls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    fetchCalls.push(String(input));
+    return new Response(JSON.stringify({ url: "https://example.test/should-not-be-called" }), { status: 200 });
+  };
+  try {
+    await expectNotFound(() => renderPage());
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(timeline, ["session guard", "subject lookup", "product lookup", "entitlement lookup"]);
+  assert.deepEqual(subjectCalls, ["slug:ke-toan"]);
+  assert.deepEqual(productCalls, [`subject_id:${SUBJECT_ID}`]);
+  assert.deepEqual(entitlementCalls, [[USER_ID, PRODUCT_ID]]);
+  assert.deepEqual(materialCalls, []);
+  assert.deepEqual(lessonCalls, []);
+  assert.deepEqual(fetchCalls, []);
+  assert.equal(renderedWorkspace, null);
+  assert.deepEqual(capturedButtons, []);
+  assert.equal(timeline.includes("authorized workspace data"), false);
+  assert.equal(timeline.includes("client render"), false);
 });
 
 test("authorized page executes the complete guard-to-render timeline and passes exact canonical identities", async () => {
