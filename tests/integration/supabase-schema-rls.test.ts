@@ -21,6 +21,7 @@ import {
   assertConsultationUpdatedByMigrationContract,
   assertMigration0012Contract,
   assertMigration0013Contract,
+  assertMigration0014Contract,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
 } from "../../scripts/verify-supabase-migrations-seed-rls";
@@ -204,13 +205,14 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "0010_admin_account_approval_rls.sql",
         "0011_admin_catalog_crud_rls.sql",
         "0012_private_material_storage.sql",
-        "0013_material_asset_metadata.sql"
+        "0013_material_asset_metadata.sql",
+        "0014_product_entitlements.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
     });
 
-    test("the canonical history verifier rejects a content mutation in every migration 0001-0012", async () => {
+    test("the canonical history verifier rejects a content mutation in every migration 0001-0013", async () => {
       const snapshots: Record<string, string> = {};
       for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
         snapshots[filename] = await fs.readFile(path.join(migrationsDir, filename), "utf-8");
@@ -1131,6 +1133,64 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       assert.doesNotThrow(() => assertMigration0013Contract(`${sql}\n-- service_role; SECURITY DEFINER\n/* nested /* public */ comment */`));
       assert.throws(() => assertMigration0013Contract(`${sql}\nSELECT 'secret=value; still quoted';`), /credential/i);
       assert.throws(() => assertMigration0013Contract(`${sql}\nDO $$ BEGIN EXECUTE 'SELECT 1; SELECT 2'; END $$;`), /dynamic/i);
+    });
+  });
+
+  describe("10. Migration 0014 Product Entitlements (Runtime Contract Fixtures)", () => {
+    const migrationPath = path.join(migrationsDir, "0014_product_entitlements.sql");
+
+    test("accepts the exact entitlement schema, grants, index, and approved-admin RLS contract", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      assert.doesNotThrow(() => assertMigration0014Contract(sql));
+    });
+
+    test("rejects extra columns, duplicate constraints, wrong types/defaults, foreign keys, unique/index contracts, and RLS broadening", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const fixtures = [
+        sql.replace("updated_at timestamptz NOT NULL DEFAULT now()", "extra_column text,\n  updated_at timestamptz NOT NULL DEFAULT now()"),
+        sql.replace("CONSTRAINT product_entitlements_user_product_unique UNIQUE (user_id, product_id)", "CONSTRAINT product_entitlements_user_product_unique UNIQUE (user_id, product_id),\n  CONSTRAINT product_entitlements_duplicate UNIQUE (user_id, product_id)"),
+        sql.replace("status text NOT NULL DEFAULT 'active'", "status integer NOT NULL DEFAULT 1"),
+        sql.replace("expires_at timestamptz NULL", "expires_at timestamp NULL"),
+        sql.replace("REFERENCES auth.users(id) ON DELETE CASCADE", "REFERENCES auth.users(id) ON DELETE RESTRICT"),
+        sql.replace("REFERENCES public.products(id) ON DELETE CASCADE", "REFERENCES public.products(id) ON DELETE SET NULL"),
+        sql.replace("REFERENCES auth.users(id) ON DELETE SET NULL", "REFERENCES auth.users(id) ON DELETE CASCADE"),
+        sql.replace("CONSTRAINT product_entitlements_user_product_unique UNIQUE (user_id, product_id)", "CONSTRAINT product_entitlements_user_product_unique UNIQUE (user_id)"),
+        sql.replace("(user_id, product_id, status)", "(product_id, user_id, status)"),
+        sql.replace("ALTER TABLE public.product_entitlements ENABLE ROW LEVEL SECURITY;", "ALTER TABLE public.product_entitlements DISABLE ROW LEVEL SECURITY;"),
+        sql.replace("status IN ('active', 'revoked', 'expired')", "status IN ('active', 'revoked')"),
+        sql.replace("expires_at IS NULL OR expires_at > granted_at", "expires_at IS NULL OR expires_at >= granted_at"),
+        sql.replace("status <> 'active' OR revoked_at IS NULL", "status <> 'active' OR revoked_at IS NOT NULL"),
+        sql.replace("status <> 'revoked' OR revoked_at IS NOT NULL", "status <> 'revoked' OR revoked_at IS NULL")
+      ];
+      for (const fixture of fixtures) assert.throws(() => assertMigration0014Contract(fixture), /./);
+    });
+
+    test("rejects anon/public writes, weak policies, cross-table privileges, and role escalation", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const fixtures = [
+        sql.replace("GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.product_entitlements TO authenticated", "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.product_entitlements TO anon"),
+        sql.replace("FOR SELECT\nTO authenticated\nUSING (public.product_entitlements.user_id = auth.uid())", "FOR SELECT\nTO public\nUSING (true)"),
+        sql.replace("FOR INSERT\nTO authenticated", "FOR INSERT\nTO authenticated, anon"),
+        sql.replace("USING (public.product_entitlements.user_id = auth.uid())", "USING (true)"),
+        sql.replace("WITH CHECK (\n  EXISTS", "WITH CHECK (true)\n\n-- weak policy fixture\nWITH CHECK (\n  EXISTS"),
+        `${sql}\nGRANT SELECT ON TABLE public.products TO authenticated;`,
+        `${sql}\nREVOKE ALL ON TABLE public.products FROM public;`,
+        `${sql}\nCREATE POLICY unrelated ON public.products FOR SELECT TO authenticated USING (true);`,
+        `${sql}\nCREATE POLICY service_access ON public.product_entitlements FOR SELECT TO service_role USING (true);`,
+        `${sql}\nALTER ROLE authenticated BYPASSRLS;`,
+        `${sql}\nSET ROLE postgres;`,
+        `${sql}\nCREATE FUNCTION unsafe() RETURNS void LANGUAGE sql SECURITY DEFINER AS $$ SELECT; $$;`,
+        `${sql}\nALTER TABLE public.products ADD COLUMN leaked text;`,
+        `${sql}\nDO $$ BEGIN EXECUTE 'SELECT 1'; END $$;`
+      ];
+      for (const fixture of fixtures) assert.throws(() => assertMigration0014Contract(fixture), /./);
+    });
+
+    test("parses comments and quoted content without mistaking it for executable violations", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      assert.doesNotThrow(() => assertMigration0014Contract(`${sql}\n-- service_role; SECURITY DEFINER; SET ROLE postgres\n/* nested /* public */ comment */`));
+      assert.throws(() => assertMigration0014Contract(`${sql}\nSELECT 'secret=value; GRANT ALL;';`), /./);
+      assert.throws(() => assertMigration0014Contract(`${sql}\nDO $$ BEGIN EXECUTE 'SELECT 1; SELECT 2'; END $$;`), /./);
     });
   });
 });
