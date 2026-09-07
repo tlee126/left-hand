@@ -143,8 +143,8 @@ export async function getCurrentMaterialAsset(productId: string): Promise<Curren
     if (error) throw new Error();
     if (!data) return null;
     const row = data as unknown as Pick<MaterialAssetRow, "product_id" | "storage_path" | "version" | "visibility">;
-    if (row.product_id !== canonicalProductId || row.visibility !== "private" || !Number.isSafeInteger(row.version) || row.version < 1 || typeof row.storage_path !== "string") return null;
-    return { productId: row.product_id, storagePath: row.storage_path };
+    if (!isValidMaterialUuid(row.product_id) || row.product_id.toLowerCase() !== canonicalProductId || row.visibility !== "private" || !Number.isSafeInteger(row.version) || row.version < 1 || typeof row.storage_path !== "string") return null;
+    return { productId: row.product_id.toLowerCase(), storagePath: row.storage_path };
   } catch (error) {
     if (error instanceof MaterialAssetInputError) throw error;
     throw new MaterialAssetRepositoryError();

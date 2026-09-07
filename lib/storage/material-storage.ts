@@ -34,8 +34,10 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const SAFE_FILENAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,199}$/;
 const UNSAFE_FILENAME_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\\/:\u2215\u2044\u29f8\uff0f\uff3c]/;
 const ENCODED_TRAVERSAL_PATTERN = /%(?:2f|5c|2e)/i;
+const MATERIAL_STORAGE_UUID = `[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}`;
 const MATERIAL_STORAGE_PATH_PATTERN = new RegExp(
-  `^${MATERIALS_BUCKET}/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/v[1-9][0-9]*/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}-[a-z0-9][a-z0-9._-]*$`
+  `^${MATERIALS_BUCKET}/(${MATERIAL_STORAGE_UUID})/v[1-9][0-9]*/(${MATERIAL_STORAGE_UUID})-([a-z0-9][a-z0-9._-]*)$`,
+  "i"
 );
 
 export function isSupportedMaterialMimeType(value: unknown): value is SupportedMaterialMimeType {
@@ -81,6 +83,26 @@ export function materialStoragePath(productId: unknown, version: unknown, origin
     throw new MaterialStorageInputError();
   }
   return `${MATERIALS_BUCKET}/${canonicalProductId}/v${version}/${canonicalId}-${sanitizeMaterialFilename(originalName)}`;
+}
+
+function parseMaterialStoragePath(storagePath: unknown): { productId: string; filename: string } | null {
+  if (typeof storagePath !== "string") return null;
+  const match = MATERIAL_STORAGE_PATH_PATTERN.exec(storagePath);
+  if (!match) return null;
+  const [, productId, , filename] = match;
+  if (filename !== filename.toLowerCase() || filename.includes("..")) return null;
+  try {
+    if (sanitizeMaterialFilename(filename) !== filename) return null;
+  } catch {
+    return null;
+  }
+  return { productId: productId.toLowerCase(), filename };
+}
+
+export function isValidMaterialStoragePathForProduct(storagePath: unknown, expectedProductId: unknown): boolean {
+  if (!isValidMaterialUuid(expectedProductId)) return false;
+  const parsed = parseMaterialStoragePath(storagePath);
+  return parsed !== null && parsed.productId === expectedProductId.toLowerCase();
 }
 
 export interface MaterialUploadInput {
@@ -129,8 +151,8 @@ export async function removeNewMaterialObject(storagePath: unknown): Promise<voi
 }
 
 /** Creates a short-lived URL for a validated private material object. */
-export async function createMaterialSignedUrl(storagePath: unknown): Promise<string> {
-  if (typeof storagePath !== "string" || !MATERIAL_STORAGE_PATH_PATTERN.test(storagePath)) {
+export async function createMaterialSignedUrl(storagePath: unknown, expectedProductId: unknown): Promise<string> {
+  if (typeof storagePath !== "string" || !isValidMaterialStoragePathForProduct(storagePath, expectedProductId)) {
     throw new MaterialStorageInputError();
   }
   try {
