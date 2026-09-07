@@ -60,6 +60,115 @@ function hasPdfStructure(bytes: Uint8Array): boolean {
 interface BmffBox { type: string; start: number; end: number; size: number; payloadStart: number; }
 interface BmffSample { offset: number; size: number; }
 
+interface AvcConfiguration {
+  lengthSize: number;
+  sps: Uint8Array;
+  pps: Uint8Array;
+  frameNumBits: number;
+}
+
+class BitReader {
+  private readonly bytes: Uint8Array;
+  private bitOffset = 0;
+
+  constructor(bytes: Uint8Array) {
+    this.bytes = bytes;
+  }
+
+  readBits(count: number): number | null {
+    if (count < 0 || count > 32 || this.bitOffset + count > this.bytes.length * 8) return null;
+    let value = 0;
+    for (let index = 0; index < count; index += 1) {
+      value = value * 2 + ((this.bytes[Math.floor(this.bitOffset / 8)] >> (7 - (this.bitOffset % 8))) & 1);
+      this.bitOffset += 1;
+    }
+    return value;
+  }
+
+  readBit(): number | null { return this.readBits(1); }
+
+  readUnsignedExpGolomb(): number | null {
+    let leadingZeroBits = 0;
+    while (true) {
+      const bit = this.readBit();
+      if (bit === null) return null;
+      if (bit === 1) break;
+      leadingZeroBits += 1;
+      if (leadingZeroBits > 31) return null;
+    }
+    if (leadingZeroBits === 0) return 0;
+    const suffix = this.readBits(leadingZeroBits);
+    return suffix === null ? null : (2 ** leadingZeroBits) - 1 + suffix;
+  }
+
+  readSignedExpGolomb(): number | null {
+    const value = this.readUnsignedExpGolomb();
+    return value === null ? null : (value % 2 === 0 ? -1 : 1) * Math.ceil(value / 2);
+  }
+
+  remaining(): number { return this.bytes.length * 8 - this.bitOffset; }
+}
+
+function rbsp(bytes: Uint8Array): Uint8Array {
+  const result: number[] = [];
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (index + 2 < bytes.length && bytes[index] === 0 && bytes[index + 1] === 0 && bytes[index + 2] === 3) {
+      result.push(0, 0);
+      index += 2;
+    } else {
+      result.push(bytes[index]);
+    }
+  }
+  return Uint8Array.from(result);
+}
+
+function parseAvcSps(value: Uint8Array): number | null {
+  if (value.length < 4 || (value[0] & 0x80) !== 0 || (value[0] & 0x1f) !== 7 || (value[0] & 0x60) === 0) return null;
+  const reader = new BitReader(rbsp(value.slice(1)));
+  const profile = reader.readBits(8);
+  if (profile === null || reader.readBits(8) === null || reader.readBits(8) === null || reader.readUnsignedExpGolomb() === null) return null;
+  if ([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134].includes(profile)) {
+    const chromaFormat = reader.readUnsignedExpGolomb();
+    if (chromaFormat === null || chromaFormat > 3) return null;
+    if (chromaFormat === 3 && reader.readBit() === null) return null;
+    if (reader.readUnsignedExpGolomb() === null || reader.readUnsignedExpGolomb() === null || reader.readBit() === null) return null;
+    const scalingMatrix = reader.readBit();
+    if (scalingMatrix === null || scalingMatrix !== 0) return null;
+  }
+  const frameNumMinus4 = reader.readUnsignedExpGolomb();
+  if (frameNumMinus4 === null || frameNumMinus4 > 12) return null;
+  const frameNumBits = frameNumMinus4 + 4;
+  const picOrderType = reader.readUnsignedExpGolomb();
+  if (picOrderType === null || picOrderType > 2) return null;
+  if (picOrderType === 0) {
+    if (reader.readUnsignedExpGolomb() === null) return null;
+  } else if (picOrderType === 1) {
+    if (reader.readBit() === null || reader.readSignedExpGolomb() === null || reader.readSignedExpGolomb() === null) return null;
+    const cycle = reader.readUnsignedExpGolomb();
+    if (cycle === null || cycle > 32) return null;
+    for (let index = 0; index < cycle; index += 1) if (reader.readSignedExpGolomb() === null) return null;
+  }
+  if (reader.readUnsignedExpGolomb() === null || reader.readBit() === null || reader.readUnsignedExpGolomb() === null || reader.readUnsignedExpGolomb() === null) return null;
+  const frameOnly = reader.readBit();
+  if (frameOnly === null) return null;
+  if (frameOnly === 0 && reader.readBit() === null) return null;
+  if (reader.readBit() === null || reader.readBit() === null) return null;
+  const cropping = reader.readBit();
+  if (cropping === null) return null;
+  if (cropping !== 0) for (let index = 0; index < 4; index += 1) if (reader.readUnsignedExpGolomb() === null) return null;
+  return frameNumBits;
+}
+
+function parseAvcPps(value: Uint8Array): boolean {
+  if (value.length < 2 || (value[0] & 0x80) !== 0 || (value[0] & 0x1f) !== 8 || (value[0] & 0x60) === 0) return false;
+  const reader = new BitReader(rbsp(value.slice(1)));
+  if (reader.readUnsignedExpGolomb() !== 0 || reader.readUnsignedExpGolomb() !== 0) return false;
+  if (reader.readBit() === null || reader.readBit() === null || reader.readUnsignedExpGolomb() !== 0) return false;
+  if (reader.readUnsignedExpGolomb() === null || reader.readUnsignedExpGolomb() === null || reader.readBit() === null || reader.readBits(2) === null) return false;
+  if (reader.readSignedExpGolomb() === null || reader.readSignedExpGolomb() === null || reader.readSignedExpGolomb() === null) return false;
+  return reader.readBit() !== null && reader.readBit() !== null && reader.readBit() !== null;
+}
+
 function readBmffBox(bytes: Uint8Array, offset: number): BmffBox | null {
   if (offset < 0 || offset > bytes.length - 8) return null;
   const declared = readUint32(bytes, offset);
@@ -102,7 +211,7 @@ function readBmffVersion(bytes: Uint8Array, box: BmffBox): number | null {
   return hasFullBoxPayload(bytes, box, 4) ? bytes[box.payloadStart] : null;
 }
 
-function parseAvcConfiguration(bytes: Uint8Array, sampleEntry: BmffBox): number | null {
+function parseAvcConfiguration(bytes: Uint8Array, sampleEntry: BmffBox): AvcConfiguration | null {
   if (sampleEntry.type !== "avc1" && sampleEntry.type !== "avc3") return null;
   // VisualSampleEntry is 78 bytes after the box header. The fields checked here
   // ensure this is an actual visual entry, not merely a box named avc1.
@@ -121,32 +230,36 @@ function parseAvcConfiguration(bytes: Uint8Array, sampleEntry: BmffBox): number 
   const spsCount = bytes[config.payloadStart + 5] & 0x1f;
   if (spsCount === 0) return null;
   let offset = config.payloadStart + 6;
-  let hasSps = false;
+  let sps: Uint8Array | null = null;
   for (let index = 0; index < spsCount; index += 1) {
     if (offset + 2 > config.end) return null;
     const size = bytes[offset] * 0x100 + bytes[offset + 1];
     offset += 2;
-    if (size < 4 || offset + size > config.end || (bytes[offset] & 0x1f) !== 7) return null;
-    hasSps = true;
+    if (size < 4 || offset + size > config.end || (bytes[offset] & 0x1f) !== 7 || sps !== null) return null;
+    sps = bytes.slice(offset, offset + size);
     offset += size;
   }
   if (offset >= config.end) return null;
   const ppsCount = bytes[offset];
   offset += 1;
   if (ppsCount === 0) return null;
-  let hasPps = false;
+  let pps: Uint8Array | null = null;
   for (let index = 0; index < ppsCount; index += 1) {
     if (offset + 2 > config.end) return null;
     const size = bytes[offset] * 0x100 + bytes[offset + 1];
     offset += 2;
-    if (size < 2 || offset + size > config.end || (bytes[offset] & 0x1f) !== 8) return null;
-    hasPps = true;
+    if (size < 2 || offset + size > config.end || (bytes[offset] & 0x1f) !== 8 || pps !== null) return null;
+    pps = bytes.slice(offset, offset + size);
     offset += size;
   }
-  return hasSps && hasPps && offset === config.end ? lengthSize : null;
+  if (offset !== config.end || sps === null || pps === null) return null;
+  const frameNumBits = parseAvcSps(sps);
+  if (frameNumBits === null || !parseAvcPps(pps)) return null;
+  return { lengthSize, sps, pps, frameNumBits };
 }
 
-function parseAvcSample(bytes: Uint8Array, sample: BmffSample, lengthSize: number): boolean {
+function parseAvcSample(bytes: Uint8Array, sample: BmffSample, configuration: AvcConfiguration): boolean {
+  const { lengthSize, frameNumBits } = configuration;
   if (sample.size <= lengthSize || sample.offset < 0 || sample.offset + sample.size > bytes.length) return false;
   const end = sample.offset + sample.size;
   let offset = sample.offset;
@@ -157,29 +270,47 @@ function parseAvcSample(bytes: Uint8Array, sample: BmffSample, lengthSize: numbe
     for (let index = 0; index < lengthSize; index += 1) nalSize = nalSize * 0x100 + bytes[offset + index];
     offset += lengthSize;
     if (nalSize < 4 || offset + nalSize > end) return false;
-    const nalType = bytes[offset] & 0x1f;
-    if (nalType < 1 || nalType > 23) return false;
-    if (nalType === 1 || nalType === 5) hasVcl = true;
+    const nalHeader = bytes[offset];
+    const nalType = nalHeader & 0x1f;
+    if ((nalHeader & 0x80) !== 0 || nalType < 1 || nalType > 23) return false;
+    if (nalType === 7 || nalType === 8) return false;
+    if (nalType === 1 || nalType === 5) {
+      const reader = new BitReader(rbsp(bytes.slice(offset + 1, offset + nalSize)));
+      const firstMb = reader.readUnsignedExpGolomb();
+      const sliceType = reader.readUnsignedExpGolomb();
+      const ppsId = reader.readUnsignedExpGolomb();
+      if (firstMb !== 0 || sliceType === null || sliceType > 9 || ppsId !== 0 || reader.readBits(frameNumBits) === null) return false;
+      if (nalType === 5 && reader.readUnsignedExpGolomb() === null) return false;
+      if (reader.remaining() < 2) return false;
+      hasVcl = true;
+    }
     offset += nalSize;
   }
   return offset === end && hasVcl;
 }
 
 function parseBmffSamples(bytes: Uint8Array, stbl: BmffBox, mediaRanges: Array<{ start: number; end: number }>, avcLengthSize: number): boolean {
-  const stsd = bmffChild(bytes, stbl, "stsd");
-  const stts = bmffChild(bytes, stbl, "stts");
-  const stsc = bmffChild(bytes, stbl, "stsc");
-  const stsz = bmffChild(bytes, stbl, "stsz");
-  const stz2 = bmffChild(bytes, stbl, "stz2");
-  const stco = bmffChild(bytes, stbl, "stco");
-  const co64 = bmffChild(bytes, stbl, "co64");
-  if (!stsd || !stts || !stsc || (!stsz && !stz2) || (stsz && stz2) || (stco ? co64 : !co64) || stsd.size < 16) return false;
+  const stblChildren = bmffChildren(bytes, stbl);
+  if (!stblChildren) return false;
+  const exactlyOne = (type: string): BmffBox | null => {
+    const matches = stblChildren.filter((box) => box.type === type);
+    return matches.length === 1 ? matches[0] : null;
+  };
+  const stsd = exactlyOne("stsd");
+  const stts = exactlyOne("stts");
+  const stsc = exactlyOne("stsc");
+  const stsz = exactlyOne("stsz");
+  const stz2 = exactlyOne("stz2");
+  const stco = exactlyOne("stco");
+  const co64 = exactlyOne("co64");
+  if (!stsd || !stts || !stsc || (!stsz && !stz2) || (stsz && stz2) || (!!stco === !!co64) || stsd.size < 16) return false;
   if (stsz && stz2) return false;
   const stsdEntries = bmffChildren(bytes, { ...stsd, payloadStart: stsd.payloadStart + 8 });
   if (!hasFullBoxPayload(bytes, stsd, 8) || !stsdEntries || readUint32(bytes, stsd.payloadStart + 4) !== 1 || stsdEntries.length !== 1) return false;
   const sampleEntry = stsdEntries[0];
   if (sampleEntry.type !== "avc1" && sampleEntry.type !== "avc3") return false;
-  if (parseAvcConfiguration(bytes, sampleEntry) !== avcLengthSize) return false;
+  const avcConfiguration = parseAvcConfiguration(bytes, sampleEntry);
+  if (!avcConfiguration || avcConfiguration.lengthSize !== avcLengthSize) return false;
 
   if (!hasFullBoxPayload(bytes, stts, 8)) return false;
   const timeEntryCount = readUint32(bytes, stts.payloadStart + 4);
@@ -256,25 +387,33 @@ function parseBmffSamples(bytes: Uint8Array, stbl: BmffBox, mediaRanges: Array<{
       sampleIndex += 1;
     }
   }
-  return sampleIndex === sizes.length && samples.every((sample) => parseAvcSample(bytes, sample, avcLengthSize));
+  return sampleIndex === sizes.length && samples.every((sample) => parseAvcSample(bytes, sample, avcConfiguration));
 }
 
 function hasValidBmffTrack(bytes: Uint8Array, trak: BmffBox, mediaRanges: Array<{ start: number; end: number }>): boolean {
-  const tkhd = bmffChild(bytes, trak, "tkhd");
-  const mdia = bmffChild(bytes, trak, "mdia");
-  if (!tkhd || !hasFullBoxPayload(bytes, tkhd, 20) || readUint32(bytes, tkhd.payloadStart + 12) === 0 || !mdia) return false;
-  const mdhd = bmffChild(bytes, mdia, "mdhd");
-  const hdlr = bmffChild(bytes, mdia, "hdlr");
-  const minf = bmffChild(bytes, mdia, "minf");
-  if (!mdhd || !hasFullBoxPayload(bytes, mdhd, 24) || !hdlr || !hasFullBoxPayload(bytes, hdlr, 16) || !minf) return false;
-  const mdhdVersion = readBmffVersion(bytes, mdhd);
+  const trakChildren = bmffChildren(bytes, trak);
+  const tkhd = trakChildren?.filter((box) => box.type === "tkhd");
+  const mdia = trakChildren?.filter((box) => box.type === "mdia");
+  if (!trakChildren || !tkhd || !mdia || tkhd.length !== 1 || mdia.length !== 1) return false;
+  const tkhdBox = tkhd[0];
+  const mdiaChildren = bmffChildren(bytes, mdia[0]);
+  const mdhd = mdiaChildren?.filter((box) => box.type === "mdhd");
+  const hdlr = mdiaChildren?.filter((box) => box.type === "hdlr");
+  const minf = mdiaChildren?.filter((box) => box.type === "minf");
+  if (!mdiaChildren || !mdhd || !hdlr || !minf || mdhd.length !== 1 || hdlr.length !== 1 || minf.length !== 1) return false;
+  const mdhdBox = mdhd[0];
+  const hdlrBox = hdlr[0];
+  const minfBox = minf[0];
+  if (!hasFullBoxPayload(bytes, tkhdBox, 20) || readUint32(bytes, tkhdBox.payloadStart + 12) === 0 || !hasFullBoxPayload(bytes, mdhdBox, 24) || !hasFullBoxPayload(bytes, hdlrBox, 16)) return false;
+  const mdhdVersion = readBmffVersion(bytes, mdhdBox);
   const timescaleOffset = mdhdVersion === 0 ? 12 : mdhdVersion === 1 ? 20 : -1;
   const durationOffset = mdhdVersion === 0 ? 16 : mdhdVersion === 1 ? 24 : -1;
-  if (timescaleOffset < 0 || mdhd.payloadStart + durationOffset + 4 > mdhd.end || readUint32(bytes, mdhd.payloadStart + timescaleOffset) === 0 || readUint32(bytes, mdhd.payloadStart + durationOffset) === 0) return false;
-  if (ascii(bytes, hdlr.payloadStart + 8, hdlr.payloadStart + 12) !== "vide") return false;
-  const stbl = bmffChild(bytes, minf, "stbl");
-  if (!stbl) return false;
-  return parseBmffSamples(bytes, stbl, mediaRanges, 4);
+  if (timescaleOffset < 0 || mdhdBox.payloadStart + durationOffset + 4 > mdhdBox.end || readUint32(bytes, mdhdBox.payloadStart + timescaleOffset) === 0 || readUint32(bytes, mdhdBox.payloadStart + durationOffset) === 0) return false;
+  if (ascii(bytes, hdlrBox.payloadStart + 8, hdlrBox.payloadStart + 12) !== "vide") return false;
+  const minfChildren = bmffChildren(bytes, minfBox);
+  const stbl = minfChildren?.filter((box) => box.type === "stbl");
+  if (!minfChildren || !stbl || stbl.length !== 1) return false;
+  return parseBmffSamples(bytes, stbl[0], mediaRanges, 4);
 }
 
 function hasBmffStructure(bytes: Uint8Array, mimeType: string): boolean {
@@ -302,7 +441,7 @@ function hasBmffStructure(bytes: Uint8Array, mimeType: string): boolean {
   const moovChildren = bmffChildren(bytes, moov);
   const mvhd = moovChildren?.find((box) => box.type === "mvhd") || null;
   const tracks = moovChildren?.filter((box) => box.type === "trak") || [];
-  if (!moovChildren || !mvhd || readBmffVersion(bytes, mvhd) !== 0 || !hasFullBoxPayload(bytes, mvhd, 20) || readUint32(bytes, mvhd.payloadStart + 12) === 0 || readUint32(bytes, mvhd.payloadStart + 16) === 0 || tracks.length === 0) return false;
+  if (!moovChildren || !mvhd || moovChildren.filter((box) => box.type === "mvhd").length !== 1 || readBmffVersion(bytes, mvhd) !== 0 || !hasFullBoxPayload(bytes, mvhd, 20) || readUint32(bytes, mvhd.payloadStart + 12) === 0 || readUint32(bytes, mvhd.payloadStart + 16) === 0 || tracks.length !== 1) return false;
   return tracks.some((track) => hasValidBmffTrack(bytes, track, mediaRanges));
 }
 
@@ -359,13 +498,37 @@ function ebmlAscii(bytes: Uint8Array, element: EbmlElement): string {
 }
 
 function hasVp8Frame(bytes: Uint8Array, frameStart: number, frameEnd: number): boolean {
-  if (frameEnd - frameStart < 10) return false;
-  const firstPartitionSize = (bytes[frameStart] >> 5) | (bytes[frameStart + 1] << 3) | ((bytes[frameStart + 2] & 7) << 11);
-  if ((bytes[frameStart] & 1) !== 0 || firstPartitionSize < 7 || 3 + firstPartitionSize > frameEnd - frameStart) return false;
+  if (frameEnd - frameStart < 12) return false;
+  const tag = bytes[frameStart] | (bytes[frameStart + 1] << 8) | (bytes[frameStart + 2] << 16);
+  const firstPartitionSize = tag >> 5;
+  const frameType = tag & 1;
+  const version = (tag >> 1) & 7;
+  const showFrame = (tag >> 4) & 1;
+  if (frameType !== 0 || version > 3 || showFrame !== 1 || firstPartitionSize < 4 || 10 + firstPartitionSize >= frameEnd - frameStart) return false;
   if (bytes[frameStart + 3] !== 0x9d || bytes[frameStart + 4] !== 0x01 || bytes[frameStart + 5] !== 0x2a) return false;
   const width = bytes[frameStart + 6] | ((bytes[frameStart + 7] & 0x3f) << 8);
   const height = bytes[frameStart + 8] | ((bytes[frameStart + 9] & 0x3f) << 8);
-  return width > 0 && height > 0;
+  if (width === 0 || height === 0) return false;
+  const firstPartition = new BitReader(bytes.slice(frameStart + 10, frameStart + 10 + firstPartitionSize));
+  if (firstPartition.readBit() !== 0 || firstPartition.readBit() !== 0 || firstPartition.readBits(6) === null || firstPartition.readBits(3) === null) return false;
+  const deltaEnabled = firstPartition.readBit();
+  if (deltaEnabled === null) return false;
+  if (deltaEnabled !== 0) {
+    for (let index = 0; index < 4; index += 1) {
+      const update = firstPartition.readBit();
+      if (update === null || update !== 0) return false;
+    }
+  }
+  const tokenPartitionBits = firstPartition.readBits(2);
+  if (tokenPartitionBits === null || firstPartition.readBits(7) === null) return false;
+  for (let index = 0; index < 4; index += 1) {
+    const update = firstPartition.readBit();
+    if (update === null || update !== 0) return false;
+  }
+  const tokenPartitions = 1 << tokenPartitionBits;
+  const tokenStart = frameStart + 10 + firstPartitionSize;
+  const tokenBytes = frameEnd - tokenStart;
+  return tokenBytes >= tokenPartitions && tokenStart >= frameStart + 10 && tokenStart <= frameEnd;
 }
 
 function parseWebmBlock(bytes: Uint8Array, block: EbmlElement, trackCodecs: Map<number, string>): boolean {
@@ -375,7 +538,7 @@ function parseWebmBlock(bytes: Uint8Array, block: EbmlElement, trackCodecs: Map<
   const flags = bytes[block.dataStart + track.length + 2];
   // Laced blocks require a second framing parser; reject them rather than
   // treating the lacing header as a frame.
-  if ((flags & 0x06) !== 0) return false;
+  if ((flags & 0x06) !== 0 || (flags & 0x80) === 0) return false;
   const frameStart = block.dataStart + track.length + 3;
   const codec = trackCodecs.get(track.value);
   return codec === "V_VP8" && hasVp8Frame(bytes, frameStart, block.end);
@@ -418,6 +581,8 @@ function hasWebmStructure(bytes: Uint8Array): boolean {
   for (const cluster of segmentChildren.filter((element) => element.id === 0x1f43b675)) {
     const clusterChildren = ebmlChildren(bytes, cluster.dataStart, cluster.end);
     if (!clusterChildren) return false;
+    const timecodes = clusterChildren.filter((element) => element.id === 0xe7);
+    if (timecodes.length !== 1 || ebmlUnsigned(bytes, timecodes[0]) === null) return false;
     const blocks = clusterChildren.filter((element) => element.id === 0xa3);
     const blockGroups = clusterChildren.filter((element) => element.id === 0xa0);
     for (const block of blocks) {
@@ -426,15 +591,16 @@ function hasWebmStructure(bytes: Uint8Array): boolean {
     }
     for (const group of blockGroups) {
       const groupChildren = ebmlChildren(bytes, group.dataStart, group.end);
-      const block = groupChildren?.find((element) => element.id === 0xa1);
-      if (!groupChildren || !block || !parseWebmBlock(bytes, block, trackCodecs)) return false;
+      const blockEntries = groupChildren?.filter((element) => element.id === 0xa1) || [];
+      if (!groupChildren || blockEntries.length !== 1 || !parseWebmBlock(bytes, blockEntries[0], trackCodecs)) return false;
       hasCluster = true;
     }
   }
   return hasCluster;
 }
 
-function matchesFileSignature(mimeType: string, bytes: Uint8Array): boolean {
+export function validateMaterialMedia(mimeType: string, bytes: Uint8Array): boolean {
+  if (!isSupportedMaterialMimeType(mimeType)) return false;
   if (mimeType === "application/pdf") return hasPdfStructure(bytes);
   if (mimeType === "video/webm") return hasWebmStructure(bytes);
   return hasBmffStructure(bytes, mimeType);
@@ -454,7 +620,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const { id: productIdInput } = await context.params;
     if (!isValidMaterialUuid(productIdInput)) redirect(CATALOG_ERROR_PATH);
     const productId = productIdInput.toLowerCase();
-    if (!(await isMaterialProduct(productId))) redirect(CATALOG_ERROR_PATH);
 
     const formData = await request.formData();
     const keys = [...formData.keys()];
@@ -465,7 +630,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     sanitizeMaterialFilename(file.name);
 
     const bytes = new Uint8Array(await file.arrayBuffer());
-    if (!matchesFileSignature(file.type, bytes)) redirect(CATALOG_ERROR_PATH);
+    if (!validateMaterialMedia(file.type, bytes)) redirect(CATALOG_ERROR_PATH);
+
+    if (!(await isMaterialProduct(productId))) redirect(CATALOG_ERROR_PATH);
 
     const version = await getNextMaterialAssetVersion(productId);
     const stored = await uploadMaterialObject({

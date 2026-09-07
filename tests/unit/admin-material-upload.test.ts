@@ -64,10 +64,10 @@ function u32(value) { return [(value >>> 24) & 255, (value >>> 16) & 255, (value
 function u16(value) { return [(value >>> 8) & 255, value & 255]; }
 function chars(value) { return [...value].map(c => c.charCodeAt(0)); }
 function box(type, payload) { return [...u32(payload.length + 8), ...chars(type), ...payload]; }
-function avcConfig(invalid) { return invalid ? [1,0x42,0,0x1e,0xff,0xe1,0,3,0x67,0x42,0] : [1,0x42,0,0x1e,0xff,0xe1,0,8,0x67,0x42,0,0x1e,0xe9,0x01,0x40,0x7b,1,0,4,0x68,0xce,0x06,0xe2]; }
+function avcConfig(invalid) { return invalid ? [1,0x42,0,0x1e,0xff,0xe1,0,3,0x67,0x42,0] : [1,0x42,0,0x1e,0xff,0xe1,0,9,0x67,0x42,0,0x1e,0xe9,0x01,0x40,0x7b,0x20,1,0,4,0x68,0xce,0x06,0xe2]; }
 function bmffBytes(brand, options = {}) {
   const full = [0,0,0,0];
-  const sample = options.oneByte ? [0] : [0,0,0,6,0x65,0x88,0x84,0x21,0x01,0x80];
+  const sample = options.oneByte ? [0] : options.fakeVcl ? [0,0,0,6,0x65,0,0,0,0,0] : [0,0,0,6,0x65,0x88,0x84,0x21,0x01,0x80];
   const stbl = offset => {
     const visual = new Array(78).fill(0);
     visual[6] = 0; visual[7] = 1;
@@ -114,15 +114,18 @@ function webmBytes(options = {}) {
   const codec = options.fakeCodec ? "FAKE" : "V_VP8";
   const trackEntry = ebml([0xae], concat(ebml([0xd7], [1]), ebml([0x83], [1]), ebml([0x86], chars(codec)), video));
   const tracks = ebml([0x16,0x54,0xae,0x6b], trackEntry);
-  const frame = [0x30,0x01,0x00,0x9d,0x01,0x2a,0x80,0x02,0x68,0x01,0x00,0x00];
+  const frame = options.randomFrame ? [0x90,0x00,0x00,0x9d,0x01,0x2a,0x80,0x02,0x68,0x01,0xff,0xff,0xff,0xff,0xde,0xad] : [0x90,0x00,0x00,0x9d,0x01,0x2a,0x80,0x02,0x68,0x01,0x00,0x00,0x00,0x00,0x9e,0x01];
   const block = options.emptyFrame ? [0x81,0x00,0x00,0x80] : options.fiveByteBlock ? [0x81,0x00,0x00,0x80,0x00] : [0x81,0x00,0x00,0x80, ...frame];
   const cluster = ebml([0x1f,0x43,0xb6,0x75], concat(ebml([0xe7], [0]), ebml([0xa3], block)));
-  const segmentPayload = concat(info, tracks, cluster);
+  const segmentPayload = options.markerOnlyTrack ? concat(info, ebml([0x16,0x54,0xae,0x6b], ebml([0xae], concat(ebml([0xd7], [1]), ebml([0x83], [1]), ebml([0x86], chars("V_VP8")))))) : concat(info, tracks, cluster);
   return Uint8Array.from(concat(ebmlHeader, [0x18,0x53,0x80,0x67], vint(segmentPayload.length), segmentPayload));
 }
 function fixture(kind, scenario) {
   if (scenario.fabricated) return kind === "webm" ? Uint8Array.from(concat([0x1a,0x45,0xdf,0xa3], vint(6), ebml([0x42,0x82], chars("webm")), [0x18,0x53,0x80,0x67,0x81,0x00])) : Uint8Array.from(concat(box("ftyp", concat(chars(kind === "quicktime" ? "qt  " : "isom"), u32(0), chars(kind === "quicktime" ? "qt  " : "isom"))), box("avc1", new Array(78).fill(0)), box("mdat", [0])));
-  const bytes = kind === "pdf" ? pdfBytes() : kind === "webm" ? webmBytes({ fakeCodec: scenario.fakeCodec, emptyFrame: scenario.emptyFrame, fiveByteBlock: scenario.fiveByteBlock }) : bmffBytes(kind === "quicktime" ? "qt  " : "isom", { missingAvcc: scenario.missingAvcc, invalidAvcc: scenario.invalidAvcc, invalidTables: scenario.invalidTables, inconsistent: scenario.inconsistent, oneByte: scenario.oneByte });
+  if (scenario.ftypOnly) return Uint8Array.from(box("ftyp", concat(chars("isom"), u32(0), chars("isom"))));
+  if (scenario.headerOnly) return Uint8Array.from(concat(box("ftyp", concat(chars("isom"), u32(0), chars("isom"))), [0,0,0,8,0x6d,0x6f,0x6f,0x76]));
+  if (scenario.impossibleBox) return Uint8Array.from(concat(box("ftyp", concat(chars("isom"), u32(0), chars("isom"))), [0xff,0xff,0xff,0xff,0x6d,0x6f,0x6f,0x76]));
+  const bytes = kind === "pdf" ? pdfBytes() : kind === "webm" ? webmBytes({ fakeCodec: scenario.fakeCodec, emptyFrame: scenario.emptyFrame, fiveByteBlock: scenario.fiveByteBlock, randomFrame: scenario.randomFrame, markerOnlyTrack: scenario.markerOnlyTrack }) : bmffBytes(kind === "quicktime" ? "qt  " : "isom", { missingAvcc: scenario.missingAvcc, invalidAvcc: scenario.invalidAvcc, invalidTables: scenario.invalidTables, inconsistent: scenario.inconsistent, oneByte: scenario.oneByte, fakeVcl: scenario.fakeVcl });
   return scenario.truncated ? bytes.slice(0, bytes.length - (kind === "quicktime" ? 3 : kind === "pdf" ? 4 : 1)) : bytes;
 }
 const kind = scenario.kind || "pdf";
@@ -136,11 +139,11 @@ const entries = scenario.extra ? [["file", file], ["role", "admin"]] : scenario.
 const request = { formData: async () => { timeline.push("form"); return { keys: () => entries.map(entry => entry[0]), getAll: key => entries.filter(entry => entry[0] === key).map(entry => entry[1]) }; } };
 let error = "";
 try { await route.POST(request, { params: Promise.resolve({ id: scenario.uppercase ? uuid.toUpperCase() : scenario.badId ? "bad" : uuid }) }); } catch (caught) { error = caught.message; }
-console.log(JSON.stringify({ timeline, calls, redirects, error, signedUrls }));
+  console.log(JSON.stringify({ timeline, calls, redirects, error, signedUrls, mediaValid: route.validateMaterialMedia(type, bytes) }));
 `;
 
 type Call = [string, unknown];
-type Result = { timeline: string[]; calls: Call[]; redirects: string[]; error: string; signedUrls: string[] };
+type Result = { timeline: string[]; calls: Call[]; redirects: string[]; error: string; signedUrls: string[]; mediaValid: boolean };
 async function run(scenario: Record<string, unknown> = {}): Promise<Result> { const { stdout } = await promisify(execFile)(process.execPath, ["--import", "tsx/esm", "-e", harness, JSON.stringify(scenario)], { maxBuffer: 1024 * 1024 }); return JSON.parse(stdout.trim()); }
 function call(result: Result, name: string): Record<string, unknown> { return result.calls.find(([key]) => key === name)?.[1] as Record<string, unknown>; }
 
@@ -148,7 +151,7 @@ test("approved admins execute the real route, repository, and storage modules", 
   for (const kind of ["pdf", "mp4", "webm", "quicktime"]) {
     const result = await run({ access: "admin", kind });
     assert.equal(result.error, "REDIRECT:/quan-tri/catalog?upload=success", JSON.stringify({ kind, result }));
-    assert.deepEqual(result.timeline, ["auth", "profile", "material", "form", "file", "version", "upload", "metadata"]);
+    assert.deepEqual(result.timeline, ["auth", "profile", "form", "file", "material", "version", "upload", "metadata"]);
     const upload = call(result, "upload");
     const metadata = result.calls.find(([name]) => name === "metadata")?.[1] as Record<string, unknown>;
     const options = upload.options as Record<string, unknown>;
@@ -171,17 +174,21 @@ test("authorization remains first and blocks anonymous or non-approved users", a
 test("invalid multipart data, UUIDs, MIME/signatures, size, product, and unsafe names fail generically", async () => {
   for (const scenario of [
     { missing: true }, { extra: true }, { badId: true }, { mime: "text/plain" }, { spoof: true }, { empty: true }, { oversize: true }, { nonMaterial: true },
-    { truncated: true }, { kind: "webm", truncated: true }, { kind: "mp4", truncated: true }, { kind: "quicktime", truncated: true },
+    { truncated: true }, { kind: "webm", truncated: true }, { kind: "mp4", truncated: true }, { kind: "quicktime", truncated: true }, { kind: "mp4", ftypOnly: true }, { kind: "mp4", headerOnly: true }, { kind: "mp4", impossibleBox: true },
     { kind: "mp4", fabricated: true }, { kind: "webm", fabricated: true }, { kind: "mp4", missingAvcc: true }, { kind: "mp4", invalidAvcc: true }, { kind: "mp4", invalidTables: true },
-    { kind: "mp4", inconsistent: true }, { kind: "quicktime", oneByte: true }, { kind: "webm", fakeCodec: true }, { kind: "webm", fiveByteBlock: true }, { kind: "webm", emptyFrame: true },
+    { kind: "mp4", inconsistent: true }, { kind: "mp4", fakeVcl: true }, { kind: "quicktime", oneByte: true }, { kind: "webm", fakeCodec: true }, { kind: "webm", markerOnlyTrack: true }, { kind: "webm", fiveByteBlock: true }, { kind: "webm", emptyFrame: true }, { kind: "webm", randomFrame: true },
     { name: "foo/../bar.pdf" }, { name: "foo\\..\\bar.pdf" }, { name: "unsafe\u0000.pdf" }
   ]) {
     const result = await run({ access: "admin", ...scenario });
     assert.equal(result.error, "REDIRECT:/quan-tri/catalog?upload=error", JSON.stringify({ scenario, result }));
     assert.equal(result.redirects.at(-1), "/quan-tri/catalog?upload=error");
-    assert.ok(!result.timeline.includes("upload"));
+    const mediaInvalid = Boolean(scenario.spoof || scenario.truncated || scenario.fabricated || scenario.ftypOnly || scenario.headerOnly || scenario.impossibleBox || scenario.missingAvcc || scenario.invalidAvcc || scenario.invalidTables || scenario.inconsistent || scenario.fakeVcl || scenario.oneByte || scenario.fakeCodec || scenario.markerOnlyTrack || scenario.fiveByteBlock || scenario.emptyFrame || scenario.randomFrame);
+    if (mediaInvalid) assert.equal(result.mediaValid, false, JSON.stringify({ scenario, result }));
+    if (!scenario.nonMaterial) assert.ok(!result.timeline.includes("material"), JSON.stringify({ scenario, result }));
     assert.ok(!result.timeline.includes("version"));
+    assert.ok(!result.timeline.includes("upload"));
     assert.ok(!result.timeline.includes("metadata"));
+    assert.ok(!result.timeline.includes("cleanup"));
   }
 });
 test("uppercase UUIDs are canonicalized and cleanup is exact only after metadata failure", async () => {
@@ -191,7 +198,7 @@ test("uppercase UUIDs are canonicalized and cleanup is exact only after metadata
   assert.equal(success.timeline.includes("cleanup"), false);
   const failure = await run({ access: "admin", metadataError: true });
   assert.equal(failure.error, "REDIRECT:/quan-tri/catalog?upload=error");
-  assert.deepEqual(failure.timeline, ["auth", "profile", "material", "form", "file", "version", "upload", "metadata", "cleanup"]);
+  assert.deepEqual(failure.timeline, ["auth", "profile", "form", "file", "material", "version", "upload", "metadata", "cleanup"]);
   const uploadPath = call(failure, "upload").path;
   assert.deepEqual(call(failure, "cleanup"), { bucket: "materials", paths: [uploadPath] });
   assert.equal(failure.signedUrls.length, 0);
