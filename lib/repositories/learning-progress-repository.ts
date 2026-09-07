@@ -168,34 +168,23 @@ export async function getLearningProgressForWorkspace(
 
   try {
     const supabase = await createClient();
-    let query: any = supabase
+    const query = supabase
       .from("learning_progress")
       .select(LEARNING_PROGRESS_SELECT)
       .eq("user_id", canonicalUserId)
       .eq("product_id", canonicalProductId);
 
-    if (typeof query.order === "function") {
-      query = query
-        .order("item_type", { ascending: true })
-        .order("item_id", { ascending: true })
-        .limit(MAX_PROGRESS_ROWS);
-      const { data, error } = await query;
-      if (error || !Array.isArray(data) || data.length > MAX_PROGRESS_ROWS) return repositoryFailure();
-      const rows = data as unknown[];
-      if (!rows.every(isValidProgressRow)) return repositoryFailure();
-      if (!rows.every((row) => canonicalUuid(row.user_id) === canonicalUserId && canonicalUuid(row.product_id) === canonicalProductId)) {
-        return repositoryFailure();
-      }
-      return rows.slice().sort(compareProgressRows);
+    const { data, error } = await query
+      .order("item_type", { ascending: true })
+      .order("item_id", { ascending: true })
+      .limit(MAX_PROGRESS_ROWS);
+    if (error || !Array.isArray(data) || data.length > MAX_PROGRESS_ROWS) return repositoryFailure();
+    const rows = data as unknown[];
+    if (!rows.every(isValidProgressRow)) return repositoryFailure();
+    if (!rows.every((row) => canonicalUuid(row.user_id) === canonicalUserId && canonicalUuid(row.product_id) === canonicalProductId)) {
+      return repositoryFailure();
     }
-
-    // Keeps dependency-injected runtime mocks useful while the real Supabase path above remains bounded.
-    const { data, error } = await query.maybeSingle();
-    if (error) return repositoryFailure();
-    if (data === null) return [];
-    if (!isValidProgressRow(data)) return repositoryFailure();
-    if (canonicalUuid(data.user_id) !== canonicalUserId || canonicalUuid(data.product_id) !== canonicalProductId) return repositoryFailure();
-    return [data];
+    return rows.slice().sort(compareProgressRows);
   } catch (error) {
     if (error instanceof LearningProgressInputError || error instanceof LearningProgressRepositoryError) throw error;
     return repositoryFailure();

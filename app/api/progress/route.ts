@@ -64,6 +64,16 @@ export async function POST(request: Request): Promise<Response> {
     return response({ error: "Invalid progress data." }, 400);
   }
 
+  try {
+    if (!await isLearningProgressItemForProduct(input.productId, input.itemType, input.itemId)) {
+      return response({ error: "Progress is unavailable." }, 404);
+    }
+  } catch (error) {
+    if (error instanceof LearningProgressInputError) return response({ error: "Invalid progress data." }, 400);
+    if (error instanceof LearningProgressRepositoryError) return response({ error: "Progress is unavailable." }, 500);
+    return response({ error: "Progress is unavailable." }, 500);
+  }
+
   let entitlement;
   try {
     entitlement = await getActiveProductEntitlement(userId, input.productId);
@@ -75,9 +85,6 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
-    if (!await isLearningProgressItemForProduct(input.productId, input.itemType, input.itemId)) {
-      return response({ error: "Progress is unavailable." }, 404);
-    }
     await upsertLearningProgress(userId, input);
     return success();
   } catch (error) {
