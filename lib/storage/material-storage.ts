@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { createClient } from "@/lib/supabase/server";
 
 export const MATERIALS_BUCKET = "materials";
+export const MATERIAL_SIGNED_URL_EXPIRES_IN_SECONDS = 300;
 export const MAX_PDF_BYTES = 20 * 1024 * 1024;
 export const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
 export const SUPPORTED_MATERIAL_MIME_TYPES = [
@@ -33,6 +34,11 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const SAFE_FILENAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,199}$/;
 const UNSAFE_FILENAME_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\\/:\u2215\u2044\u29f8\uff0f\uff3c]/;
 const ENCODED_TRAVERSAL_PATTERN = /%(?:2f|5c|2e)/i;
+const MATERIAL_STORAGE_UUID = `[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}`;
+const MATERIAL_STORAGE_PATH_PATTERN = new RegExp(
+  `^${MATERIALS_BUCKET}/(${MATERIAL_STORAGE_UUID})/v[1-9][0-9]*/(${MATERIAL_STORAGE_UUID})-([a-z0-9][a-z0-9._-]*)$`,
+  "i"
+);
 
 export function isSupportedMaterialMimeType(value: unknown): value is SupportedMaterialMimeType {
   return typeof value === "string" && (SUPPORTED_MATERIAL_MIME_TYPES as readonly string[]).includes(value);
@@ -79,6 +85,26 @@ export function materialStoragePath(productId: unknown, version: unknown, origin
   return `${MATERIALS_BUCKET}/${canonicalProductId}/v${version}/${canonicalId}-${sanitizeMaterialFilename(originalName)}`;
 }
 
+function parseMaterialStoragePath(storagePath: unknown): { productId: string; filename: string } | null {
+  if (typeof storagePath !== "string") return null;
+  const match = MATERIAL_STORAGE_PATH_PATTERN.exec(storagePath);
+  if (!match) return null;
+  const [, productId, , filename] = match;
+  if (filename !== filename.toLowerCase() || filename.includes("..")) return null;
+  try {
+    if (sanitizeMaterialFilename(filename) !== filename) return null;
+  } catch {
+    return null;
+  }
+  return { productId: productId.toLowerCase(), filename };
+}
+
+export function isValidMaterialStoragePathForProduct(storagePath: unknown, expectedProductId: unknown): boolean {
+  if (!isValidMaterialUuid(expectedProductId)) return false;
+  const parsed = parseMaterialStoragePath(storagePath);
+  return parsed !== null && parsed.productId === expectedProductId.toLowerCase();
+}
+
 export interface MaterialUploadInput {
   productId: string;
   version: number;
@@ -112,10 +138,7 @@ export async function uploadMaterialObject(input: MaterialUploadInput): Promise<
 }
 
 export async function removeNewMaterialObject(storagePath: unknown): Promise<void> {
-  if (
-    typeof storagePath !== "string"
-    || !new RegExp(`^${MATERIALS_BUCKET}/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/v[1-9][0-9]*/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}-[a-z0-9][a-z0-9._-]*$`).test(storagePath)
-  ) {
+  if (typeof storagePath !== "string" || !MATERIAL_STORAGE_PATH_PATTERN.test(storagePath)) {
     throw new MaterialStorageInputError();
   }
   try {
@@ -123,6 +146,24 @@ export async function removeNewMaterialObject(storagePath: unknown): Promise<voi
     const { error } = await supabase.storage.from(MATERIALS_BUCKET).remove([storagePath]);
     if (error) throw new Error();
   } catch {
+    throw new MaterialStorageError();
+  }
+}
+
+/** Creates a short-lived URL for a validated private material object. */
+export async function createMaterialSignedUrl(storagePath: unknown, expectedProductId: unknown): Promise<string> {
+  if (typeof storagePath !== "string" || !isValidMaterialStoragePathForProduct(storagePath, expectedProductId)) {
+    throw new MaterialStorageInputError();
+  }
+  try {
+    const supabase = await createClient();
+    const { data, error } = await supabase.storage
+      .from(MATERIALS_BUCKET)
+      .createSignedUrl(storagePath, MATERIAL_SIGNED_URL_EXPIRES_IN_SECONDS);
+    if (error || !data?.signedUrl) throw new Error();
+    return data.signedUrl;
+  } catch (error) {
+    if (error instanceof MaterialStorageInputError) throw error;
     throw new MaterialStorageError();
   }
 }

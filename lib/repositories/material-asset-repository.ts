@@ -11,6 +11,7 @@ export const MATERIAL_ASSET_COLUMNS = [
   "id", "product_id", "uploaded_by", "storage_path", "original_name", "mime_type", "byte_size", "version", "visibility", "created_at", "updated_at"
 ] as const;
 export const MATERIAL_ASSET_SELECT = MATERIAL_ASSET_COLUMNS.join(", ");
+export const CURRENT_MATERIAL_ASSET_SELECT = ["product_id", "storage_path", "version", "visibility"].join(", ");
 
 export type MaterialAsset = MaterialAssetRow;
 
@@ -35,6 +36,11 @@ export interface CreateMaterialAssetInput {
   mimeType: string;
   byteSize: number;
   version: number;
+}
+
+export interface CurrentMaterialAsset {
+  productId: string;
+  storagePath: string;
 }
 
 function validateCreateInput(input: CreateMaterialAssetInput): void {
@@ -116,6 +122,31 @@ export async function listCurrentMaterialAssetVersions(productIds: readonly stri
       return result;
     }, {});
   } catch {
+    throw new MaterialAssetRepositoryError();
+  }
+}
+
+/** Returns the newest valid private asset for one material product. */
+export async function getCurrentMaterialAsset(productId: string): Promise<CurrentMaterialAsset | null> {
+  if (!isValidMaterialUuid(productId)) throw new MaterialAssetInputError();
+  const canonicalProductId = productId.toLowerCase();
+  try {
+    const supabase = await createClient();
+    const { data, error } = await supabase
+      .from("material_assets")
+      .select(CURRENT_MATERIAL_ASSET_SELECT)
+      .eq("product_id", canonicalProductId)
+      .eq("visibility", "private")
+      .order("version", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new Error();
+    if (!data) return null;
+    const row = data as unknown as Pick<MaterialAssetRow, "product_id" | "storage_path" | "version" | "visibility">;
+    if (!isValidMaterialUuid(row.product_id) || row.product_id.toLowerCase() !== canonicalProductId || row.visibility !== "private" || !Number.isSafeInteger(row.version) || row.version < 1 || typeof row.storage_path !== "string") return null;
+    return { productId: row.product_id.toLowerCase(), storagePath: row.storage_path };
+  } catch (error) {
+    if (error instanceof MaterialAssetInputError) throw error;
     throw new MaterialAssetRepositoryError();
   }
 }
