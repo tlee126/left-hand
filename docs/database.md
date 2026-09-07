@@ -3,7 +3,7 @@
 This document outlines the PostgreSQL database schema for the LEFT HAND learning platform, designed for Supabase.
 
 > [!NOTE]
-> **Status:** Topological migrations `0001_core_schema.sql` through `0015_learning_progress.sql` and idempotent `supabase/seed.sql` are prepared locally and verified via automated contract checks. They have **NOT** yet been applied to the hosted Supabase project.
+> **Status:** Topological migrations `0001_core_schema.sql` through `0016_study_plans.sql` and idempotent `supabase/seed.sql` are prepared locally and verified via automated contract checks. They have **NOT** yet been applied to the hosted Supabase project.
 
 ---
 
@@ -20,6 +20,7 @@ The schema employs a normalized, typed relational model separating core product 
 | `material_assets` | `id` (UUID) | Immutable metadata for each private PDF/video version uploaded for a material product. |
 | `product_entitlements` | `id` (UUID) | One user-to-product entitlement source row with active, revoked, or expired lifecycle state. |
 | `learning_progress` | Unique `(user_id, product_id, item_type, item_id)` | Student-owned progress for entitled material and lesson items, with bounded watch percentage and lifecycle timestamps. |
+| `study_plans` | `id` (UUID) | Student-owned daily study tasks and diary entries, keyed by the learner and their local calendar date. |
 | `courses` | `product_id` (UUID FK) | 1-to-1 extension of `products` for live review classes and video courses (format, session count, schedule, mentor, syllabus, enrollment status). |
 | `course_lessons` | `id` (UUID) | 1-to-N lessons / syllabus items under a specific course (order index, lesson title, duration). |
 | `tutors` | `product_id` (UUID FK) | 1-to-1 extension of `products` for 1-on-1 and small group peer tutors (name, faculty, format description, strengths, bio). |
@@ -113,6 +114,17 @@ erDiagram
         timestamptz completed_at
     }
 
+    STUDY_PLANS {
+        uuid id PK
+        uuid user_id FK
+        date task_date
+        text title
+        uuid subject_id FK
+        integer duration_minutes
+        text status
+        timestamptz completed_at
+    }
+
     SUBJECTS ||--o{ PRODUCTS : "subject_id"
     PRODUCTS ||--o| MATERIALS : "1-to-1"
     PRODUCTS ||--o| COURSES : "1-to-1"
@@ -121,6 +133,7 @@ erDiagram
     TUTORS ||--o{ TUTOR_SUBJECTS : "tutor_product_id"
     SUBJECTS ||--o{ TUTOR_SUBJECTS : "subject_id"
     PRODUCTS ||--o{ LEARNING_PROGRESS : "product_id"
+    SUBJECTS ||--o{ STUDY_PLANS : "subject_id"
 ```
 
 ---
@@ -166,6 +179,7 @@ erDiagram
 - **Material Asset Metadata (`0013_material_asset_metadata.sql`):** `material_assets` records the product, uploader, original filename, MIME type, byte size, private visibility, storage path, and monotonically increasing version of each upload. Its product must also exist in `materials`, so a course or tutor product cannot receive a material file. RLS grants metadata `SELECT` and `INSERT` only to approved authenticated admins.
 - **Product Entitlements (`0014_product_entitlements.sql`):** `product_entitlements` is the entitlement source of truth keyed uniquely by `(user_id, product_id)`. It stores only entitlement lifecycle and audit timestamps, requires valid status/expiry/revocation combinations, and has a lookup index on `(user_id, product_id, status)`. Authenticated users can read only their own rows; approved authenticated admins can read all rows and insert, update, or delete them. No payment, order, checkout, webhook, storage, or signed-URL data is stored here.
 - **Learning Progress (`0015_learning_progress.sql`):** `learning_progress` is keyed uniquely by `(user_id, product_id, item_type, item_id)`. `item_type` is limited to `material` or `lesson`, `status` is limited to `not_started`, `in_progress`, or `completed`, and `watched_percent` is constrained to `0`–`100`. Authenticated users can select, insert, and update only rows whose `user_id = auth.uid()`; there is no anonymous, public, admin-wide, delete, service-role, or bypass-RLS access. The `updated_at` trigger reuses `update_updated_at_column()` from migration 0004.
+- **Study Plans (`0016_study_plans.sql`):** `study_plans` stores one student task per UUID with a per-user UUID `request_key` unique constraint for atomic create idempotency, a local-calendar `task_date`, trimmed title (1–200 characters), duration (1–1440 minutes), a required `subjects` foreign key, and `pending`, `in_progress`, or `completed` status. Completed rows require `completed_at`; other statuses require it to be null. Authenticated users can select, insert, update, and delete only their own rows through `auth.uid()`-backed RLS policies. The dashboard reads a bounded window of 90 past days through 30 future days using `Asia/Ho_Chi_Minh` calendar dates. There are no anonymous/public/service-role grants or bypass access, and the `updated_at` trigger reuses `update_updated_at_column()` from migration 0004.
 
 ### Private material file convention
 
@@ -209,6 +223,7 @@ psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0012_p
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0013_material_asset_metadata.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0014_product_entitlements.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0015_learning_progress.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0016_study_plans.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/seed.sql
 ```
 

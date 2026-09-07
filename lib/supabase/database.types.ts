@@ -357,6 +357,56 @@ export type Database = {
           },
         ]
       }
+      study_plans: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          duration_minutes: number
+          id: string
+          request_key: string
+          status: string
+          subject_id: string
+          task_date: string
+          title: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          duration_minutes: number
+          id?: string
+          request_key: string
+          status?: string
+          subject_id: string
+          task_date: string
+          title: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          duration_minutes?: number
+          id?: string
+          request_key?: string
+          status?: string
+          subject_id?: string
+          task_date?: string
+          title?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_plans_subject_id_fkey"
+            columns: ["subject_id"]
+            isOneToOne: false
+            referencedRelation: "subjects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       products: {
         Row: {
           category: Database["public"]["Enums"]["category_enum"]

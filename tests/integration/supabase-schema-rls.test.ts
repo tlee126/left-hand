@@ -23,6 +23,7 @@ import {
   assertMigration0013Contract,
   assertMigration0014Contract,
   assertMigration0015Contract,
+  assertMigration0016Contract,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
 } from "../../scripts/verify-supabase-migrations-seed-rls";
@@ -208,13 +209,14 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "0012_private_material_storage.sql",
         "0013_material_asset_metadata.sql",
         "0014_product_entitlements.sql",
-        "0015_learning_progress.sql"
+      "0015_learning_progress.sql",
+      "0016_study_plans.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
     });
 
-    test("the canonical history verifier rejects a content mutation in every migration 0001-0014", async () => {
+    test("the canonical history verifier rejects a content mutation in every migration 0001-0015", async () => {
       const snapshots: Record<string, string> = {};
       for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
         snapshots[filename] = await fs.readFile(path.join(migrationsDir, filename), "utf-8");
@@ -1233,6 +1235,39 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         sql.replace("EXECUTE FUNCTION update_updated_at_column()", "EXECUTE FUNCTION unsafe_updated_at()")
       ];
       for (const fixture of fixtures) assert.throws(() => assertMigration0015Contract(fixture), /./);
+    });
+  });
+
+  describe("12. Migration 0016 Study Plans (Runtime Contract Fixtures)", () => {
+    const migrationPath = path.join(migrationsDir, "0016_study_plans.sql");
+
+    test("accepts the exact study-plan schema, indexes, grants, trigger, and own-row RLS contract", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      assert.doesNotThrow(() => assertMigration0016Contract(sql));
+    });
+
+    test("rejects public access, cross-user access, missing RLS, invalid constraints, arbitrary grants, and mutations to prior migrations", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const fixtures = [
+        sql.replace("ALTER TABLE public.study_plans ENABLE ROW LEVEL SECURITY;", "ALTER TABLE public.study_plans DISABLE ROW LEVEL SECURITY;"),
+        sql.replace("GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.study_plans TO authenticated", "GRANT SELECT ON TABLE public.study_plans TO anon"),
+        sql.replace("USING (public.study_plans.user_id = auth.uid())", "USING (true)"),
+        sql.replace("WITH CHECK (public.study_plans.user_id = auth.uid())", "WITH CHECK (true)"),
+        sql.replace("duration_minutes BETWEEN 1 AND 1440", "duration_minutes BETWEEN 0 AND 1440"),
+        sql.replace("status IN ('pending', 'in_progress', 'completed')", "status IN ('pending', 'completed', 'admin')"),
+        sql.replace("REFERENCES public.subjects(id) ON DELETE RESTRICT", "REFERENCES public.products(id) ON DELETE CASCADE"),
+        sql.replace("CONSTRAINT study_plans_user_request_key_unique UNIQUE (user_id, request_key),", ""),
+        sql.replace("public.study_plans.user_id = auth.uid()", "public.study_plans.user_id = '750e8400-e29b-41d4-a716-446655440000'"),
+        `${sql}\nGRANT ALL ON TABLE public.study_plans TO authenticated;`,
+        `${sql}\nGRANT SELECT ON TABLE public.products TO authenticated;`,
+        `${sql}\nCREATE POLICY study_plans_public ON public.study_plans FOR SELECT TO public USING (true);`,
+        `${sql}\nCREATE POLICY study_plans_service ON public.study_plans FOR SELECT TO service_role USING (true);`,
+        `${sql}\nALTER ROLE authenticated BYPASSRLS;`,
+        `${sql}\nSET ROLE postgres;`,
+        `${sql}\nCREATE FUNCTION unsafe() RETURNS void LANGUAGE sql SECURITY DEFINER AS $$ SELECT; $$;`,
+        `${sql}\nDO $$ BEGIN EXECUTE 'SELECT 1'; END $$;`
+      ];
+      for (const fixture of fixtures) assert.throws(() => assertMigration0016Contract(fixture), /./);
     });
   });
 });

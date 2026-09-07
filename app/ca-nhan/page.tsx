@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getAccountAccess } from "@/lib/auth/session";
+import type { StudyPlan, StudyPlanSubject } from "@/lib/repositories/study-plan-repository";
 import { StudentDashboardClient } from "./dashboard-client";
 
 /**
@@ -15,6 +16,18 @@ function getSafeInternalRedirect(pathWithQuery: string): string {
     return pathWithQuery;
   }
   return "/ca-nhan";
+}
+
+function getVietnamDate(): string {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Ho_Chi_Minh", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  const values = new Map(parts.map((part) => [part.type, part.value]));
+  return `${values.get("year")}-${values.get("month")}-${values.get("day")}`;
+}
+
+function shiftVietnamDate(date: string, days: number): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
 }
 
 export default async function StudentDashboardPage({
@@ -63,10 +76,38 @@ export default async function StudentDashboardPage({
     redirect("/quan-tri");
   }
 
+  if (!access.user) {
+    redirect("/dang-nhap?next=%2Fca-nhan");
+  }
+
+  const todayDate = getVietnamDate();
+  const historyStartDate = (() => {
+    return shiftVietnamDate(todayDate, -90);
+  })();
+  const futureEndDate = shiftVietnamDate(todayDate, 30);
+  let initialStudyPlans: StudyPlan[] = [];
+  let studyPlanSubjects: StudyPlanSubject[] = [];
+  let studyPlanLoadError = false;
+  try {
+    const { listStudyPlanSubjects, listStudyPlans } = await import("@/lib/repositories/study-plan-repository");
+    const [plansResult, subjectsResult] = await Promise.allSettled([
+      listStudyPlans(access.user.id, { startDate: historyStartDate, endDate: futureEndDate }),
+      listStudyPlanSubjects()
+    ]);
+    if (plansResult.status === "fulfilled") initialStudyPlans = plansResult.value;
+    else studyPlanLoadError = true;
+    if (subjectsResult.status === "fulfilled") studyPlanSubjects = subjectsResult.value;
+  } catch {
+    studyPlanLoadError = true;
+  }
   return (
     <StudentDashboardClient
       initialProfile={access.profile}
       authUserEmail={access.user?.email ?? null}
+      initialStudyPlans={initialStudyPlans}
+      studyPlanSubjects={studyPlanSubjects}
+      todayDate={todayDate}
+      studyPlanLoadError={studyPlanLoadError}
     />
   );
 }

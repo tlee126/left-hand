@@ -34,7 +34,8 @@ const immutableMigrationHashes = {
   "0011_admin_catalog_crud_rls.sql": "2ce64ed6eeaa810d7e01671120b0ab761fda2efa29aa9da332f9346f302e0a5e",
   "0012_private_material_storage.sql": "40fb2a4b8b3b818bc9ccaea83348c5f13780ffab9f587a88e9f1cd903a394c76",
   "0013_material_asset_metadata.sql": "9062310091dc76760396b901320209e78155e2890b835535847999f869c31796",
-  "0014_product_entitlements.sql": "77b507859e5295bae896ac3e0ed66f4bb749a7f56ab71aeae9c0bb293b9722b2"
+  "0014_product_entitlements.sql": "77b507859e5295bae896ac3e0ed66f4bb749a7f56ab71aeae9c0bb293b9722b2",
+  "0015_learning_progress.sql": "4cd65043f20cd7badc9496e2d4d8466f5c6bc1546d6b91ac565c07d3e2a11e37"
 } as const;
 
 export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
@@ -960,6 +961,86 @@ export function assertMigration0015Contract(sql0015: string): void {
   fail(!/\b(?:grant|revoke)\s+[^;]*\bon\s+(?!table\s+public\.learning_progress\b)[a-z_][a-z0-9_.]*/i.test(code), "Migration 0015 must not alter cross-table privileges");
 }
 
+/** Pure contract used by the CLI audit and integration tests for migration 0016. */
+export function assertMigration0016Contract(sql0016: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const statements = stripSqlCommentsAndSplitStatements(sql0016);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const code = statements.join(" ; ");
+  const ownPredicate = "public.study_plans.user_id = auth.uid()";
+
+  fail(!/\b(?:service_role|security\s+definer|bypassrls|set\s+role|alter\s+role)\b/i.test(code), "Migration 0016 must not escalate roles");
+  fail(!/\b(?:password|secret|token|bearer|apikey|api_key|credential)\b\s*[:=]/i.test(code), "Migration 0016 must not contain credentials");
+  fail(!/\b(?:execute\s+(?:immediate|format)|execute\s+['$]|format\s*\()/i.test(code), "Migration 0016 must not use dynamic SQL");
+  fail(!/\b(?:create\s+(?:or\s+replace\s+)?(?:function|procedure|view|type|extension)|alter\s+system|disable\s+row\s+level\s+security)\b/i.test(code), "Migration 0016 contains unrelated or unsafe statements");
+  fail(statements.length === 12, "Migration 0016 must contain only the table, indexes, RLS, grants, trigger, and four policies");
+
+  const table = normalized[0] || "";
+  fail(table.startsWith("create table public.study_plans ("), "Migration 0016 must create public.study_plans");
+  const tableOpening = table.indexOf("(");
+  const tableClosing = table.lastIndexOf(")");
+  fail(tableOpening > 0 && tableClosing > tableOpening, "Migration 0016 must contain a parseable study_plans table body");
+  const definitions = splitTopLevelClauses(table.slice(tableOpening + 1, tableClosing));
+  const expectedColumns = new Map([
+    ["id", "id uuid primary key default gen_random_uuid()"],
+    ["user_id", "user_id uuid not null references auth.users(id) on delete cascade"],
+    ["request_key", "request_key uuid not null"],
+    ["task_date", "task_date date not null"],
+    ["title", "title text not null"],
+    ["subject_id", "subject_id uuid not null references public.subjects(id) on delete restrict"],
+    ["duration_minutes", "duration_minutes integer not null"],
+    ["status", "status text not null default 'pending'"],
+    ["completed_at", "completed_at timestamptz null"],
+    ["created_at", "created_at timestamptz not null default now()"],
+    ["updated_at", "updated_at timestamptz not null default now()"]
+  ]);
+  const columnDefinitions = definitions.filter((definition) => !/^constraint\b|^foreign key\b/i.test(definition));
+  fail(columnDefinitions.length === expectedColumns.size, "Migration 0016 must contain exactly the expected study_plans columns");
+  const actualColumns = new Map<string, string>();
+  for (const definition of columnDefinitions) {
+    const name = definition.match(/^([a-z_][a-z0-9_]*)\b/i)?.[1];
+    fail(Boolean(name) && !actualColumns.has(name!.toLowerCase()), "Migration 0016 must not contain duplicate or unnamed columns");
+    actualColumns.set(name!.toLowerCase(), definition);
+  }
+  fail(actualColumns.size === expectedColumns.size && [...expectedColumns].every(([name, definition]) => actualColumns.get(name) === definition), "Migration 0016 column definitions must match the exact study plan contract");
+  const expectedConstraints = [
+    "constraint study_plans_task_date_check check (task_date >= date '2000-01-01' and task_date <= date '2100-12-31')",
+    "constraint study_plans_user_request_key_unique unique (user_id, request_key)",
+    "constraint study_plans_title_check check (title = btrim(title) and char_length(title) between 1 and 200)",
+    "constraint study_plans_duration_minutes_check check (duration_minutes between 1 and 1440)",
+    "constraint study_plans_status_check check (status in ('pending', 'in_progress', 'completed'))",
+    "constraint study_plans_completed_at_check check ( (status = 'completed' and completed_at is not null) or (status <> 'completed' and completed_at is null) )"
+  ];
+  const actualConstraints = definitions.filter((definition) => /^constraint\b|^foreign key\b/i.test(definition));
+  fail(actualConstraints.length === expectedConstraints.length && expectedConstraints.every((constraint) => actualConstraints.includes(constraint)), "Migration 0016 constraints and foreign keys must match exactly");
+
+  fail(normalized[1] === "create index idx_study_plans_user_task_date on public.study_plans (user_id, task_date, created_at, id)", "Migration 0016 must create the exact user/date lookup index");
+  fail(normalized[2] === "create index idx_study_plans_status_date on public.study_plans (status, task_date, user_id)", "Migration 0016 must create the exact status/date lookup index");
+  fail(normalized[3] === "alter table public.study_plans enable row level security", "Migration 0016 must enable RLS");
+  fail(normalized[4] === "revoke all on table public.study_plans from anon, public, authenticated", "Migration 0016 must revoke broad study-plan privileges");
+  fail(normalized[5] === "grant select, insert, update, delete on table public.study_plans to authenticated", "Migration 0016 must grant only explicit authenticated study-plan access");
+  fail(normalized[6] === "drop trigger if exists trg_study_plans_updated_at on public.study_plans", "Migration 0016 must safely replace only its own timestamp trigger");
+  fail(normalized[7] === "create trigger trg_study_plans_updated_at before update on public.study_plans for each row execute function update_updated_at_column()", "Migration 0016 must reuse the established updated_at function");
+
+  const policies = normalized.slice(8);
+  const expectedPolicies = [["study_plans_select_own", "select"], ["study_plans_insert_own", "insert"], ["study_plans_update_own", "update"], ["study_plans_delete_own", "delete"]] as const;
+  fail(policies.length === expectedPolicies.length, "Migration 0016 must contain exactly four study-plan policies");
+  for (const [name, action] of expectedPolicies) {
+    const policy = policies.find((statement) => statement.startsWith(`create policy ${name} `)) || "";
+    fail(policy.startsWith(`create policy ${name} on public.study_plans for ${action} to authenticated `), "Migration 0016 policies must target study_plans and authenticated only");
+    const using = extractPolicyClause(policy, "USING");
+    const withCheck = extractPolicyClause(policy, "WITH CHECK");
+    if (action === "select" || action === "delete") fail(normalizeSql(using || "").toLowerCase() === ownPredicate && withCheck === null, "Migration 0016 read/delete policy must require auth.uid() ownership");
+    else if (action === "insert") fail(using === null && normalizeSql(withCheck || "").toLowerCase() === ownPredicate, "Migration 0016 INSERT policy must require auth.uid() ownership");
+    else fail(normalizeSql(using || "").toLowerCase() === ownPredicate && normalizeSql(withCheck || "").toLowerCase() === ownPredicate, "Migration 0016 UPDATE policy must require auth.uid() ownership in both predicates");
+  }
+  const grants = normalized.filter((statement) => /^grant\s+/i.test(statement));
+  const revokes = normalized.filter((statement) => /^revoke\s+/i.test(statement));
+  fail(grants.length === 1 && revokes.length === 1, "Migration 0016 must contain only one grant and one revoke statement");
+  fail(!/\bgrant\s+[^;]*\b(?:anon|public|service_role)\b/i.test(code.replace(/public\.study_plans/gi, "study_plans")), "Migration 0016 must not grant or policy-authorize public roles");
+  fail(!/\b(?:grant|revoke)\s+[^;]*\bon\s+(?!table\s+public\.study_plans\b)[a-z_][a-z0-9_.]*/i.test(code), "Migration 0016 must not alter cross-table privileges");
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -990,13 +1071,14 @@ export async function runAudit(): Promise<boolean> {
       "0012_private_material_storage.sql",
       "0013_material_asset_metadata.sql",
       "0014_product_entitlements.sql",
-      "0015_learning_progress.sql"
+      "0015_learning_progress.sql",
+      "0016_study_plans.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 15 migration files exist in strict topological order",
+      check: "All 16 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -1016,7 +1098,7 @@ export async function runAudit(): Promise<boolean> {
       immutableHistoryValid = false;
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0014 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0015 match their canonical LF-normalized SHA-256 snapshots",
         passed: false,
         details: error instanceof Error ? error.message : String(error)
       });
@@ -1024,9 +1106,9 @@ export async function runAudit(): Promise<boolean> {
     if (immutableHistoryValid) {
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0014 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0015 match their canonical LF-normalized SHA-256 snapshots",
         passed: true,
-        details: "Every applied migration through 0014 is content-locked"
+        details: "Every applied migration through 0015 is content-locked"
       });
     }
 
@@ -1353,7 +1435,22 @@ export async function runAudit(): Promise<boolean> {
       details: "Authenticated users can select/insert/update only rows owned by auth.uid(); no public, delete, service_role, or BYPASSRLS access"
     });
 
-    // 16. Audit supabase/seed.sql
+    // 16. Audit 0016_study_plans.sql
+    const sql0016 = await fs.readFile(path.join(migrationsDir, "0016_study_plans.sql"), "utf-8");
+    let migration0016ContractValid = true;
+    try {
+      assertMigration0016Contract(sql0016);
+    } catch {
+      migration0016ContractValid = false;
+    }
+    results.push({
+      category: "0016_study_plans",
+      check: "Creates bounded student-owned study plans with exact RLS, indexes, grants, and timestamp behavior",
+      passed: migration0016ContractValid,
+      details: "Authenticated users can select, insert, update, and delete only rows owned by auth.uid(); no public or privileged-role access"
+    });
+
+    // 17. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
     const isTxn = /^\s*(?:--[^\n]*\n\s*)*BEGIN\s*;/im.test(sqlSeed) && /COMMIT\s*;\s*$/i.test(sqlSeed.trim());
     const subjectsSeed = CANONICAL_SUBJECTS.every((s) => sqlSeed.includes(`'${s.slug}'`));
