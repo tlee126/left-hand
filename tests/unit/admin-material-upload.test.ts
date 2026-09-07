@@ -64,10 +64,10 @@ function u32(value) { return [(value >>> 24) & 255, (value >>> 16) & 255, (value
 function u16(value) { return [(value >>> 8) & 255, value & 255]; }
 function chars(value) { return [...value].map(c => c.charCodeAt(0)); }
 function box(type, payload) { return [...u32(payload.length + 8), ...chars(type), ...payload]; }
-function avcConfig(invalid) { return invalid ? [1,0x42,0,0x1e,0xff,0xe1,0,3,0x67,0x42,0] : [1,0x42,0,0x1e,0xff,0xe1,0,9,0x67,0x42,0,0x1e,0xe9,0x01,0x40,0x7b,0x20,1,0,4,0x68,0xce,0x06,0xe2]; }
+function avcConfig(invalid) { return invalid ? [1,0x42,0,0x1e,0xff,0xe1,0,3,0x67,0x42,0] : [1,0x42,0,0x1e,0xff,0xe1,0,9,0x67,0x42,0,0x1e,0xe9,0x01,0x40,0x7b,0x20,1,0,4,0x68,0xce,0x3c,0x80]; }
 function bmffBytes(brand, options = {}) {
   const full = [0,0,0,0];
-  const sample = options.oneByte ? [0] : options.fakeVcl ? [0,0,0,6,0x65,0,0,0,0,0] : [0,0,0,6,0x65,0x88,0x84,0x21,0x01,0x80];
+  const sample = options.oneByte ? [0] : options.fakeVcl ? [0,0,0,6,0x65,0,0,0,0,0] : options.randomVclTail ? [0,0,0,7,0x65,0xb8,0x70,0x00,0xff,0xff,0xff] : [0,0,0,7,0x65,0xb8,0x70,0x00,0xff,0xff,0x80];
   const stbl = offset => {
     const visual = new Array(78).fill(0);
     visual[6] = 0; visual[7] = 1;
@@ -110,11 +110,11 @@ function webmBytes(options = {}) {
   );
   const ebmlHeader = ebml([0x1a,0x45,0xdf,0xa3], header);
   const info = ebml([0x15,0x49,0xa9,0x66], concat(ebml([0x2a,0xd7,0xb1], [0x0f,0x42,0x40]), ebml([0x4d,0x80], chars("test")), ebml([0x57,0x41], chars("test"))));
-  const video = ebml([0xe0], concat(ebml([0xb0], uint(640)), ebml([0xba], uint(360))));
+  const video = ebml([0xe0], concat(ebml([0xb0], uint(16)), ebml([0xba], uint(16))));
   const codec = options.fakeCodec ? "FAKE" : "V_VP8";
   const trackEntry = ebml([0xae], concat(ebml([0xd7], [1]), ebml([0x83], [1]), ebml([0x86], chars(codec)), video));
   const tracks = ebml([0x16,0x54,0xae,0x6b], trackEntry);
-  const frame = options.randomFrame ? [0x90,0x00,0x00,0x9d,0x01,0x2a,0x80,0x02,0x68,0x01,0xff,0xff,0xff,0xff,0xde,0xad] : [0x90,0x00,0x00,0x9d,0x01,0x2a,0x80,0x02,0x68,0x01,0x00,0x00,0x00,0x00,0x9e,0x01];
+  const frame = options.randomFrame ? [0x90,0x00,0x00,0x9d,0x01,0x2a,0x10,0x00,0x10,0x00,0xff,0xff,0xff,0xff,0xde,0xad] : options.randomToken ? [0x90,0x00,0x00,0x9d,0x01,0x2a,0x10,0x00,0x10,0x00,0x00,0x00,0x00,0x00,0xff,0xff,0x00,0x00,0x00,0x00,0x00,0x00] : [0x90,0x00,0x00,0x9d,0x01,0x2a,0x10,0x00,0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00];
   const block = options.emptyFrame ? [0x81,0x00,0x00,0x80] : options.fiveByteBlock ? [0x81,0x00,0x00,0x80,0x00] : [0x81,0x00,0x00,0x80, ...frame];
   const cluster = ebml([0x1f,0x43,0xb6,0x75], concat(ebml([0xe7], [0]), ebml([0xa3], block)));
   const segmentPayload = options.markerOnlyTrack ? concat(info, ebml([0x16,0x54,0xae,0x6b], ebml([0xae], concat(ebml([0xd7], [1]), ebml([0x83], [1]), ebml([0x86], chars("V_VP8")))))) : concat(info, tracks, cluster);
@@ -125,7 +125,7 @@ function fixture(kind, scenario) {
   if (scenario.ftypOnly) return Uint8Array.from(box("ftyp", concat(chars("isom"), u32(0), chars("isom"))));
   if (scenario.headerOnly) return Uint8Array.from(concat(box("ftyp", concat(chars("isom"), u32(0), chars("isom"))), [0,0,0,8,0x6d,0x6f,0x6f,0x76]));
   if (scenario.impossibleBox) return Uint8Array.from(concat(box("ftyp", concat(chars("isom"), u32(0), chars("isom"))), [0xff,0xff,0xff,0xff,0x6d,0x6f,0x6f,0x76]));
-  const bytes = kind === "pdf" ? pdfBytes() : kind === "webm" ? webmBytes({ fakeCodec: scenario.fakeCodec, emptyFrame: scenario.emptyFrame, fiveByteBlock: scenario.fiveByteBlock, randomFrame: scenario.randomFrame, markerOnlyTrack: scenario.markerOnlyTrack }) : bmffBytes(kind === "quicktime" ? "qt  " : "isom", { missingAvcc: scenario.missingAvcc, invalidAvcc: scenario.invalidAvcc, invalidTables: scenario.invalidTables, inconsistent: scenario.inconsistent, oneByte: scenario.oneByte, fakeVcl: scenario.fakeVcl });
+  const bytes = kind === "pdf" ? pdfBytes() : kind === "webm" ? webmBytes({ fakeCodec: scenario.fakeCodec, emptyFrame: scenario.emptyFrame, fiveByteBlock: scenario.fiveByteBlock, randomFrame: scenario.randomFrame, randomToken: scenario.randomToken, markerOnlyTrack: scenario.markerOnlyTrack }) : bmffBytes(kind === "quicktime" ? "qt  " : "isom", { missingAvcc: scenario.missingAvcc, invalidAvcc: scenario.invalidAvcc, invalidTables: scenario.invalidTables, inconsistent: scenario.inconsistent, oneByte: scenario.oneByte, fakeVcl: scenario.fakeVcl, randomVclTail: scenario.randomVclTail });
   return scenario.truncated ? bytes.slice(0, bytes.length - (kind === "quicktime" ? 3 : kind === "pdf" ? 4 : 1)) : bytes;
 }
 const kind = scenario.kind || "pdf";
@@ -176,13 +176,13 @@ test("invalid multipart data, UUIDs, MIME/signatures, size, product, and unsafe 
     { missing: true }, { extra: true }, { badId: true }, { mime: "text/plain" }, { spoof: true }, { empty: true }, { oversize: true }, { nonMaterial: true },
     { truncated: true }, { kind: "webm", truncated: true }, { kind: "mp4", truncated: true }, { kind: "quicktime", truncated: true }, { kind: "mp4", ftypOnly: true }, { kind: "mp4", headerOnly: true }, { kind: "mp4", impossibleBox: true },
     { kind: "mp4", fabricated: true }, { kind: "webm", fabricated: true }, { kind: "mp4", missingAvcc: true }, { kind: "mp4", invalidAvcc: true }, { kind: "mp4", invalidTables: true },
-    { kind: "mp4", inconsistent: true }, { kind: "mp4", fakeVcl: true }, { kind: "quicktime", oneByte: true }, { kind: "webm", fakeCodec: true }, { kind: "webm", markerOnlyTrack: true }, { kind: "webm", fiveByteBlock: true }, { kind: "webm", emptyFrame: true }, { kind: "webm", randomFrame: true },
+    { kind: "mp4", inconsistent: true }, { kind: "mp4", fakeVcl: true }, { kind: "mp4", randomVclTail: true }, { kind: "quicktime", oneByte: true }, { kind: "webm", fakeCodec: true }, { kind: "webm", markerOnlyTrack: true }, { kind: "webm", fiveByteBlock: true }, { kind: "webm", emptyFrame: true }, { kind: "webm", randomFrame: true }, { kind: "webm", randomToken: true },
     { name: "foo/../bar.pdf" }, { name: "foo\\..\\bar.pdf" }, { name: "unsafe\u0000.pdf" }
   ]) {
     const result = await run({ access: "admin", ...scenario });
     assert.equal(result.error, "REDIRECT:/quan-tri/catalog?upload=error", JSON.stringify({ scenario, result }));
     assert.equal(result.redirects.at(-1), "/quan-tri/catalog?upload=error");
-    const mediaInvalid = Boolean(scenario.spoof || scenario.truncated || scenario.fabricated || scenario.ftypOnly || scenario.headerOnly || scenario.impossibleBox || scenario.missingAvcc || scenario.invalidAvcc || scenario.invalidTables || scenario.inconsistent || scenario.fakeVcl || scenario.oneByte || scenario.fakeCodec || scenario.markerOnlyTrack || scenario.fiveByteBlock || scenario.emptyFrame || scenario.randomFrame);
+    const mediaInvalid = Boolean(scenario.spoof || scenario.truncated || scenario.fabricated || scenario.ftypOnly || scenario.headerOnly || scenario.impossibleBox || scenario.missingAvcc || scenario.invalidAvcc || scenario.invalidTables || scenario.inconsistent || scenario.fakeVcl || scenario.randomVclTail || scenario.oneByte || scenario.fakeCodec || scenario.markerOnlyTrack || scenario.fiveByteBlock || scenario.emptyFrame || scenario.randomFrame || scenario.randomToken);
     if (mediaInvalid) assert.equal(result.mediaValid, false, JSON.stringify({ scenario, result }));
     if (!scenario.nonMaterial) assert.ok(!result.timeline.includes("material"), JSON.stringify({ scenario, result }));
     assert.ok(!result.timeline.includes("version"));

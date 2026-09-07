@@ -65,6 +65,8 @@ interface AvcConfiguration {
   sps: Uint8Array;
   pps: Uint8Array;
   frameNumBits: number;
+  cavlc: boolean;
+  deblockingFilterControlPresent: boolean;
 }
 
 class BitReader {
@@ -107,6 +109,12 @@ class BitReader {
   }
 
   remaining(): number { return this.bytes.length * 8 - this.bitOffset; }
+
+  readRbspTrailingBits(): boolean {
+    if (this.readBit() !== 1) return false;
+    while (this.remaining() > 0) if (this.readBit() !== 0) return false;
+    return true;
+  }
 }
 
 function rbsp(bytes: Uint8Array): Uint8Array {
@@ -126,7 +134,7 @@ function parseAvcSps(value: Uint8Array): number | null {
   if (value.length < 4 || (value[0] & 0x80) !== 0 || (value[0] & 0x1f) !== 7 || (value[0] & 0x60) === 0) return null;
   const reader = new BitReader(rbsp(value.slice(1)));
   const profile = reader.readBits(8);
-  if (profile === null || reader.readBits(8) === null || reader.readBits(8) === null || reader.readUnsignedExpGolomb() === null) return null;
+  if (profile === null || profile !== 66 || reader.readBits(8) === null || reader.readBits(8) === null || reader.readUnsignedExpGolomb() === null) return null;
   if ([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134].includes(profile)) {
     const chromaFormat = reader.readUnsignedExpGolomb();
     if (chromaFormat === null || chromaFormat > 3) return null;
@@ -159,14 +167,22 @@ function parseAvcSps(value: Uint8Array): number | null {
   return frameNumBits;
 }
 
-function parseAvcPps(value: Uint8Array): boolean {
-  if (value.length < 2 || (value[0] & 0x80) !== 0 || (value[0] & 0x1f) !== 8 || (value[0] & 0x60) === 0) return false;
+interface AvcPictureConfiguration { cavlc: boolean; deblockingFilterControlPresent: boolean; }
+
+function parseAvcPps(value: Uint8Array): AvcPictureConfiguration | null {
+  if (value.length < 2 || (value[0] & 0x80) !== 0 || (value[0] & 0x1f) !== 8 || (value[0] & 0x60) === 0) return null;
   const reader = new BitReader(rbsp(value.slice(1)));
-  if (reader.readUnsignedExpGolomb() !== 0 || reader.readUnsignedExpGolomb() !== 0) return false;
-  if (reader.readBit() === null || reader.readBit() === null || reader.readUnsignedExpGolomb() !== 0) return false;
-  if (reader.readUnsignedExpGolomb() === null || reader.readUnsignedExpGolomb() === null || reader.readBit() === null || reader.readBits(2) === null) return false;
-  if (reader.readSignedExpGolomb() === null || reader.readSignedExpGolomb() === null || reader.readSignedExpGolomb() === null) return false;
-  return reader.readBit() !== null && reader.readBit() !== null && reader.readBit() !== null;
+  if (reader.readUnsignedExpGolomb() !== 0 || reader.readUnsignedExpGolomb() !== 0) return null;
+  const entropyCodingMode = reader.readBit();
+  const bottomFieldPicOrder = reader.readBit();
+  if (entropyCodingMode === null || bottomFieldPicOrder === null || reader.readUnsignedExpGolomb() !== 0) return null;
+  if (reader.readUnsignedExpGolomb() === null || reader.readUnsignedExpGolomb() === null || reader.readBit() === null || reader.readBits(2) === null) return null;
+  if (reader.readSignedExpGolomb() === null || reader.readSignedExpGolomb() === null || reader.readSignedExpGolomb() === null) return null;
+  const deblocking = reader.readBit();
+  const constrainedIntra = reader.readBit();
+  const redundantPic = reader.readBit();
+  if (deblocking === null || constrainedIntra === null || redundantPic === null || bottomFieldPicOrder !== 0 || redundantPic !== 0 || !reader.readRbspTrailingBits()) return null;
+  return { cavlc: entropyCodingMode === 0, deblockingFilterControlPresent: deblocking === 1 };
 }
 
 function readBmffBox(bytes: Uint8Array, offset: number): BmffBox | null {
@@ -254,8 +270,9 @@ function parseAvcConfiguration(bytes: Uint8Array, sampleEntry: BmffBox): AvcConf
   }
   if (offset !== config.end || sps === null || pps === null) return null;
   const frameNumBits = parseAvcSps(sps);
-  if (frameNumBits === null || !parseAvcPps(pps)) return null;
-  return { lengthSize, sps, pps, frameNumBits };
+  const pictureConfiguration = parseAvcPps(pps);
+  if (frameNumBits === null || pictureConfiguration === null || !pictureConfiguration.cavlc || !pictureConfiguration.deblockingFilterControlPresent) return null;
+  return { lengthSize, sps, pps, frameNumBits, ...pictureConfiguration };
 }
 
 function parseAvcSample(bytes: Uint8Array, sample: BmffSample, configuration: AvcConfiguration): boolean {
@@ -279,9 +296,15 @@ function parseAvcSample(bytes: Uint8Array, sample: BmffSample, configuration: Av
       const firstMb = reader.readUnsignedExpGolomb();
       const sliceType = reader.readUnsignedExpGolomb();
       const ppsId = reader.readUnsignedExpGolomb();
-      if (firstMb !== 0 || sliceType === null || sliceType > 9 || ppsId !== 0 || reader.readBits(frameNumBits) === null) return false;
+      if (firstMb !== 0 || sliceType === null || sliceType % 5 !== 2 || ppsId !== 0 || reader.readBits(frameNumBits) === null) return false;
       if (nalType === 5 && reader.readUnsignedExpGolomb() === null) return false;
-      if (reader.remaining() < 2) return false;
+      if (reader.readSignedExpGolomb() === null || reader.readUnsignedExpGolomb() !== 0) return false;
+      for (let index = 0; index < 16; index += 1) {
+        const predicted = reader.readBit();
+        if (predicted === null) return false;
+        if (predicted === 0 && reader.readBits(3) === null) return false;
+      }
+      if (reader.readUnsignedExpGolomb() !== 0 || reader.readUnsignedExpGolomb() !== 0 || reader.readSignedExpGolomb() !== 0 || !reader.readRbspTrailingBits()) return false;
       hasVcl = true;
     }
     offset += nalSize;
@@ -497,6 +520,84 @@ function ebmlAscii(bytes: Uint8Array, element: EbmlElement): string {
   return ascii(bytes, element.dataStart, element.end);
 }
 
+class Vp8BoolReader {
+  private readonly bytes: Uint8Array;
+  private byteOffset = 1;
+  private bitCount = 8;
+  private value: number;
+  private range = 255;
+
+  constructor(bytes: Uint8Array) {
+    this.bytes = bytes;
+    this.value = bytes.length > 0 ? bytes[0] : 0;
+  }
+
+  readBoolean(probability: number): number | null {
+    if (probability < 0 || probability > 255 || this.bytes.length === 0) return null;
+    const split = 1 + (((this.range - 1) * probability) >> 8);
+    const bigSplit = split << 8;
+    let result: number;
+    if (this.value >= bigSplit) {
+      this.range -= split;
+      this.value -= bigSplit;
+      result = 1;
+    } else {
+      this.range = split;
+      result = 0;
+    }
+    while (this.range < 128) {
+      this.range <<= 1;
+      this.value <<= 1;
+      this.bitCount -= 1;
+      if (this.bitCount === 0) {
+        if (this.byteOffset >= this.bytes.length) return null;
+        this.value |= this.bytes[this.byteOffset++];
+        this.bitCount = 8;
+      }
+    }
+    return result;
+  }
+}
+
+// A conservative VP8 subset: key frames with one token partition and zero
+// residual coefficients. The complete 11-leaf coefficient token tree is
+// decoded with the normative band-0/context-0 probabilities. Non-zero
+// coefficient symbols are outside the supported subset and are rejected.
+const VP8_BAND0_TOKEN_PROBABILITIES = [
+  [128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128],
+  [198, 35, 237, 223, 193, 187, 162, 160, 145, 155, 62],
+  [253, 9, 248, 251, 207, 208, 255, 192, 128, 128, 128],
+  [202, 24, 213, 235, 186, 191, 220, 160, 240, 175, 255]
+] as const;
+
+function readVp8CoefficientToken(reader: Vp8BoolReader, probabilities: readonly number[]): number | null {
+  if (reader.readBoolean(probabilities[0]) === 0) return 0;
+  if (reader.readBoolean(probabilities[1]) === 0) return 1;
+  if (reader.readBoolean(probabilities[2]) === 0) return 2;
+  if (reader.readBoolean(probabilities[3]) === 0) return 3;
+  if (reader.readBoolean(probabilities[4]) === 0) return 4;
+  if (reader.readBoolean(probabilities[5]) === 0) return 5;
+  if (reader.readBoolean(probabilities[6]) === 0) return 6;
+  if (reader.readBoolean(probabilities[7]) === 0) return 7;
+  if (reader.readBoolean(probabilities[8]) === 0) return 8;
+  if (reader.readBoolean(probabilities[9]) === 0) return 9;
+  return reader.readBoolean(probabilities[10]) === 0 ? 10 : 11;
+}
+
+function hasVp8TokenSyntax(bytes: Uint8Array, start: number, end: number, width: number, height: number, tokenPartitions: number): boolean {
+  if (tokenPartitions !== 1 || start < 0 || start >= end) return false;
+  const reader = new Vp8BoolReader(bytes.slice(start, end));
+  const macroblocks = Math.ceil(width / 16) * Math.ceil(height / 16);
+  if (!Number.isSafeInteger(macroblocks) || macroblocks < 1 || macroblocks > 65536) return false;
+  for (let macroblock = 0; macroblock < macroblocks; macroblock += 1) {
+    for (let block = 0; block < 25; block += 1) {
+      const blockType = block < 16 ? 0 : block === 16 ? 1 : block < 21 ? 2 : 3;
+      if (readVp8CoefficientToken(reader, VP8_BAND0_TOKEN_PROBABILITIES[blockType]) !== 0) return false;
+    }
+  }
+  return true;
+}
+
 function hasVp8Frame(bytes: Uint8Array, frameStart: number, frameEnd: number): boolean {
   if (frameEnd - frameStart < 12) return false;
   const tag = bytes[frameStart] | (bytes[frameStart + 1] << 8) | (bytes[frameStart + 2] << 16);
@@ -528,7 +629,8 @@ function hasVp8Frame(bytes: Uint8Array, frameStart: number, frameEnd: number): b
   const tokenPartitions = 1 << tokenPartitionBits;
   const tokenStart = frameStart + 10 + firstPartitionSize;
   const tokenBytes = frameEnd - tokenStart;
-  return tokenBytes >= tokenPartitions && tokenStart >= frameStart + 10 && tokenStart <= frameEnd;
+  if (tokenStart < frameStart + 10 || tokenStart >= frameEnd || tokenBytes < 1) return false;
+  return hasVp8TokenSyntax(bytes, tokenStart, frameEnd, width, height, tokenPartitions);
 }
 
 function parseWebmBlock(bytes: Uint8Array, block: EbmlElement, trackCodecs: Map<number, string>): boolean {
