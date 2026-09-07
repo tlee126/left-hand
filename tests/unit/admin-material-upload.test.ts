@@ -61,18 +61,70 @@ const route = await import(toUrl(routeCode.replaceAll(authModule, authUrl).repla
 function concat(...parts) { return parts.flatMap(part => part); }
 function pdfBytes() { return new TextEncoder().encode("%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n"); }
 function u32(value) { return [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255]; }
+function u16(value) { return [(value >>> 8) & 255, value & 255]; }
 function chars(value) { return [...value].map(c => c.charCodeAt(0)); }
 function box(type, payload) { return [...u32(payload.length + 8), ...chars(type), ...payload]; }
-function bmffBytes(brand) {
+function avcConfig(invalid) { return invalid ? [1,0x42,0,0x1e,0xff,0xe1,0,3,0x67,0x42,0] : [1,0x42,0,0x1e,0xff,0xe1,0,8,0x67,0x42,0,0x1e,0xe9,0x01,0x40,0x7b,1,0,4,0x68,0xce,0x06,0xe2]; }
+function bmffBytes(brand, options = {}) {
   const full = [0,0,0,0];
-  const stbl = offset => box("stbl", concat(box("stsd", concat(full, u32(1), [0,0,0,8, ...chars("avc1")])), box("stts", concat(full, u32(1), u32(1), u32(1))), box("stsc", concat(full, u32(1), u32(1), u32(1), u32(1))), box("stsz", concat(full, u32(1), u32(1))), box("stco", concat(full, u32(1), u32(offset)))));
-  const makeMoov = offset => box("moov", concat(box("mvhd", concat(full, u32(1), u32(1), u32(1000), u32(1000))), box("trak", concat(box("tkhd", concat(full, u32(1), u32(1), u32(1))), box("mdia", concat(box("mdhd", concat(full, u32(1), u32(1), u32(1000), u32(1000))), box("hdlr", concat(full, u32(0), chars("vide"))), box("minf", stbl(offset))))))));
+  const sample = options.oneByte ? [0] : [0,0,0,6,0x65,0x88,0x84,0x21,0x01,0x80];
+  const stbl = offset => {
+    const visual = new Array(78).fill(0);
+    visual[6] = 0; visual[7] = 1;
+    visual[24] = 2; visual[25] = 0x80;
+    visual[26] = 1; visual[27] = 0x68;
+    const sampleEntry = box("avc1", concat(visual, options.missingAvcc ? [] : box("avcC", avcConfig(options.invalidAvcc))));
+    const tables = [
+      box("stsd", concat(full, u32(1), sampleEntry)),
+      ...(options.invalidTables ? [] : [box("stts", concat(full, u32(1), u32(1), u32(1)))]),
+      box("stsc", concat(full, u32(1), u32(1), u32(1), u32(1))),
+      box("stsz", concat(full, u32(0), u32(1), u32(sample.length))),
+      box("stco", concat(full, u32(1), u32(offset)))
+    ];
+    return box("stbl", concat(...tables));
+  };
+  const makeMoov = offset => box("moov", concat(
+    box("mvhd", concat(full, u32(1), u32(1), u32(1000), u32(1000))),
+    box("trak", concat(
+      box("tkhd", concat([0,0,0,7], u32(1), u32(1), u32(1), u32(1000))),
+      box("mdia", concat(
+        box("mdhd", concat(full, u32(1), u32(1), u32(1000), u32(1000), u16(0x55c4), u16(0))),
+        box("hdlr", concat(full, u32(0), chars("vide"), new Array(12).fill(0), chars("VideoHandler\0"))),
+        box("minf", stbl(offset))
+      ))
+    ))
+  ));
   const ftyp = box("ftyp", concat(chars(brand), u32(0), chars(brand)));
   const moov = makeMoov(0);
-  return Uint8Array.from(concat(ftyp, makeMoov(ftyp.length + moov.length + 8), box("mdat", [0])));
+  const mediaOffset = ftyp.length + moov.length + 8;
+  const declaredOffset = options.inconsistent ? mediaOffset + sample.length - 1 : mediaOffset;
+  return Uint8Array.from(concat(ftyp, makeMoov(declaredOffset), box("mdat", sample)));
 }
-function webmBytes() { return Uint8Array.from(concat([0x1a,0x45,0xdf,0xa3,0x97,0x42,0x86,0x81,0x01,0x42,0xf7,0x81,0x01,0x42,0xf2,0x81,0x04,0x42,0xf3,0x81,0x08,0x42,0x82,0x84,0x77,0x65,0x62,0x6d], [0x18,0x53,0x80,0x67,0xaf, 0x15,0x49,0xa9,0x66,0x87,0x2a,0xd7,0xb1,0x83,0x0f,0x42,0x40, 0x16,0x54,0xae,0x6b,0x8f,0xae,0x8d,0xd7,0x81,0x01,0x83,0x81,0x01,0x86,0x85,0x56,0x5f,0x56,0x50,0x38, 0x1f,0x43,0xb6,0x75,0x8a,0xe7,0x81,0x00,0xa3,0x85,0x81,0x00,0x00,0x80,0x00])); }
-function fixture(kind, scenario) { const bytes = kind === "pdf" ? pdfBytes() : kind === "webm" ? webmBytes() : bmffBytes(kind === "quicktime" ? "qt  " : "isom"); if (scenario.fabricated) return kind === "webm" ? Uint8Array.from([0x1a,0x45,0xdf,0xa3,0x84,0x42,0x82,0x84,0x77,0x65,0x62,0x6d,0x18,0x53,0x80,0x67,0x80]) : Uint8Array.from(concat(box("ftyp", concat(chars(kind === "quicktime" ? "qt  " : "isom"), u32(0), chars(kind === "quicktime" ? "qt  " : "isom"))), box("mdat", [0]))); return scenario.truncated ? bytes.slice(0, bytes.length - (kind === "quicktime" ? 3 : bytes.length - 4)) : bytes; }
+function vint(value) { if (value < 0x7f) return [0x80 | value]; if (value < 0x3fff) return [0x40 | (value >>> 8), value & 255]; if (value < 0x1fffff) return [0x20 | (value >>> 16), (value >>> 8) & 255, value & 255]; throw new Error("fixture too large"); }
+function ebml(id, payload) { return [...id, ...vint(payload.length), ...payload]; }
+function uint(value) { return value < 0x100 ? [value] : u16(value); }
+function webmBytes(options = {}) {
+  const header = concat(
+    ebml([0x42,0x86], [1]), ebml([0x42,0xf7], [1]), ebml([0x42,0xf2], [4]), ebml([0x42,0xf3], [8]),
+    ebml([0x42,0x82], chars("webm")), ebml([0x42,0x87], [2]), ebml([0x42,0x85], [2])
+  );
+  const ebmlHeader = ebml([0x1a,0x45,0xdf,0xa3], header);
+  const info = ebml([0x15,0x49,0xa9,0x66], concat(ebml([0x2a,0xd7,0xb1], [0x0f,0x42,0x40]), ebml([0x4d,0x80], chars("test")), ebml([0x57,0x41], chars("test"))));
+  const video = ebml([0xe0], concat(ebml([0xb0], uint(640)), ebml([0xba], uint(360))));
+  const codec = options.fakeCodec ? "FAKE" : "V_VP8";
+  const trackEntry = ebml([0xae], concat(ebml([0xd7], [1]), ebml([0x83], [1]), ebml([0x86], chars(codec)), video));
+  const tracks = ebml([0x16,0x54,0xae,0x6b], trackEntry);
+  const frame = [0x30,0x01,0x00,0x9d,0x01,0x2a,0x80,0x02,0x68,0x01,0x00,0x00];
+  const block = options.emptyFrame ? [0x81,0x00,0x00,0x80] : options.fiveByteBlock ? [0x81,0x00,0x00,0x80,0x00] : [0x81,0x00,0x00,0x80, ...frame];
+  const cluster = ebml([0x1f,0x43,0xb6,0x75], concat(ebml([0xe7], [0]), ebml([0xa3], block)));
+  const segmentPayload = concat(info, tracks, cluster);
+  return Uint8Array.from(concat(ebmlHeader, [0x18,0x53,0x80,0x67], vint(segmentPayload.length), segmentPayload));
+}
+function fixture(kind, scenario) {
+  if (scenario.fabricated) return kind === "webm" ? Uint8Array.from(concat([0x1a,0x45,0xdf,0xa3], vint(6), ebml([0x42,0x82], chars("webm")), [0x18,0x53,0x80,0x67,0x81,0x00])) : Uint8Array.from(concat(box("ftyp", concat(chars(kind === "quicktime" ? "qt  " : "isom"), u32(0), chars(kind === "quicktime" ? "qt  " : "isom"))), box("avc1", new Array(78).fill(0)), box("mdat", [0])));
+  const bytes = kind === "pdf" ? pdfBytes() : kind === "webm" ? webmBytes({ fakeCodec: scenario.fakeCodec, emptyFrame: scenario.emptyFrame, fiveByteBlock: scenario.fiveByteBlock }) : bmffBytes(kind === "quicktime" ? "qt  " : "isom", { missingAvcc: scenario.missingAvcc, invalidAvcc: scenario.invalidAvcc, invalidTables: scenario.invalidTables, inconsistent: scenario.inconsistent, oneByte: scenario.oneByte });
+  return scenario.truncated ? bytes.slice(0, bytes.length - (kind === "quicktime" ? 3 : kind === "pdf" ? 4 : 1)) : bytes;
+}
 const kind = scenario.kind || "pdf";
 const type = scenario.mime || ({ pdf: "application/pdf", mp4: "video/mp4", webm: "video/webm", quicktime: "video/quicktime" }[kind]);
 const bytes = scenario.spoof ? Uint8Array.from([1,2,3,4,5]) : fixture(kind, scenario);
@@ -117,11 +169,18 @@ test("approved admins execute the real route, repository, and storage modules", 
 });
 test("authorization remains first and blocks anonymous or non-approved users", async () => { for (const access of ["anonymous", "student", "pending", "rejected", "suspended"]) { const result = await run({ access }); assert.deepEqual(result.timeline, ["auth", ...(access === "anonymous" ? [] : ["profile"])]); assert.ok(result.error.startsWith("REDIRECT:")); } });
 test("invalid multipart data, UUIDs, MIME/signatures, size, product, and unsafe names fail generically", async () => {
-  for (const scenario of [{ missing: true }, { extra: true }, { badId: true }, { mime: "text/plain" }, { spoof: true }, { empty: true }, { oversize: true }, { nonMaterial: true }, { truncated: true }, { kind: "webm", truncated: true }, { kind: "mp4", truncated: true }, { kind: "quicktime", truncated: true }, { kind: "mp4", fabricated: true }, { kind: "webm", fabricated: true }, { name: "foo/../bar.pdf" }, { name: "foo\\..\\bar.pdf" }, { name: "unsafe\u0000.pdf" }]) {
+  for (const scenario of [
+    { missing: true }, { extra: true }, { badId: true }, { mime: "text/plain" }, { spoof: true }, { empty: true }, { oversize: true }, { nonMaterial: true },
+    { truncated: true }, { kind: "webm", truncated: true }, { kind: "mp4", truncated: true }, { kind: "quicktime", truncated: true },
+    { kind: "mp4", fabricated: true }, { kind: "webm", fabricated: true }, { kind: "mp4", missingAvcc: true }, { kind: "mp4", invalidAvcc: true }, { kind: "mp4", invalidTables: true },
+    { kind: "mp4", inconsistent: true }, { kind: "quicktime", oneByte: true }, { kind: "webm", fakeCodec: true }, { kind: "webm", fiveByteBlock: true }, { kind: "webm", emptyFrame: true },
+    { name: "foo/../bar.pdf" }, { name: "foo\\..\\bar.pdf" }, { name: "unsafe\u0000.pdf" }
+  ]) {
     const result = await run({ access: "admin", ...scenario });
-    assert.equal(result.error, "REDIRECT:/quan-tri/catalog?upload=error");
+    assert.equal(result.error, "REDIRECT:/quan-tri/catalog?upload=error", JSON.stringify({ scenario, result }));
     assert.equal(result.redirects.at(-1), "/quan-tri/catalog?upload=error");
     assert.ok(!result.timeline.includes("upload"));
+    assert.ok(!result.timeline.includes("version"));
     assert.ok(!result.timeline.includes("metadata"));
   }
 });
