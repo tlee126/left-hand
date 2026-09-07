@@ -9,6 +9,7 @@ import {
   mapSignupError,
   getValidCallbackUrl,
   validateSignupInput,
+  validateSignupFullName,
   type SignupResult,
   type SignupParams,
   type SignupInputValidation
@@ -19,6 +20,7 @@ export {
   mapSignupError,
   getValidCallbackUrl,
   validateSignupInput,
+  validateSignupFullName,
   type SignupResult,
   type SignupParams,
   type SignupInputValidation
@@ -242,14 +244,28 @@ export function useDemoAuth() {
   const signup = async (
     email: string,
     password?: string,
-    emailRedirectTo?: string
+    fullNameOrRedirect?: string,
+    emailRedirectOrFullName?: string
   ): Promise<SignupResult> => {
+    const thirdArgumentIsRedirect = Boolean(
+      fullNameOrRedirect && /^https?:\/\//i.test(fullNameOrRedirect)
+    );
+    const fullName = thirdArgumentIsRedirect
+      ? emailRedirectOrFullName
+      : fullNameOrRedirect;
+    const emailRedirectTo = thirdArgumentIsRedirect
+      ? fullNameOrRedirect
+      : emailRedirectOrFullName && /^https?:\/\//i.test(emailRedirectOrFullName)
+        ? emailRedirectOrFullName
+        : undefined;
+
     try {
       const supabase = createClient();
       return await performSignup(supabase, {
         email,
         password,
-        emailRedirectTo
+        emailRedirectTo,
+        fullName: fullName || ""
       });
     } catch (err: unknown) {
       return {

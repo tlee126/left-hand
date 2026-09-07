@@ -3,7 +3,7 @@
 This document outlines the PostgreSQL database schema for the LEFT HAND learning platform, designed for Supabase.
 
 > [!NOTE]
-> **Status:** Topological migrations `0001_core_schema.sql` through `0016_study_plans.sql` and idempotent `supabase/seed.sql` are prepared locally and verified via automated contract checks. They have **NOT** yet been applied to the hosted Supabase project.
+> **Status:** Migrations `0001_core_schema.sql` through `0016_study_plans.sql` are already applied and content-locked. Migration `0017_profile_on_auth_signup.sql` is prepared locally and verified via automated contract checks; it has **NOT** yet been applied to the hosted Supabase project.
 
 ---
 
@@ -180,6 +180,7 @@ erDiagram
 - **Product Entitlements (`0014_product_entitlements.sql`):** `product_entitlements` is the entitlement source of truth keyed uniquely by `(user_id, product_id)`. It stores only entitlement lifecycle and audit timestamps, requires valid status/expiry/revocation combinations, and has a lookup index on `(user_id, product_id, status)`. Authenticated users can read only their own rows; approved authenticated admins can read all rows and insert, update, or delete them. No payment, order, checkout, webhook, storage, or signed-URL data is stored here.
 - **Learning Progress (`0015_learning_progress.sql`):** `learning_progress` is keyed uniquely by `(user_id, product_id, item_type, item_id)`. `item_type` is limited to `material` or `lesson`, `status` is limited to `not_started`, `in_progress`, or `completed`, and `watched_percent` is constrained to `0`–`100`. Authenticated users can select, insert, and update only rows whose `user_id = auth.uid()`; there is no anonymous, public, admin-wide, delete, service-role, or bypass-RLS access. The `updated_at` trigger reuses `update_updated_at_column()` from migration 0004.
 - **Study Plans (`0016_study_plans.sql`):** `study_plans` stores one student task per UUID with a per-user UUID `request_key` unique constraint for atomic create idempotency, a local-calendar `task_date`, trimmed title (1–200 characters), duration (1–1440 minutes), a required `subjects` foreign key, and `pending`, `in_progress`, or `completed` status. Completed rows require `completed_at`; other statuses require it to be null. Authenticated users can select, insert, update, and delete only their own rows through `auth.uid()`-backed RLS policies. The dashboard reads a bounded window of 90 past days through 30 future days using `Asia/Ho_Chi_Minh` calendar dates. There are no anonymous/public/service-role grants or bypass access, and the `updated_at` trigger reuses `update_updated_at_column()` from migration 0004.
+- **Auth Signup Profiles (`0017_profile_on_auth_signup.sql`):** An `AFTER INSERT` trigger on `auth.users` creates one explicit `public.profiles` row with the auth user ID, email, and bounded full name from signup metadata. It uses a fixed-`search_path` `SECURITY DEFINER` function, falls back through `full_name`, `name`, the email local-part, and `Học viên`, and is idempotent with `ON CONFLICT (id) DO NOTHING`. Existing profile defaults keep new rows at `role = 'student'` and `account_status = 'pending'`; no public function execution or profile table writes are granted.
 
 ### Private material file convention
 
@@ -224,6 +225,7 @@ psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0013_m
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0014_product_entitlements.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0015_learning_progress.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0016_study_plans.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0017_profile_on_auth_signup.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/seed.sql
 ```
 

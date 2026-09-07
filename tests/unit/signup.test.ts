@@ -35,6 +35,7 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
       const result = await performSignup(mockSupabase, {
         email: "  student@lefthand.vn  ",
         password: "SecurePassword123!",
+        fullName: "  Nguyễn Văn A  ",
         emailRedirectTo: "https://lefthand.vn/auth/callback"
       });
 
@@ -43,6 +44,7 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
         email: "student@lefthand.vn",
         password: "SecurePassword123!",
         options: {
+          data: { full_name: "Nguyễn Văn A" },
           emailRedirectTo: "https://lefthand.vn/auth/callback"
         }
       });
@@ -70,13 +72,14 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
 
       const result = await performSignup(mockSupabase, {
         email: "test@lefthand.vn",
-        password: "Password123!"
+        password: "Password123!",
+        fullName: "Test Student"
       });
 
       assert.deepStrictEqual(capturedArgs, {
         email: "test@lefthand.vn",
         password: "Password123!",
-        options: {}
+        options: { data: { full_name: "Test Student" } }
       });
       assert.strictEqual(result.success, true);
     });
@@ -96,7 +99,8 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
 
       const result = await performSignup(mockSupabase, {
         email: "existing@lefthand.vn",
-        password: "Password123!"
+        password: "Password123!",
+        fullName: "Existing Student"
       });
 
       assert.strictEqual(result.success, false);
@@ -124,7 +128,8 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
 
       const result = await performSignup(mockSupabase, {
         email: "student@lefthand.vn",
-        password: "Password123!"
+        password: "Password123!",
+        fullName: "Auto Confirmed Student"
       });
 
       assert.strictEqual(result.success, true);
@@ -150,7 +155,8 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
 
       const result = await performSignup(mockSupabase, {
         email: "student@lefthand.vn",
-        password: "Password123!"
+        password: "Password123!",
+        fullName: "Confirmed Student"
       });
 
       assert.strictEqual(result.success, true);
@@ -169,11 +175,81 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
 
       const result = await performSignup(mockSupabase, {
         email: "student@lefthand.vn",
-        password: "Password123!"
+        password: "Password123!",
+        fullName: "Network Student"
       });
 
       assert.strictEqual(result.success, false);
       assert.strictEqual(result.error, "Đăng ký không thành công. Vui lòng thử lại sau.");
+    });
+
+    test("performSignup rejects omitted, blank, and overlong full names before auth", async () => {
+      let authCalls = 0;
+      const mockSupabase: SupabaseAuthLike = {
+        auth: {
+          signUp: async () => {
+            authCalls++;
+            return { data: null, error: null };
+          }
+        }
+      };
+
+      for (const fullName of [undefined, "   ", "x".repeat(201)]) {
+        const result = await performSignup(mockSupabase, {
+          email: "student@lefthand.vn",
+          password: "Password123!",
+          fullName
+        });
+        assert.equal(result.success, false);
+        assert.match(result.error ?? "", /Họ và tên/);
+      }
+      assert.equal(authCalls, 0);
+    });
+
+    test("signup timeline creates one pending student profile even when session is null", async () => {
+      const profiles = new Map<string, { id: string; email: string; full_name: string; role: string; account_status: string }>();
+      let triggerInvocations = 0;
+      const mockSupabase: SupabaseAuthLike = {
+        auth: {
+          signUp: async (options) => {
+            const user = { id: "user-timeline-1", email: options.email };
+            triggerInvocations++;
+            if (!profiles.has(user.id)) {
+              profiles.set(user.id, {
+                id: user.id,
+                email: user.email,
+                full_name: options.options?.data.full_name ?? "Học viên",
+                role: "student",
+                account_status: "pending"
+              });
+            }
+            return { data: { user: user as any, session: null }, error: null };
+          }
+        }
+      };
+
+      const result = await performSignup(mockSupabase, {
+        email: " timeline@example.test ",
+        password: "Password123!",
+        fullName: "  Nguyễn Văn Timeline  "
+      });
+      assert.equal(result.success, true);
+      assert.equal(result.data?.session, null);
+      assert.deepEqual(profiles.get("user-timeline-1"), {
+        id: "user-timeline-1",
+        email: "timeline@example.test",
+        full_name: "Nguyễn Văn Timeline",
+        role: "student",
+        account_status: "pending"
+      });
+
+      await mockSupabase.auth.signUp({
+        email: "timeline@example.test",
+        password: "Password123!",
+        options: { data: { full_name: "Nguyễn Văn Timeline" } }
+      });
+      assert.equal(triggerInvocations, 2);
+      assert.equal(profiles.size, 1);
     });
   });
 
@@ -183,6 +259,7 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
       for (const email of invalidEmails) {
         const res = validateSignupInput({
           email,
+          fullName: "Test Student",
           password: "ValidPassword123",
           confirmPassword: "ValidPassword123"
         });
@@ -192,6 +269,7 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
 
       const validRes = validateSignupInput({
         email: "student@lefthand.vn",
+        fullName: "Test Student",
         password: "ValidPassword123",
         confirmPassword: "ValidPassword123"
       });
@@ -203,6 +281,7 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
       for (const password of shortPasswords) {
         const res = validateSignupInput({
           email: "student@lefthand.vn",
+          fullName: "Test Student",
           password,
           confirmPassword: password
         });
@@ -212,6 +291,7 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
 
       const validRes = validateSignupInput({
         email: "student@lefthand.vn",
+        fullName: "Test Student",
         password: "Password123",
         confirmPassword: "Password123"
       });
@@ -221,11 +301,31 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
     test("validateSignupInput rejects password mismatch", () => {
       const res = validateSignupInput({
         email: "student@lefthand.vn",
+        fullName: "Test Student",
         password: "Password123!",
         confirmPassword: "DifferentPassword123!"
       });
       assert.strictEqual(res.isValid, false);
       assert.strictEqual(res.error, "Mật khẩu xác nhận không khớp.");
+    });
+
+    test("validateSignupInput requires a trimmed, bounded full name", () => {
+      for (const fullName of [undefined, "   ", "x".repeat(201)]) {
+        const result = validateSignupInput({
+          fullName,
+          email: "student@lefthand.vn",
+          password: "Password123!",
+          confirmPassword: "Password123!"
+        });
+        assert.equal(result.isValid, false);
+        assert.match(result.error ?? "", /Họ và tên/);
+      }
+      assert.equal(validateSignupInput({
+        fullName: "  Nguyễn Văn A  ",
+        email: "student@lefthand.vn",
+        password: "Password123!",
+        confirmPassword: "Password123!"
+      }).isValid, true);
     });
 
     test("duplicate submission is prevented when submit is already active", async () => {

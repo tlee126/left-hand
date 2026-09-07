@@ -35,7 +35,8 @@ const immutableMigrationHashes = {
   "0012_private_material_storage.sql": "40fb2a4b8b3b818bc9ccaea83348c5f13780ffab9f587a88e9f1cd903a394c76",
   "0013_material_asset_metadata.sql": "9062310091dc76760396b901320209e78155e2890b835535847999f869c31796",
   "0014_product_entitlements.sql": "77b507859e5295bae896ac3e0ed66f4bb749a7f56ab71aeae9c0bb293b9722b2",
-  "0015_learning_progress.sql": "4cd65043f20cd7badc9496e2d4d8466f5c6bc1546d6b91ac565c07d3e2a11e37"
+  "0015_learning_progress.sql": "4cd65043f20cd7badc9496e2d4d8466f5c6bc1546d6b91ac565c07d3e2a11e37",
+  "0016_study_plans.sql": "3697e891b0833ab23bef47227090470e2afd916e6caa2bdbbb73d666017d8dc9"
 } as const;
 
 export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
@@ -1041,6 +1042,56 @@ export function assertMigration0016Contract(sql0016: string): void {
   fail(!/\b(?:grant|revoke)\s+[^;]*\bon\s+(?!table\s+public\.study_plans\b)[a-z_][a-z0-9_.]*/i.test(code), "Migration 0016 must not alter cross-table privileges");
 }
 
+/** Pure contract used by the CLI audit and integration tests for migration 0017. */
+export function assertMigration0017Contract(
+  sql0017: string,
+  dependencies?: { sql0001?: string; sql0004?: string; sql0005?: string }
+): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const statements = stripSqlCommentsAndSplitStatements(sql0017);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const code = statements.join(" ; ");
+
+  fail(statements.length === 4, "Migration 0017 must contain only the function, trigger replacement, trigger, and function privilege revoke");
+  fail(!/\b(?:service_role|bypassrls|set\s+role|alter\s+role|alter\s+system)\b/i.test(code), "Migration 0017 must not escalate roles or bypass RLS");
+  fail(!/\b(?:password|secret|token|bearer|apikey|api_key|credential)\b\s*[:=]/i.test(code), "Migration 0017 must not contain credentials");
+  fail(!/\b(?:execute\s+(?:immediate|format)|execute\s+['$]|format\s*\()/i.test(code), "Migration 0017 must not use dynamic SQL");
+  fail(!/\b(?:grant|revoke)\s+[^;]*\bon\s+(?:table|schema|database)\b/i.test(code), "Migration 0017 must not grant or revoke table, schema, or database privileges");
+  fail(!/\bgrant\b/i.test(code), "Migration 0017 must not grant privileges");
+
+  const functionStatement = normalized.find((statement) => statement.startsWith("create or replace function public.handle_auth_user_profile")) || "";
+  fail(Boolean(functionStatement), "Migration 0017 must define the dedicated auth profile trigger function");
+  fail(/returns trigger\b/i.test(functionStatement), "Migration 0017 profile function must return trigger");
+  fail(/security definer\b/i.test(functionStatement), "Migration 0017 profile function must use SECURITY DEFINER");
+  fail(/set search_path\s*=\s*public\b/i.test(functionStatement), "Migration 0017 SECURITY DEFINER function must fix search_path to public");
+  fail(/raw_user_meta_data\s*->>\s*'full_name'/i.test(functionStatement), "Migration 0017 must read metadata full_name");
+  fail(/raw_user_meta_data\s*->>\s*'name'/i.test(functionStatement), "Migration 0017 must support metadata name fallback");
+  fail(/split_part\s*\(\s*coalesce\s*\(\s*new\.email\s*,\s*''\s*\)\s*,\s*'@'\s*,\s*1\s*\)/i.test(functionStatement), "Migration 0017 must support the email local-part fallback");
+  fail(/'học viên'/i.test(functionStatement), "Migration 0017 must use the safe non-empty Học viên fallback");
+  fail(/btrim\s*\(/i.test(functionStatement) && /left\s*\([\s\S]*?,\s*200\s*\)/i.test(functionStatement), "Migration 0017 must trim and bound full_name");
+  fail(/if\s+resolved_full_name\s*=\s*''\s+then[\s\S]*?resolved_full_name\s*:=\s*'học viên'/i.test(functionStatement), "Migration 0017 must never leave full_name empty");
+  fail(/insert\s+into\s+public\.profiles\s*\(\s*id\s*,\s*email\s*,\s*full_name\s*\)/i.test(functionStatement), "Migration 0017 must explicitly insert id, email, and full_name into public.profiles");
+  fail(/values\s*\(\s*new\.id\s*,\s*new\.email\s*,\s*resolved_full_name\s*\)/i.test(functionStatement), "Migration 0017 must map auth user id, email, and resolved full_name");
+  fail(/on\s+conflict\s*\(\s*id\s*\)\s+do\s+nothing/i.test(functionStatement), "Migration 0017 profile insert must be idempotent on id");
+
+  fail(normalized.includes("drop trigger if exists on_auth_user_created on auth.users"), "Migration 0017 must safely replace the auth signup trigger");
+  fail(normalized.includes("create trigger on_auth_user_created after insert on auth.users for each row execute function public.handle_auth_user_profile()"), "Migration 0017 must create an AFTER INSERT trigger on auth.users");
+  fail(normalized.includes("revoke all on function public.handle_auth_user_profile() from public"), "Migration 0017 must revoke public function privileges");
+  fail(!/\b(?:role|account_status)\b/i.test(functionStatement.replace(/raw_user_meta_data\s*->>\s*'[^']+'/gi, "")), "Migration 0017 must rely on existing role and account_status defaults");
+
+  if (dependencies?.sql0001 !== undefined) {
+    fail(/full_name\s+TEXT\s+NOT\s+NULL/i.test(dependencies.sql0001), "Existing profiles schema must keep full_name NOT NULL");
+  }
+  if (dependencies?.sql0004 !== undefined) {
+    fail(/role\s+TEXT\s+NOT\s+NULL\s+DEFAULT\s+'student'/i.test(dependencies.sql0004), "Existing profiles schema must keep role default student");
+  }
+  if (dependencies?.sql0005 !== undefined) {
+    fail(/account_status\s+TEXT\s+NOT\s+NULL\s+DEFAULT\s+'pending'/i.test(dependencies.sql0005), "Existing profiles schema must keep account_status default pending");
+  }
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -1072,13 +1123,14 @@ export async function runAudit(): Promise<boolean> {
       "0013_material_asset_metadata.sql",
       "0014_product_entitlements.sql",
       "0015_learning_progress.sql",
-      "0016_study_plans.sql"
+      "0016_study_plans.sql",
+      "0017_profile_on_auth_signup.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 16 migration files exist in strict topological order",
+      check: "All 17 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -1098,7 +1150,7 @@ export async function runAudit(): Promise<boolean> {
       immutableHistoryValid = false;
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0015 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0016 match their canonical LF-normalized SHA-256 snapshots",
         passed: false,
         details: error instanceof Error ? error.message : String(error)
       });
@@ -1106,9 +1158,9 @@ export async function runAudit(): Promise<boolean> {
     if (immutableHistoryValid) {
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0015 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0016 match their canonical LF-normalized SHA-256 snapshots",
         passed: true,
-        details: "Every applied migration through 0015 is content-locked"
+        details: "Every applied migration through 0016 is content-locked"
       });
     }
 
@@ -1448,6 +1500,28 @@ export async function runAudit(): Promise<boolean> {
       check: "Creates bounded student-owned study plans with exact RLS, indexes, grants, and timestamp behavior",
       passed: migration0016ContractValid,
       details: "Authenticated users can select, insert, update, and delete only rows owned by auth.uid(); no public or privileged-role access"
+    });
+
+    // 17. Audit 0017_profile_on_auth_signup.sql
+    const sql0017 = await fs.readFile(path.join(migrationsDir, "0017_profile_on_auth_signup.sql"), "utf-8");
+    const sql0001For0017 = await fs.readFile(path.join(migrationsDir, "0001_core_schema.sql"), "utf-8");
+    const sql0004For0017 = await fs.readFile(path.join(migrationsDir, "0004_profiles_schema_and_policies.sql"), "utf-8");
+    const sql0005For0017 = await fs.readFile(path.join(migrationsDir, "0005_account_approval_gate.sql"), "utf-8");
+    let migration0017ContractValid = true;
+    try {
+      assertMigration0017Contract(sql0017, {
+        sql0001: sql0001For0017,
+        sql0004: sql0004For0017,
+        sql0005: sql0005For0017
+      });
+    } catch {
+      migration0017ContractValid = false;
+    }
+    results.push({
+      category: "0017_profile_on_auth_signup",
+      check: "Creates one bounded pending student profile per auth signup with safe trigger isolation",
+      passed: migration0017ContractValid,
+      details: "AFTER INSERT auth.users trigger; fixed search_path SECURITY DEFINER; explicit profile insert; idempotent fallback name"
     });
 
     // 17. Audit supabase/seed.sql
