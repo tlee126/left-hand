@@ -363,6 +363,7 @@ export type Database = {
           created_at: string
           duration_minutes: number
           id: string
+          request_key: string
           status: string
           subject_id: string
           task_date: string
@@ -375,6 +376,7 @@ export type Database = {
           created_at?: string
           duration_minutes: number
           id?: string
+          request_key: string
           status?: string
           subject_id: string
           task_date: string
@@ -387,6 +389,7 @@ export type Database = {
           created_at?: string
           duration_minutes?: number
           id?: string
+          request_key?: string
           status?: string
           subject_id?: string
           task_date?: string

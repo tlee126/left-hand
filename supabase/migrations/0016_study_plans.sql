@@ -3,6 +3,7 @@
 CREATE TABLE public.study_plans (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  request_key uuid NOT NULL,
   task_date date NOT NULL,
   title text NOT NULL,
   subject_id uuid NOT NULL REFERENCES public.subjects(id) ON DELETE RESTRICT,
@@ -12,6 +13,7 @@ CREATE TABLE public.study_plans (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT study_plans_task_date_check CHECK (task_date >= DATE '2000-01-01' AND task_date <= DATE '2100-12-31'),
+  CONSTRAINT study_plans_user_request_key_unique UNIQUE (user_id, request_key),
   CONSTRAINT study_plans_title_check CHECK (title = btrim(title) AND char_length(title) BETWEEN 1 AND 200),
   CONSTRAINT study_plans_duration_minutes_check CHECK (duration_minutes BETWEEN 1 AND 1440),
   CONSTRAINT study_plans_status_check CHECK (status IN ('pending', 'in_progress', 'completed')),

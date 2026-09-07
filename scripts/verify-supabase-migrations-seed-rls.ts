@@ -984,6 +984,7 @@ export function assertMigration0016Contract(sql0016: string): void {
   const expectedColumns = new Map([
     ["id", "id uuid primary key default gen_random_uuid()"],
     ["user_id", "user_id uuid not null references auth.users(id) on delete cascade"],
+    ["request_key", "request_key uuid not null"],
     ["task_date", "task_date date not null"],
     ["title", "title text not null"],
     ["subject_id", "subject_id uuid not null references public.subjects(id) on delete restrict"],
@@ -1004,6 +1005,7 @@ export function assertMigration0016Contract(sql0016: string): void {
   fail(actualColumns.size === expectedColumns.size && [...expectedColumns].every(([name, definition]) => actualColumns.get(name) === definition), "Migration 0016 column definitions must match the exact study plan contract");
   const expectedConstraints = [
     "constraint study_plans_task_date_check check (task_date >= date '2000-01-01' and task_date <= date '2100-12-31')",
+    "constraint study_plans_user_request_key_unique unique (user_id, request_key)",
     "constraint study_plans_title_check check (title = btrim(title) and char_length(title) between 1 and 200)",
     "constraint study_plans_duration_minutes_check check (duration_minutes between 1 and 1440)",
     "constraint study_plans_status_check check (status in ('pending', 'in_progress', 'completed'))",

@@ -1256,6 +1256,8 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         sql.replace("duration_minutes BETWEEN 1 AND 1440", "duration_minutes BETWEEN 0 AND 1440"),
         sql.replace("status IN ('pending', 'in_progress', 'completed')", "status IN ('pending', 'completed', 'admin')"),
         sql.replace("REFERENCES public.subjects(id) ON DELETE RESTRICT", "REFERENCES public.products(id) ON DELETE CASCADE"),
+        sql.replace("CONSTRAINT study_plans_user_request_key_unique UNIQUE (user_id, request_key),", ""),
+        sql.replace("public.study_plans.user_id = auth.uid()", "public.study_plans.user_id = '750e8400-e29b-41d4-a716-446655440000'"),
         `${sql}\nGRANT ALL ON TABLE public.study_plans TO authenticated;`,
         `${sql}\nGRANT SELECT ON TABLE public.products TO authenticated;`,
         `${sql}\nCREATE POLICY study_plans_public ON public.study_plans FOR SELECT TO public USING (true);`,

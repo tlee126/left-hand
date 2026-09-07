@@ -45,8 +45,9 @@ export async function createStudyPlanAction(
 
   try {
     const { createStudyPlan, validateCreateStudyPlanInput } = await import("@/lib/repositories/study-plan-repository");
-    const fields = readFormFields(formData, new Set(["taskDate", "title", "subjectId", "durationMinutes", "status"]));
+    const fields = readFormFields(formData, new Set(["requestKey", "taskDate", "title", "subjectId", "durationMinutes", "status"]));
     const input = {
+      requestKey: fields.requestKey,
       taskDate: fields.taskDate,
       title: fields.title,
       subjectId: fields.subjectId,
@@ -99,9 +100,9 @@ export async function completeStudyPlanAction(
   if (!userId) return { success: false, message: "Bạn chưa đủ điều kiện truy cập khu học tập." };
 
   try {
-    const { markStudyPlanCompleted } = await import("@/lib/repositories/study-plan-repository");
+    const { markStudyPlanCompleted, validateStudyPlanId } = await import("@/lib/repositories/study-plan-repository");
     const fields = readFormFields(formData, new Set(["id"]));
-    const task = await markStudyPlanCompleted(userId, fields.id);
+    const task = await markStudyPlanCompleted(userId, validateStudyPlanId(fields.id));
     revalidatePath("/ca-nhan");
     return { success: true, message: "Đã đánh dấu hoàn thành.", task };
   } catch (error) {

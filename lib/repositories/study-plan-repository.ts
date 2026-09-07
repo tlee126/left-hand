@@ -22,6 +22,7 @@ export interface ListStudyPlansOptions {
 }
 
 export interface CreateStudyPlanInput {
+  requestKey: string;
   taskDate: string;
   title: string;
   subjectId: string;
@@ -49,6 +50,7 @@ export interface DailyStudyPlanProgress {
 export const STUDY_PLAN_COLUMNS = [
   "id",
   "user_id",
+  "request_key",
   "task_date",
   "title",
   "subject_id",
@@ -70,7 +72,7 @@ const MAX_STUDY_PLANS = 500;
 const MAX_SUBJECTS = 100;
 
 const LIST_KEYS = new Set(["startDate", "endDate", "status", "subjectId", "limit"]);
-const CREATE_REQUIRED_KEYS = new Set(["taskDate", "title", "subjectId", "durationMinutes"]);
+const CREATE_REQUIRED_KEYS = new Set(["requestKey", "taskDate", "title", "subjectId", "durationMinutes"]);
 const CREATE_OPTIONAL_KEYS = new Set(["status"]);
 const UPDATE_REQUIRED_KEYS = new Set(["taskDate", "title", "subjectId", "durationMinutes", "status"]);
 
@@ -135,6 +137,10 @@ function validateTitle(value: unknown): string {
   return title;
 }
 
+function validateRequestKey(value: unknown): string {
+  return canonicalUuid(value);
+}
+
 function validateDuration(value: unknown): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 1440) {
     throw new StudyPlanInputError();
@@ -174,6 +180,7 @@ export function validateCreateStudyPlanInput(input: unknown): CreateStudyPlanInp
   const status = record.status === undefined ? "pending" : validateStatus(record.status);
   if (status === "completed") throw new StudyPlanInputError();
   return {
+    requestKey: validateRequestKey(record.requestKey),
     taskDate: validateDate(record.taskDate),
     title: validateTitle(record.title),
     subjectId: canonicalUuid(record.subjectId),
@@ -200,6 +207,7 @@ function isValidStudyPlanRow(value: unknown): value is StudyPlan {
   const row = value as Record<string, unknown>;
   if (!UUID_PATTERN.test(String(row.id))
     || !UUID_PATTERN.test(String(row.user_id))
+    || !UUID_PATTERN.test(String(row.request_key))
     || !UUID_PATTERN.test(String(row.subject_id))
     || !isValidStudyPlanDate(row.task_date)
     || typeof row.title !== "string"
@@ -226,6 +234,10 @@ function compareStudyPlans(left: StudyPlan, right: StudyPlan): number {
 
 function validateUserAndId(userId: string, id: string): { userId: string; id: string } {
   return { userId: canonicalUuid(userId), id: canonicalUuid(id) };
+}
+
+export function validateStudyPlanId(value: unknown): string {
+  return canonicalUuid(value);
 }
 
 /** Lists only bounded, deterministic study-plan rows owned by the supplied authenticated user. */
@@ -292,19 +304,33 @@ export async function createStudyPlan(userId: string, input: CreateStudyPlanInpu
     const supabase = await createClient();
     const payload: StudyPlanInsert = {
       user_id: canonicalUserId,
+      request_key: validated.requestKey,
       task_date: validated.taskDate,
       title: validated.title,
       subject_id: validated.subjectId,
       duration_minutes: validated.durationMinutes,
       status: validated.status
     };
-    const { data, error } = await supabase
+    const { data: inserted, error: insertError } = await supabase
       .from("study_plans")
-      .insert(payload)
+      .upsert(payload, { onConflict: "user_id,request_key", ignoreDuplicates: true })
       .select(STUDY_PLAN_SELECT)
-      .single();
+      .maybeSingle();
+    let data = inserted;
+    let error = insertError;
+    if (!data && !error) {
+      const existing = await supabase
+        .from("study_plans")
+        .select(STUDY_PLAN_SELECT)
+        .eq("user_id", canonicalUserId)
+        .eq("request_key", validated.requestKey)
+        .single();
+      data = existing.data;
+      error = existing.error;
+    }
     if (error || !isValidStudyPlanRow(data)) return repositoryFailure();
     if (canonicalUuid(data.user_id) !== canonicalUserId
+      || canonicalUuid(data.request_key) !== validated.requestKey
       || canonicalUuid(data.subject_id) !== validated.subjectId
       || data.task_date !== validated.taskDate
       || data.title !== validated.title
@@ -359,13 +385,26 @@ export async function markStudyPlanCompleted(userId: string, id: string): Promis
   try {
     const supabase = await createClient();
     const payload: StudyPlanUpdate = { status: "completed", completed_at: new Date().toISOString() };
-    const { data, error } = await supabase
+    const { data: updated, error: updateError } = await supabase
       .from("study_plans")
       .update(payload)
       .eq("user_id", identifiers.userId)
       .eq("id", identifiers.id)
+      .neq("status", "completed")
       .select(STUDY_PLAN_SELECT)
-      .single();
+      .maybeSingle();
+    let data = updated;
+    let error = updateError;
+    if (!data && !error) {
+      const existing = await supabase
+        .from("study_plans")
+        .select(STUDY_PLAN_SELECT)
+        .eq("user_id", identifiers.userId)
+        .eq("id", identifiers.id)
+        .single();
+      data = existing.data;
+      error = existing.error;
+    }
     if (error || !isValidStudyPlanRow(data)) return repositoryFailure();
     if (canonicalUuid(data.user_id) !== identifiers.userId
       || canonicalUuid(data.id) !== identifiers.id

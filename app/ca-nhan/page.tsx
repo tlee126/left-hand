@@ -24,6 +24,12 @@ function getVietnamDate(): string {
   return `${values.get("year")}-${values.get("month")}-${values.get("day")}`;
 }
 
+function shiftVietnamDate(date: string, days: number): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
 export default async function StudentDashboardPage({
   searchParams
 }: {
@@ -76,17 +82,16 @@ export default async function StudentDashboardPage({
 
   const todayDate = getVietnamDate();
   const historyStartDate = (() => {
-    const date = new Date(`${todayDate}T00:00:00Z`);
-    date.setUTCDate(date.getUTCDate() - 90);
-    return date.toISOString().slice(0, 10);
+    return shiftVietnamDate(todayDate, -90);
   })();
+  const futureEndDate = shiftVietnamDate(todayDate, 30);
   let initialStudyPlans: StudyPlan[] = [];
   let studyPlanSubjects: StudyPlanSubject[] = [];
   let studyPlanLoadError = false;
   try {
     const { listStudyPlanSubjects, listStudyPlans } = await import("@/lib/repositories/study-plan-repository");
     const [plansResult, subjectsResult] = await Promise.allSettled([
-      listStudyPlans(access.user.id, { startDate: historyStartDate, endDate: todayDate }),
+      listStudyPlans(access.user.id, { startDate: historyStartDate, endDate: futureEndDate }),
       listStudyPlanSubjects()
     ]);
     if (plansResult.status === "fulfilled") initialStudyPlans = plansResult.value;
