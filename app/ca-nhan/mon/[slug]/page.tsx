@@ -1,6 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import { getAccountAccess } from "@/lib/auth/session";
-import { purchasedSubjects } from "@/data/student-demo";
+import { getAuthorizedStudentWorkspace } from "@/lib/repositories/student-workspace-repository";
 import { SubjectWorkspaceClient } from "./workspace-client";
 
 /**
@@ -65,11 +65,20 @@ export default async function SubjectWorkspacePage({
     redirect("/cho-duyet?status=missing-profile");
   }
 
-  const subject = purchasedSubjects.find((s) => s.slug === slug);
+  if (access.profile?.role === "admin") {
+    redirect("/quan-tri");
+  }
 
-  if (!subject) {
+  let workspace;
+  try {
+    workspace = await getAuthorizedStudentWorkspace(access.user!.id, slug);
+  } catch {
     notFound();
   }
 
-  return <SubjectWorkspaceClient slug={slug} initialSubject={subject} />;
+  if (!workspace) {
+    notFound();
+  }
+
+  return <SubjectWorkspaceClient workspace={workspace} />;
 }
