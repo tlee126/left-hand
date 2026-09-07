@@ -32,7 +32,8 @@ const immutableMigrationHashes = {
   "0009_consultation_updated_by.sql": "8c8bc38c4661bdd80b3451cae0f0dbd87d87c0df0e42a0a4ba7135f1d615b605",
   "0010_admin_account_approval_rls.sql": "f13168186d1addb34c254525d61f51058e5b7386962063c0a9bb45f9e32987b8",
   "0011_admin_catalog_crud_rls.sql": "2ce64ed6eeaa810d7e01671120b0ab761fda2efa29aa9da332f9346f302e0a5e",
-  "0012_private_material_storage.sql": "40fb2a4b8b3b818bc9ccaea83348c5f13780ffab9f587a88e9f1cd903a394c76"
+  "0012_private_material_storage.sql": "40fb2a4b8b3b818bc9ccaea83348c5f13780ffab9f587a88e9f1cd903a394c76",
+  "0013_material_asset_metadata.sql": "9062310091dc76760396b901320209e78155e2890b835535847999f869c31796"
 } as const;
 
 export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
@@ -775,6 +776,99 @@ export function assertMigration0013Contract(sql0013: string): void {
   fail(!/\b(?:storage\.buckets|storage\.objects|public\s*=\s*true|grant\s+(?!select, insert on table public\.material_assets to authenticated)|revoke\s+(?!all on table public\.material_assets from anon, public, authenticated))\b/i.test(code), "Migration 0013 must not alter storage authority or cross-table privileges");
 }
 
+/** Pure contract used by the CLI audit and integration tests for migration 0014. */
+export function assertMigration0014Contract(sql0014: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const statements = stripSqlCommentsAndSplitStatements(sql0014);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const code = statements.join(" ; ");
+  const compactPredicate = (value: string) => normalizeMigrationStatement(value).replace(/\(\s+/g, "(").replace(/\s+\)/g, ")");
+  const adminPredicate = normalizeMigrationStatement(`
+    EXISTS ( SELECT 1 FROM public.profiles WHERE public.profiles.id = auth.uid()
+      AND public.profiles.role = 'admin' AND public.profiles.account_status = 'approved')
+  `);
+  const ownPredicate = "public.product_entitlements.user_id = auth.uid()";
+
+  fail(!/\b(?:service_role|security\s+definer|bypassrls|set\s+role|alter\s+role)\b/i.test(code), "Migration 0014 must not escalate roles");
+  fail(!/\b(?:password|secret|token|bearer|apikey|api_key|credential)\b\s*[:=]/i.test(code), "Migration 0014 must not contain credentials");
+  fail(!/\b(?:execute\s+(?:immediate|format)|execute\s+['$]|format\s*\()/i.test(code), "Migration 0014 must not use dynamic SQL");
+  fail(!/\b(?:create\s+(?:or\s+replace\s+)?(?:function|procedure|trigger|view|type|extension)|alter\s+system|disable\s+row\s+level\s+security)\b/i.test(code), "Migration 0014 contains unrelated or unsafe statements");
+  fail(statements.length === 10, "Migration 0014 must contain exactly table, index, RLS, privilege, and five policy statements");
+
+  const table = normalized[0] || "";
+  fail(table.startsWith("create table public.product_entitlements ("), "Migration 0014 must create public.product_entitlements");
+  const tableOpening = table.indexOf("(");
+  const tableClosing = table.lastIndexOf(")");
+  fail(tableOpening > 0 && tableClosing > tableOpening, "Migration 0014 must contain a parseable product_entitlements table body");
+  const definitions = splitTopLevelClauses(table.slice(tableOpening + 1, tableClosing));
+  const expectedColumns = new Map([
+    ["id", "id uuid primary key default gen_random_uuid()"],
+    ["user_id", "user_id uuid not null references auth.users(id) on delete cascade"],
+    ["product_id", "product_id uuid not null references public.products(id) on delete cascade"],
+    ["status", "status text not null default 'active'"],
+    ["granted_at", "granted_at timestamptz not null default now()"],
+    ["expires_at", "expires_at timestamptz null"],
+    ["revoked_at", "revoked_at timestamptz null"],
+    ["granted_by", "granted_by uuid null references auth.users(id) on delete set null"],
+    ["created_at", "created_at timestamptz not null default now()"],
+    ["updated_at", "updated_at timestamptz not null default now()"]
+  ]);
+  const columnDefinitions = definitions.filter((definition) => !/^constraint\b|^foreign key\b/i.test(definition));
+  fail(columnDefinitions.length === expectedColumns.size, "Migration 0014 must contain exactly the expected product_entitlements columns");
+  const actualColumns = new Map<string, string>();
+  for (const definition of columnDefinitions) {
+    const name = definition.match(/^([a-z_][a-z0-9_]*)\b/i)?.[1];
+    fail(Boolean(name) && !actualColumns.has(name!.toLowerCase()), "Migration 0014 must not contain duplicate or unnamed columns");
+    actualColumns.set(name!.toLowerCase(), definition);
+  }
+  fail(actualColumns.size === expectedColumns.size && [...expectedColumns].every(([name, definition]) => actualColumns.get(name) === definition), "Migration 0014 column definitions must match the exact entitlement contract");
+
+  const expectedConstraints = [
+    "constraint product_entitlements_status_check check (status in ('active', 'revoked', 'expired'))",
+    "constraint product_entitlements_expires_after_grant check (expires_at is null or expires_at > granted_at)",
+    "constraint product_entitlements_active_not_revoked check (status <> 'active' or revoked_at is null)",
+    "constraint product_entitlements_revoked_at_required check (status <> 'revoked' or revoked_at is not null)",
+    "constraint product_entitlements_user_product_unique unique (user_id, product_id)"
+  ];
+  const actualConstraints = definitions.filter((definition) => /^constraint\b|^foreign key\b/i.test(definition));
+  fail(actualConstraints.length === expectedConstraints.length && expectedConstraints.every((constraint) => actualConstraints.includes(constraint)), "Migration 0014 constraints and foreign keys must match exactly");
+
+  fail(normalized[1] === "create index idx_product_entitlements_user_product_status on public.product_entitlements (user_id, product_id, status)", "Migration 0014 must create the exact entitlement lookup index");
+  fail(normalized[2] === "alter table public.product_entitlements enable row level security", "Migration 0014 must enable RLS");
+  fail(normalized[3] === "revoke all on table public.product_entitlements from anon, public, authenticated", "Migration 0014 must revoke broad entitlement privileges");
+  fail(normalized[4] === "grant select, insert, update, delete on table public.product_entitlements to authenticated", "Migration 0014 must grant only explicit entitlement access to authenticated");
+
+  const policies = normalized.slice(5);
+  const expectedPolicies = [
+    ["product_entitlements_select_own", "select"],
+    ["product_entitlements_select_admin", "select"],
+    ["product_entitlements_insert_admin", "insert"],
+    ["product_entitlements_update_admin", "update"],
+    ["product_entitlements_delete_admin", "delete"]
+  ] as const;
+  fail(policies.length === expectedPolicies.length, "Migration 0014 must contain exactly five entitlement policies");
+
+  for (const [name, action] of expectedPolicies) {
+    const policy = policies.find((statement) => statement.startsWith(`create policy ${name} `)) || "";
+    fail(policy.startsWith(`create policy ${name} on public.product_entitlements for ${action} to authenticated `), "Migration 0014 policies must target product_entitlements and authenticated only");
+    const using = extractPolicyClause(policy, "USING");
+    const withCheck = extractPolicyClause(policy, "WITH CHECK");
+    if (name === "product_entitlements_select_own") {
+      fail(compactPredicate(using || "") === ownPredicate && withCheck === null, "Migration 0014 own SELECT policy must require auth.uid() ownership");
+    } else if (name === "product_entitlements_select_admin" || name === "product_entitlements_delete_admin") {
+      fail(compactPredicate(using || "") === compactPredicate(adminPredicate) && withCheck === null, "Migration 0014 admin read/delete policy must require the exact approved-admin predicate");
+    } else if (name === "product_entitlements_insert_admin") {
+      fail(using === null && compactPredicate(withCheck || "") === compactPredicate(adminPredicate), "Migration 0014 INSERT policy must require the exact approved-admin predicate");
+    } else {
+      fail(compactPredicate(using || "") === compactPredicate(adminPredicate) && compactPredicate(withCheck || "") === compactPredicate(adminPredicate), "Migration 0014 UPDATE policy must require the exact approved-admin predicate in USING and WITH CHECK");
+    }
+  }
+
+  fail(!/\b(?:public\s*=\s*true|grant\s+all|grant\s+[^;]*\bon\s+(?!table\s+public\.product_entitlements\b)[a-z_][a-z0-9_.]*|revoke\s+[^;]*\bon\s+(?!table\s+public\.product_entitlements\b)[a-z_][a-z0-9_.]*)\b/i.test(code), "Migration 0014 must not add public or cross-table privileges");
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -803,13 +897,14 @@ export async function runAudit(): Promise<boolean> {
       "0010_admin_account_approval_rls.sql",
       "0011_admin_catalog_crud_rls.sql",
       "0012_private_material_storage.sql",
-      "0013_material_asset_metadata.sql"
+      "0013_material_asset_metadata.sql",
+      "0014_product_entitlements.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 13 migration files exist in strict topological order",
+      check: "All 14 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -829,7 +924,7 @@ export async function runAudit(): Promise<boolean> {
       immutableHistoryValid = false;
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0012 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0013 match their canonical LF-normalized SHA-256 snapshots",
         passed: false,
         details: error instanceof Error ? error.message : String(error)
       });
@@ -837,9 +932,9 @@ export async function runAudit(): Promise<boolean> {
     if (immutableHistoryValid) {
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0011 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0013 match their canonical LF-normalized SHA-256 snapshots",
         passed: true,
-        details: "Every applied migration through 0012 is content-locked"
+        details: "Every applied migration through 0013 is content-locked"
       });
     }
 
@@ -1136,7 +1231,22 @@ export async function runAudit(): Promise<boolean> {
       details: "Metadata retains prior versions; storage bucket and object policies remain owned by 0012"
     });
 
-    // 14. Audit supabase/seed.sql
+    // 14. Audit 0014_product_entitlements.sql
+    const sql0014 = await fs.readFile(path.join(migrationsDir, "0014_product_entitlements.sql"), "utf-8");
+    let migration0014ContractValid = true;
+    try {
+      assertMigration0014Contract(sql0014);
+    } catch {
+      migration0014ContractValid = false;
+    }
+    results.push({
+      category: "0014_product_entitlements",
+      check: "Creates the product entitlement source of truth with approved-admin-only mutations",
+      passed: migration0014ContractValid,
+      details: "Learners can read only their own active source rows; approved admins can manage all entitlements"
+    });
+
+    // 15. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
     const isTxn = /^\s*(?:--[^\n]*\n\s*)*BEGIN\s*;/im.test(sqlSeed) && /COMMIT\s*;\s*$/i.test(sqlSeed.trim());
     const subjectsSeed = CANONICAL_SUBJECTS.every((s) => sqlSeed.includes(`'${s.slug}'`));
