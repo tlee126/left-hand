@@ -188,6 +188,37 @@ describe("Task 5.2-C0: product entitlement repository", () => {
     assert.deepStrictEqual(Object.keys(payload).sort(), ["expires_at", "granted_by", "product_id", "status", "user_id"]);
   });
 
+  test("grants a non-expiring entitlement with an exact null expiry payload", async () => {
+    const client = createMockClient({ queryData: BASE_ROW, authUserId: ADMIN_ID });
+    const result = await grantProductEntitlement({ userId: USER_ID, productId: PRODUCT_ID });
+
+    assert.deepStrictEqual(result, BASE_ROW);
+    assert.deepStrictEqual(client.calls.find((call) => call.method === "insert")?.args, [{
+      user_id: USER_ID,
+      product_id: PRODUCT_ID,
+      status: "active",
+      expires_at: null,
+      granted_by: ADMIN_ID
+    }]);
+  });
+
+  test("accepts explicit null and undefined optional expiry consistently", async () => {
+    for (const input of [
+      { userId: USER_ID, productId: PRODUCT_ID, expiresAt: null },
+      { userId: USER_ID, productId: PRODUCT_ID, expiresAt: undefined }
+    ]) {
+      const client = createMockClient({ queryData: BASE_ROW, authUserId: ADMIN_ID });
+      await assert.doesNotReject(() => grantProductEntitlement(input));
+      assert.deepStrictEqual(client.calls.find((call) => call.method === "insert")?.args, [{
+        user_id: USER_ID,
+        product_id: PRODUCT_ID,
+        status: "active",
+        expires_at: null,
+        granted_by: ADMIN_ID
+      }]);
+    }
+  });
+
   test("rejects unknown grant fields before creating or querying the database", async () => {
     for (const input of [
       { userId: USER_ID, productId: PRODUCT_ID, role: "admin" },

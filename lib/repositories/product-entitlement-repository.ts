@@ -15,7 +15,8 @@ export interface GrantProductEntitlementInput {
   expiresAt?: string | null;
 }
 
-const GRANT_INPUT_KEYS = new Set(["userId", "productId", "expiresAt"]);
+const GRANT_REQUIRED_KEYS = new Set(["userId", "productId"]);
+const GRANT_OPTIONAL_KEYS = new Set(["expiresAt"]);
 
 export class ProductEntitlementInputError extends Error {
   constructor(message = "Invalid product entitlement input.") {
@@ -54,9 +55,16 @@ function canonicalUuid(value: unknown): string {
   return value.toLowerCase();
 }
 
-function hasExactKeys(record: object, allowedKeys: ReadonlySet<string>): boolean {
+function hasAllowedGrantKeys(
+  record: object,
+  requiredKeys: ReadonlySet<string>,
+  optionalKeys: ReadonlySet<string>
+): boolean {
   const keys = Reflect.ownKeys(record);
-  return keys.length === allowedKeys.size && keys.every((key) => typeof key === "string" && allowedKeys.has(key));
+  return [...requiredKeys].every((key) => Object.prototype.hasOwnProperty.call(record, key))
+    && keys.every((key) => (
+      typeof key === "string" && (requiredKeys.has(key) || optionalKeys.has(key))
+    ));
 }
 
 function validateGrantInput(input: unknown): { userId: string; productId: string; expiresAt: string | null } {
@@ -65,7 +73,7 @@ function validateGrantInput(input: unknown): { userId: string; productId: string
   }
 
   const record = input as Record<string, unknown>;
-  if (!hasExactKeys(record, GRANT_INPUT_KEYS)) {
+  if (!hasAllowedGrantKeys(record, GRANT_REQUIRED_KEYS, GRANT_OPTIONAL_KEYS)) {
     throw new ProductEntitlementInputError();
   }
   const userId = canonicalUuid(record.userId);
