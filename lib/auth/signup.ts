@@ -13,6 +13,7 @@ export interface SignupParams {
   email: string;
   password?: string;
   emailRedirectTo?: string;
+  fullName?: string;
 }
 
 export interface SupabaseAuthLike {
@@ -22,6 +23,9 @@ export interface SupabaseAuthLike {
       password: string;
       options?: {
         emailRedirectTo?: string;
+        data: {
+          full_name: string;
+        };
       };
     }) => Promise<{
       data: {
@@ -38,6 +42,31 @@ export interface SignupInputValidation {
   error?: string;
 }
 
+export const MAX_SIGNUP_FULL_NAME_LENGTH = 200;
+
+export function normalizeSignupFullName(fullName: string | undefined): string {
+  return (fullName || "").trim();
+}
+
+export function validateSignupFullName(fullName?: string): SignupInputValidation {
+  const normalized = normalizeSignupFullName(fullName);
+  if (!normalized) {
+    return {
+      isValid: false,
+      error: "Họ và tên không được để trống."
+    };
+  }
+
+  if (Array.from(normalized).length > MAX_SIGNUP_FULL_NAME_LENGTH) {
+    return {
+      isValid: false,
+      error: `Họ và tên không được vượt quá ${MAX_SIGNUP_FULL_NAME_LENGTH} ký tự.`
+    };
+  }
+
+  return { isValid: true };
+}
+
 /**
  * Validates signup form inputs on the client.
  */
@@ -45,10 +74,17 @@ export function validateSignupInput(params: {
   email?: string;
   password?: string;
   confirmPassword?: string;
+  fullName?: string;
 }): SignupInputValidation {
   const email = (params.email || "").trim();
   const password = params.password || "";
+  const fullName = normalizeSignupFullName(params.fullName);
   const confirmPassword = params.confirmPassword;
+
+  const fullNameValidation = validateSignupFullName(fullName);
+  if (!fullNameValidation.isValid) {
+    return fullNameValidation;
+  }
 
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!email || !emailRegex.test(email.toLowerCase())) {
@@ -182,12 +218,24 @@ export async function performSignup(
   const email = (params.email || "").trim();
   const password = params.password || "";
   const emailRedirectTo = params.emailRedirectTo;
+  const fullName = normalizeSignupFullName(params.fullName);
+
+  const fullNameValidation = validateSignupFullName(fullName);
+  if (!fullNameValidation.isValid) {
+    return {
+      success: false,
+      error: fullNameValidation.error || "Họ và tên không hợp lệ."
+    };
+  }
 
   try {
     const { data, error } = await supabaseClient.auth.signUp({
       email,
       password,
       options: {
+        data: {
+          full_name: fullName
+        },
         ...(emailRedirectTo ? { emailRedirectTo } : {})
       }
     });

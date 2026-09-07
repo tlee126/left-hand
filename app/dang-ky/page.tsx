@@ -13,6 +13,7 @@ export default function SignupPage() {
   const { signup, isLoggedIn, loading: authLoading } = useDemoAuth();
   
   const [email, setEmail] = useState("");
+  const [fullName, setFullName] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -35,6 +36,7 @@ export default function SignupPage() {
     // Client-side validation
     const validation = validateSignupInput({
       email,
+      fullName,
       password,
       confirmPassword
     });
@@ -48,7 +50,7 @@ export default function SignupPage() {
 
     try {
       const emailRedirectTo = getValidCallbackUrl();
-      const result = await signup(email, password, emailRedirectTo);
+      const result = await signup(email, password, fullName, emailRedirectTo);
 
       if (result.success) {
         if (result.data?.session) {
@@ -172,6 +174,22 @@ export default function SignupPage() {
             </div>
 
             <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-[#1b2e74] mb-1.5">
+                  Họ và tên
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={200}
+                  value={fullName}
+                  disabled={isSubmitting}
+                  onChange={(e) => setFullName(e.target.value)}
+                  placeholder="Nguyễn Văn A"
+                  className="h-11 w-full rounded-[16px] border border-[#d8deef] bg-white px-4 text-sm font-medium text-[#22325f] outline-none transition focus:border-[#132a67]/60 focus:ring-4 focus:ring-accent/5 disabled:opacity-60 disabled:cursor-not-allowed"
+                />
+              </div>
+
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-[#1b2e74] mb-1.5">
                   Email học tập

@@ -24,6 +24,7 @@ import {
   assertMigration0014Contract,
   assertMigration0015Contract,
   assertMigration0016Contract,
+  assertMigration0017Contract,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
 } from "../../scripts/verify-supabase-migrations-seed-rls";
@@ -210,13 +211,14 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "0013_material_asset_metadata.sql",
         "0014_product_entitlements.sql",
       "0015_learning_progress.sql",
-      "0016_study_plans.sql"
+      "0016_study_plans.sql",
+      "0017_profile_on_auth_signup.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
     });
 
-    test("the canonical history verifier rejects a content mutation in every migration 0001-0015", async () => {
+    test("the canonical history verifier rejects a content mutation in every migration 0001-0016", async () => {
       const snapshots: Record<string, string> = {};
       for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
         snapshots[filename] = await fs.readFile(path.join(migrationsDir, filename), "utf-8");
@@ -1268,6 +1270,90 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         `${sql}\nDO $$ BEGIN EXECUTE 'SELECT 1'; END $$;`
       ];
       for (const fixture of fixtures) assert.throws(() => assertMigration0016Contract(fixture), /./);
+    });
+  });
+
+  describe("13. Migration 0017 Auth Signup Profile Trigger (Runtime Contract Fixtures)", () => {
+    const migrationPath = path.join(migrationsDir, "0017_profile_on_auth_signup.sql");
+
+    test("accepts the exact trigger, fallback, defaults, idempotency, and privilege contract", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const dependencies = {
+        sql0001: await fs.readFile(path.join(migrationsDir, "0001_core_schema.sql"), "utf-8"),
+        sql0004: await fs.readFile(path.join(migrationsDir, "0004_profiles_schema_and_policies.sql"), "utf-8"),
+        sql0005: await fs.readFile(path.join(migrationsDir, "0005_account_approval_gate.sql"), "utf-8")
+      };
+
+      assert.doesNotThrow(() => assertMigration0017Contract(sql, dependencies));
+      assert.match(sql, /raw_user_meta_data\s*->>\s*'full_name'/i);
+      assert.match(sql, /raw_user_meta_data\s*->>\s*'name'/i);
+      assert.match(sql, /SPLIT_PART\(COALESCE\(NEW\.email, ''\), '@', 1\)/i);
+      assert.match(sql, /ON CONFLICT \(id\) DO NOTHING/i);
+    });
+
+    test("rejects missing trigger, profile insert, nullable/empty names, wrong defaults, and unsafe execution", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const sql0004 = await fs.readFile(path.join(migrationsDir, "0004_profiles_schema_and_policies.sql"), "utf-8");
+      const sql0005 = await fs.readFile(path.join(migrationsDir, "0005_account_approval_gate.sql"), "utf-8");
+      const injectIntoFunction = (statement: string) => sql.replace(
+        "    RETURN NEW;",
+        `    ${statement}\n    RETURN NEW;`
+      );
+      const fixtures = [
+        sql.replace(/CREATE TRIGGER on_auth_user_created[\s\S]*?handle_auth_user_profile\(\);/i, ""),
+        sql.replace("INSERT INTO public.profiles (id, email, full_name)", "INSERT INTO public.profiles (id, email)"),
+        sql.replace(/IF resolved_full_name = '' THEN[\s\S]*?END IF;/i, ""),
+        sql.replace("SET search_path = public", "SET search_path = pg_catalog, public"),
+        injectIntoFunction("DELETE FROM public.products;"),
+        injectIntoFunction("UPDATE public.products SET title = title;"),
+        injectIntoFunction("INSERT INTO public.products (slug) VALUES ('fixture');"),
+        injectIntoFunction("SELECT 1;"),
+        injectIntoFunction("PERFORM 1;"),
+        injectIntoFunction("EXECUTE 'SELECT 1';"),
+        injectIntoFunction("TRUNCATE TABLE public.products;"),
+        injectIntoFunction("ALTER TABLE public.products ADD COLUMN fixture_column TEXT;"),
+        injectIntoFunction("DROP TABLE public.products;"),
+        injectIntoFunction("CREATE TABLE public.fixture_table (id integer);"),
+        injectIntoFunction("SET ROLE postgres;"),
+        `${sql}\nGRANT EXECUTE ON FUNCTION public.handle_auth_user_profile() TO PUBLIC;`,
+        `${sql}\nREVOKE ALL ON FUNCTION public.handle_auth_user_profile() FROM service_role;`,
+        `${sql}\nSET ROLE postgres;`,
+        `${sql}\nALTER ROLE authenticated BYPASSRLS;`
+      ];
+
+      for (const [index, fixture] of fixtures.entries()) {
+        assert.throws(() => assertMigration0017Contract(fixture), /./, `unsafe 0017 fixture ${index} must be rejected`);
+      }
+      assert.throws(
+        () => assertMigration0017Contract(sql, { sql0004: sql0004.replace("DEFAULT 'student'", "DEFAULT 'admin'") }),
+        /role default student/i
+      );
+      assert.throws(
+        () => assertMigration0017Contract(sql, { sql0005: sql0005.replace("DEFAULT 'pending'", "DEFAULT 'approved'") }),
+        /account_status default pending/i
+      );
+    });
+
+    test("ignores comments while enforcing the exact function body", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const commented = sql.replace(
+        "    RETURN NEW;",
+        "    -- DELETE FROM public.products;\n    /* UPDATE public.products SET title = title; */\n    RETURN NEW;"
+      );
+      assert.doesNotThrow(() => assertMigration0017Contract(commented));
+    });
+
+    test("rejects a mutation in every immutable migration 0001-0016", async () => {
+      const snapshots: Record<string, string> = {};
+      for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
+        snapshots[filename] = await fs.readFile(path.join(migrationsDir, filename), "utf-8");
+      }
+      for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
+        assert.throws(() => assertMigrationHistoryUnchanged({
+          ...snapshots,
+          [filename]: `${snapshots[filename]}\n-- mutation fixture`
+        }), /canonical SHA-256 mismatch|must remain unchanged/i);
+      }
     });
   });
 });

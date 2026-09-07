@@ -28,6 +28,7 @@ type RuntimeResult = {
   forms: { hasAction: boolean }[];
   options: string[];
   links: { href: string; text: string }[];
+  hiddenPages: string[];
   accessTimeline: string[];
   text?: string;
   error?: string;
@@ -64,7 +65,7 @@ const accountRows = Array.from({ length: scenario.rows ?? 1 }, (_, index) => ({
   full_name: index === 0 ? "Nguyễn Văn A" : "Trần Thị B",
   email: index === 0 ? "nguyen@example.test" : null,
   role: index === 0 ? "student" : "tutor",
-  account_status: index === 0 ? "pending" : "approved",
+  account_status: ["pending", "approved", "rejected", "suspended"][index % 4],
   created_at: "2026-01-01T00:00:00.000Z",
   approved_at: index === 0 ? null : "2026-01-02T00:00:00.000Z",
   rejection_reason: index === 0 ? "Thiếu thông tin" : null
@@ -121,7 +122,7 @@ mock.module(jsxRuntimeModule, {
 });
 
 function textOf(value) {
-  const output = { text: "", links: [], forms: [], options: [] };
+  const output = { text: "", links: [], forms: [], options: [], hiddenPages: [] };
   inspect(value, output);
   return output.text.trim();
 }
@@ -140,6 +141,9 @@ function inspect(value, output) {
   }
   if (value.type === "option") {
     output.options.push(value.props.value);
+  }
+  if (value.type === "input" && value.props.name === "page") {
+    output.hiddenPages.push(String(value.props.value));
   }
   if (value.props) inspect(value.props.children, output);
 }
@@ -163,7 +167,7 @@ async function compileAndLoad(filePath) {
 }
 
 try {
-  const output = { calls, actionIds, forms: [], options: [], links: [], text: "" };
+  const output = { calls, actionIds, forms: [], options: [], links: [], hiddenPages: [], text: "" };
   if (scenario.target === "page") {
     const page = await compileAndLoad(path.resolve(process.cwd(), "app/quan-tri/tai-khoan/page.tsx"));
     const rendered = await page({ searchParams: Promise.resolve(scenario.params ?? {}) });
@@ -182,7 +186,7 @@ try {
   output.text = output.text.trim();
   console.log(JSON.stringify({ ...output, accessTimeline }));
 } catch (error) {
-  console.log(JSON.stringify({ calls, actionIds, forms: [], options: [], links: [], accessTimeline, error: String(error?.message ?? error) }));
+  console.log(JSON.stringify({ calls, actionIds, forms: [], options: [], links: [], hiddenPages: [], accessTimeline, error: String(error?.message ?? error) }));
 }
 `;
 
@@ -247,6 +251,32 @@ describe("Task 3.1-F-C: admin account approval UI", () => {
       limit: 21,
       offset: 40
     }]]);
+  });
+
+  test("resets search and status-filter submissions to page 1 from page 2", async () => {
+    const result = await runScenario({
+      target: "page",
+      access: "admin",
+      params: { q: "Nguyen", status: "pending", page: "2" },
+      rows: 1
+    });
+    assert.equal(result.error, undefined);
+    assert.deepStrictEqual(result.calls[0]?.[0], {
+      limit: 21,
+      offset: 20,
+      search: "Nguyen",
+      status: "pending"
+    });
+    assert.ok(result.hiddenPages.includes("1"), "search form must submit page=1");
+    assert.ok(result.links.some((link) => link.href === "/quan-tri/tai-khoan?q=Nguyen&status=pending"));
+  });
+
+  test("approved admin can render pending, approved, rejected, and suspended target rows", async () => {
+    const result = await runScenario({ target: "page", access: "admin", rows: 4 });
+    assert.equal(result.error, undefined);
+    for (const status of ["pending", "approved", "rejected", "suspended"]) {
+      assert.match(result.text ?? "", new RegExp(`Trạng thái:\\s+${status}`), `missing ${status} row`);
+    }
   });
 
   test("renders a clear empty state", async () => {
