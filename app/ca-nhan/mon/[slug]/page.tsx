@@ -3,6 +3,19 @@ import { getAccountAccess } from "@/lib/auth/session";
 import { getAuthorizedStudentWorkspace } from "@/lib/repositories/student-workspace-repository";
 import { SubjectWorkspaceClient } from "./workspace-client";
 
+type LearningProgress = {
+  user_id: string;
+  product_id: string;
+  item_type: "material" | "lesson";
+  item_id: string;
+  status: "not_started" | "in_progress" | "completed";
+  watched_percent: number;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 /**
  * Validates internal redirect target path to prevent open redirect vulnerabilities.
  */
@@ -80,5 +93,20 @@ export default async function SubjectWorkspacePage({
     notFound();
   }
 
-  return <SubjectWorkspaceClient workspace={workspace} />;
+  const productIds = [...workspace.materials.map((material) => material.productId), ...workspace.courses.map((course) => course.productId)];
+  let progress: LearningProgress[] = [];
+  try {
+    const { getLearningProgressForWorkspace } = await import("@/lib/repositories/learning-progress-repository");
+    const progressByProduct = await Promise.all(
+      [...new Set(productIds)].map((productId) => getLearningProgressForWorkspace(access.user!.id, productId))
+    );
+    progress = progressByProduct.flat();
+  } catch {
+    // Progress is additive to the already-authorized workspace. The client exposes a retryable save state.
+    progress = [];
+  }
+
+  return progress.length > 0
+    ? <SubjectWorkspaceClient workspace={{ ...workspace, progress }} />
+    : <SubjectWorkspaceClient workspace={workspace} />;
 }

@@ -263,6 +263,53 @@ export type Database = {
           },
         ]
       }
+      learning_progress: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          item_id: string
+          item_type: string
+          product_id: string
+          started_at: string | null
+          status: string
+          updated_at: string
+          user_id: string
+          watched_percent: number
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          item_id: string
+          item_type: string
+          product_id: string
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+          user_id: string
+          watched_percent?: number
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          item_id?: string
+          item_type?: string
+          product_id?: string
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+          user_id?: string
+          watched_percent?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "learning_progress_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       product_entitlements: {
         Row: {
           created_at: string
