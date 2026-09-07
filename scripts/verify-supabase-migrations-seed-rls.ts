@@ -31,7 +31,8 @@ const immutableMigrationHashes = {
   "0008_consultation_admin_status_update.sql": "0705472f64d3a156d690d0ff5c51bfca378499b6738ed27b6bebf386b7052544",
   "0009_consultation_updated_by.sql": "8c8bc38c4661bdd80b3451cae0f0dbd87d87c0df0e42a0a4ba7135f1d615b605",
   "0010_admin_account_approval_rls.sql": "f13168186d1addb34c254525d61f51058e5b7386962063c0a9bb45f9e32987b8",
-  "0011_admin_catalog_crud_rls.sql": "2ce64ed6eeaa810d7e01671120b0ab761fda2efa29aa9da332f9346f302e0a5e"
+  "0011_admin_catalog_crud_rls.sql": "2ce64ed6eeaa810d7e01671120b0ab761fda2efa29aa9da332f9346f302e0a5e",
+  "0012_private_material_storage.sql": "40fb2a4b8b3b818bc9ccaea83348c5f13780ffab9f587a88e9f1cd903a394c76"
 } as const;
 
 export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
@@ -232,6 +233,33 @@ function stripSqlCommentsAndSplitStatements(sql: string): string[] {
 
 function normalizeMigrationStatement(statement: string): string {
   return normalizeSql(statement).replace(/"([A-Za-z_][A-Za-z0-9_$]*)"/g, "$1").toLowerCase();
+}
+
+function splitTopLevelClauses(value: string): string[] {
+  const clauses: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let inSingleQuote = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === "'" && value[index + 1] === "'") {
+      index += 1;
+      continue;
+    }
+    if (character === "'") {
+      inSingleQuote = !inSingleQuote;
+      continue;
+    }
+    if (inSingleQuote) continue;
+    if (character === "(") depth += 1;
+    if (character === ")") depth -= 1;
+    if (character === "," && depth === 0) {
+      clauses.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  clauses.push(value.slice(start));
+  return clauses.map(normalizeMigrationStatement).filter(Boolean);
 }
 
 function extractPolicyClause(policy: string, clauseName: "USING" | "WITH CHECK"): string | null {
@@ -667,6 +695,86 @@ export function assertMigration0012Contract(sql0012: string): void {
   }
 }
 
+/** Pure contract used by the CLI audit and integration tests for migration 0013. */
+export function assertMigration0013Contract(sql0013: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const statements = stripSqlCommentsAndSplitStatements(sql0013);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const code = statements.join(" ; ");
+  const compactPredicate = (value: string) => normalizeMigrationStatement(value).replace(/\(\s+/g, "(").replace(/\s+\)/g, ")");
+  const adminPredicate = normalizeMigrationStatement(`
+    EXISTS ( SELECT 1 FROM public.profiles WHERE public.profiles.id = auth.uid()
+      AND public.profiles.role = 'admin' AND public.profiles.account_status = 'approved')
+  `);
+
+  fail(!/\b(?:service_role|security\s+definer|bypassrls|set\s+role|alter\s+role)\b/i.test(code), "Migration 0013 must not escalate roles");
+  fail(!/\b(?:password|secret|token|bearer|apikey|api_key|credential)\b\s*[:=]/i.test(code), "Migration 0013 must not contain credentials");
+  fail(!/\b(?:execute\s+(?:immediate|format)|execute\s+['$]|format\s*\()/i.test(code), "Migration 0013 must not use dynamic SQL");
+  fail(!/\b(?:create\s+(?:or\s+replace\s+)?(?:function|procedure|trigger|view|type|extension)|alter\s+system|disable\s+row\s+level\s+security)\b/i.test(code), "Migration 0013 contains unrelated or unsafe statements");
+  fail(statements.length === 6, "Migration 0013 must contain exactly table, RLS, privilege, and two policy statements");
+
+  const table = normalized[0] || "";
+  fail(table.startsWith("create table public.material_assets ("), "Migration 0013 must create public.material_assets");
+  const tableOpening = table.indexOf("(");
+  const tableClosing = table.lastIndexOf(")");
+  fail(tableOpening > 0 && tableClosing > tableOpening, "Migration 0013 must contain a parseable material_assets table body");
+  const definitions = splitTopLevelClauses(table.slice(tableOpening + 1, tableClosing));
+  const expectedColumns = new Map([
+    ["id", "id uuid primary key default gen_random_uuid()"],
+    ["product_id", "product_id uuid not null references public.products(id) on delete cascade"],
+    ["uploaded_by", "uploaded_by uuid references auth.users(id) on delete set null"],
+    ["storage_path", "storage_path text not null unique"],
+    ["original_name", "original_name text not null"],
+    ["mime_type", "mime_type text not null"],
+    ["byte_size", "byte_size bigint not null"],
+    ["version", "version integer not null"],
+    ["visibility", "visibility text not null default 'private'"],
+    ["created_at", "created_at timestamptz not null default now()"],
+    ["updated_at", "updated_at timestamptz not null default now()"]
+  ]);
+  const columnDefinitions = definitions.filter((definition) => !/^constraint\b|^foreign key\b/i.test(definition));
+  fail(columnDefinitions.length === expectedColumns.size, "Migration 0013 must contain exactly the expected material_assets columns");
+  const actualColumns = new Map<string, string>();
+  for (const definition of columnDefinitions) {
+    const name = definition.match(/^([a-z_][a-z0-9_]*)\b/i)?.[1];
+    fail(Boolean(name) && !actualColumns.has(name!.toLowerCase()), "Migration 0013 must not contain duplicate or unnamed columns");
+    actualColumns.set(name!.toLowerCase(), definition);
+  }
+  fail(actualColumns.size === expectedColumns.size && [...expectedColumns].every(([name, definition]) => actualColumns.get(name) === definition), "Migration 0013 column definitions must match the exact metadata contract");
+
+  const expectedConstraints = [
+    "constraint material_assets_byte_size_positive check (byte_size > 0)",
+    "constraint material_assets_version_positive check (version >= 1)",
+    "constraint material_assets_visibility_private check (visibility = 'private')",
+    "constraint material_assets_storage_path_materials check ( storage_path ~ '^materials/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/v[1-9][0-9]*/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[a-z0-9][a-z0-9._-]*$' )",
+    "constraint material_assets_product_version_unique unique (product_id, version)",
+    "constraint material_assets_product_material_fkey foreign key (product_id) references public.materials(product_id) on delete cascade"
+  ];
+  const actualConstraints = definitions.filter((definition) => /^constraint\b|^foreign key\b/i.test(definition));
+  fail(actualConstraints.length === expectedConstraints.length && expectedConstraints.every((constraint) => actualConstraints.includes(constraint)), "Migration 0013 constraints and foreign keys must match exactly");
+  fail(normalized[1] === "alter table public.material_assets enable row level security", "Migration 0013 must enable RLS");
+  fail(normalized[2] === "revoke all on table public.material_assets from anon, public, authenticated", "Migration 0013 must revoke broad metadata privileges");
+  fail(normalized[3] === "grant select, insert on table public.material_assets to authenticated", "Migration 0013 must grant only metadata SELECT and INSERT to authenticated");
+  fail(!/\b(?:update|delete)\b/.test(normalized.slice(2).join(" ")), "Migration 0013 must not add UPDATE or DELETE metadata access");
+
+  const policies = normalized.slice(4);
+  fail(policies.length === 2, "Migration 0013 must contain exactly two metadata policies");
+  for (const [name, action] of [["material_assets_approved_admin_select", "select"], ["material_assets_approved_admin_insert", "insert"]] as const) {
+    const policy = policies.find((statement) => statement.startsWith(`create policy ${name} `)) || "";
+    fail(policy.startsWith(`create policy ${name} on public.material_assets for ${action} to authenticated `), "Migration 0013 policies must target material_assets and authenticated only");
+    const using = extractPolicyClause(policy, "USING");
+    const withCheck = extractPolicyClause(policy, "WITH CHECK");
+    if (action === "select") {
+      fail(compactPredicate(using || "") === compactPredicate(adminPredicate) && withCheck === null, "Migration 0013 SELECT policy must require the exact approved-admin predicate");
+    } else {
+      fail(using === null && compactPredicate(withCheck || "") === compactPredicate(adminPredicate), "Migration 0013 INSERT policy must require the exact approved-admin predicate");
+    }
+  }
+  fail(!/\b(?:storage\.buckets|storage\.objects|public\s*=\s*true|grant\s+(?!select, insert on table public\.material_assets to authenticated)|revoke\s+(?!all on table public\.material_assets from anon, public, authenticated))\b/i.test(code), "Migration 0013 must not alter storage authority or cross-table privileges");
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -694,13 +802,14 @@ export async function runAudit(): Promise<boolean> {
       "0009_consultation_updated_by.sql",
       "0010_admin_account_approval_rls.sql",
       "0011_admin_catalog_crud_rls.sql",
-      "0012_private_material_storage.sql"
+      "0012_private_material_storage.sql",
+      "0013_material_asset_metadata.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 12 migration files exist in strict topological order",
+      check: "All 13 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -720,7 +829,7 @@ export async function runAudit(): Promise<boolean> {
       immutableHistoryValid = false;
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0011 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0012 match their canonical LF-normalized SHA-256 snapshots",
         passed: false,
         details: error instanceof Error ? error.message : String(error)
       });
@@ -730,7 +839,7 @@ export async function runAudit(): Promise<boolean> {
         category: "Migration History",
         check: "Migrations 0001-0011 match their canonical LF-normalized SHA-256 snapshots",
         passed: true,
-        details: "Every applied migration is content-locked; migration 0012 is checked separately as new"
+        details: "Every applied migration through 0012 is content-locked"
       });
     }
 
@@ -1012,7 +1121,22 @@ export async function runAudit(): Promise<boolean> {
       details: "Private bucket; exactly SELECT, INSERT, UPDATE, and DELETE policies on storage.objects for authenticated approved admins"
     });
 
-    // 13. Audit supabase/seed.sql
+    // 13. Audit 0013_material_asset_metadata.sql
+    const sql0013 = await fs.readFile(path.join(migrationsDir, "0013_material_asset_metadata.sql"), "utf-8");
+    let migration0013ContractValid = true;
+    try {
+      assertMigration0013Contract(sql0013);
+    } catch {
+      migration0013ContractValid = false;
+    }
+    results.push({
+      category: "0013_material_asset_metadata",
+      check: "Creates immutable private-material version metadata with approved-admin-only RLS",
+      passed: migration0013ContractValid,
+      details: "Metadata retains prior versions; storage bucket and object policies remain owned by 0012"
+    });
+
+    // 14. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
     const isTxn = /^\s*(?:--[^\n]*\n\s*)*BEGIN\s*;/im.test(sqlSeed) && /COMMIT\s*;\s*$/i.test(sqlSeed.trim());
     const subjectsSeed = CANONICAL_SUBJECTS.every((s) => sqlSeed.includes(`'${s.slug}'`));

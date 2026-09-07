@@ -125,9 +125,13 @@ export default async function AdminCatalogPage({ searchParams }: { searchParams?
   const results = await Promise.allSettled([listAdminSubjects(options), listAdminMaterials(options), listAdminCourses(options), listAdminTutors(options)]);
   const [subjectResult, materialResult, courseResult, tutorResult] = results;
   const subjects = subjectResult.status === "fulfilled" ? subjectResult.value : [];
+  const materialIds = materialResult.status === "fulfilled" ? materialResult.value.map((row) => row.id).filter(isValidUuid) : [];
+  const materialVersions = await import("@/lib/repositories/material-asset-repository")
+    .then(({ listCurrentMaterialAssetVersions }) => listCurrentMaterialAssetVersions(materialIds))
+    .catch(() => null);
   const sections = [
     { kind: "subject" as const, result: subjectResult, rows: subjects.map((row) => ({ id: row.id, title: row.name, values: { ...row } })), remove: deleteSubjectAction },
-    { kind: "material" as const, result: materialResult, rows: materialResult.status === "fulfilled" ? materialResult.value.map((row) => ({ id: row.id, title: row.title, values: { ...row, ...row.materials } })) : [], remove: deleteMaterialAction },
+    { kind: "material" as const, result: materialResult, rows: materialResult.status === "fulfilled" ? materialResult.value.map((row) => ({ id: row.id, title: row.title, values: { ...row, ...row.materials, material_asset_version: materialVersions?.[row.id] } })) : [], remove: deleteMaterialAction },
     { kind: "course" as const, result: courseResult, rows: courseResult.status === "fulfilled" ? courseResult.value.map((row) => ({ id: row.id, title: row.title, values: { ...row, ...row.courses } })) : [], remove: deleteCourseAction },
     { kind: "tutor" as const, result: tutorResult, rows: tutorResult.status === "fulfilled" ? tutorResult.value.map((row) => ({ id: row.id, title: row.title, values: { ...row, ...row.tutors } })) : [], remove: deleteTutorAction }
   ];
@@ -140,12 +144,15 @@ export default async function AdminCatalogPage({ searchParams }: { searchParams?
     </header>
     {params.success === "1" ? <p role="status" className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50/90 p-4 text-sm font-semibold text-emerald-800">Cập nhật danh mục thành công.</p> : null}
     {params.error === "1" ? <p role="alert" className="mt-6 rounded-2xl border border-rose-200 bg-rose-50/90 p-4 text-sm font-semibold text-rose-700">Không thể cập nhật danh mục. Vui lòng kiểm tra thông tin và thử lại.</p> : null}
+    {params.upload === "success" ? <p role="status" className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50/90 p-4 text-sm font-semibold text-emerald-800">Tải tệp tài liệu thành công.</p> : null}
+    {params.upload === "error" ? <p role="alert" className="mt-6 rounded-2xl border border-rose-200 bg-rose-50/90 p-4 text-sm font-semibold text-rose-700">Không thể tải tệp tài liệu. Vui lòng thử lại.</p> : null}
     {sections.map(({ kind, rows, result, remove }) => <section key={kind} id={kind} aria-labelledby={`${kind}-title`} className="mt-8 min-w-0 space-y-4">
       <h2 id={`${kind}-title`} className="text-2xl font-black">{labels[kind]}</h2>
       <details className="surface-card min-w-0 p-5 sm:p-6"><summary className="cursor-pointer font-extrabold text-accent">Tạo mới · {labels[kind]}</summary><Editor kind={kind} subjects={subjects} /></details>
       {result.status === "rejected" ? <p role="alert" className="surface-card p-5 text-sm text-ink/65">Không thể tải danh mục lúc này. Vui lòng thử lại sau.</p> : rows.length === 0 ? <p className="notebook-card notebook-paper-lines rounded-2xl p-6 text-sm text-ink/65">Chưa có {labels[kind].toLowerCase()} trong trang này.</p> : rows.slice(0, 20).map((row) => <article key={row.id} className="surface-card min-w-0 p-5 sm:p-6">
         <h3 className="break-words text-lg font-black [overflow-wrap:anywhere]">{row.title}</h3>
         {"publication_status" in row.values ? <p className="mt-2 text-sm text-ink/65">{optionLabels[String(row.values.publication_status)] ?? "Trạng thái chưa xác định"}</p> : null}
+        {kind === "material" && materialVersions !== null && isValidUuid(row.id) ? <div className="mt-4 border-t border-ink/10 pt-4"><p className="text-sm font-bold text-ink/65">{typeof (row.values as Record<string, unknown>).material_asset_version === "number" ? `Phiên bản tệp hiện tại: v${(row.values as unknown as Record<string, number>).material_asset_version}` : "Chưa có tệp được tải lên."}</p><form action={`/api/admin/materials/${row.id}/upload`} method="post" encType="multipart/form-data" className="mt-3 flex flex-wrap items-end gap-3"><label className="block text-sm font-bold text-ink/65"><span>Tệp PDF hoặc video</span><input name="file" type="file" required accept="application/pdf,video/mp4,video/webm,video/quicktime" className="mt-1 block max-w-full text-sm" /></label><button type="submit" className={button}>Tải phiên bản mới</button></form></div> : null}
         {isValidUuid(row.id) ? <><details className="mt-4 min-w-0"><summary className="cursor-pointer text-sm font-bold text-accent">Chỉnh sửa · {row.title}</summary><Editor kind={kind} id={row.id} values={row.values} subjects={subjects} /></details>
           <details className="mt-4 border-t border-ink/10 pt-4"><summary className="cursor-pointer text-sm font-bold text-rose-700">Xóa · {row.title}</summary><form action={remove.bind(null, row.id)} className="mt-3 space-y-3"><p className="text-sm text-ink/65">Thao tác xóa không thể hoàn tác. Nếu nội dung đang được sử dụng, yêu cầu có thể không thực hiện được.</p><label className="flex items-center gap-2 text-sm text-ink/65"><input type="checkbox" required />Tôi xác nhận xóa bản ghi này</label><button type="submit" className="min-h-11 rounded-full border border-rose-200 px-5 py-2 text-sm font-extrabold text-rose-700">Xác nhận xóa</button></form></details></> : <p className="mt-3 text-sm text-ink/65">Không thể chỉnh sửa bản ghi này.</p>}
       </article>)}

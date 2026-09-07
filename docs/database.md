@@ -3,7 +3,7 @@
 This document outlines the PostgreSQL database schema for the LEFT HAND learning platform, designed for Supabase.
 
 > [!NOTE]
-> **Status:** Topological migrations `0001_core_schema.sql` through `0012_private_material_storage.sql` and idempotent `supabase/seed.sql` are prepared locally and verified via automated contract checks. They have **NOT** yet been applied to the hosted Supabase project.
+> **Status:** Topological migrations `0001_core_schema.sql` through `0013_material_asset_metadata.sql` and idempotent `supabase/seed.sql` are prepared locally and verified via automated contract checks. They have **NOT** yet been applied to the hosted Supabase project.
 
 ---
 
@@ -17,6 +17,7 @@ The schema employs a normalized, typed relational model separating core product 
 | `subjects` | `id` (UUID) | Canonical academic subjects (e.g. *Kế toán tài chính 1*, *Xác suất thống kê*). |
 | `products` | `id` (UUID) | Base catalog entity for all offerings (`material`, `course`, `tutor`). Stores slugs, titles, categories, publication status, integer VND pricing, and review ratings. |
 | `materials` | `product_id` (UUID FK) | 1-to-1 extension of `products` for study guides, PDFs, and formula cheat-sheets (page counts, tags, deliverables, target audience). |
+| `material_assets` | `id` (UUID) | Immutable metadata for each private PDF/video version uploaded for a material product. |
 | `courses` | `product_id` (UUID FK) | 1-to-1 extension of `products` for live review classes and video courses (format, session count, schedule, mentor, syllabus, enrollment status). |
 | `course_lessons` | `id` (UUID) | 1-to-N lessons / syllabus items under a specific course (order index, lesson title, duration). |
 | `tutors` | `product_id` (UUID FK) | 1-to-1 extension of `products` for 1-on-1 and small group peer tutors (name, faculty, format description, strengths, bio). |
@@ -148,6 +149,14 @@ erDiagram
 - **Consultation Updater Audit Trail (`0009_consultation_updated_by.sql`):** `consultations.updated_by` is a nullable UUID reference to `auth.users(id)` with `ON DELETE SET NULL`. A dedicated database `BEFORE UPDATE` trigger assigns it from `auth.uid()`, so the client cannot choose the updater identity. The existing `0008` trigger continues to manage `updated_at`.
 - **Admin Account Approval Data Layer (`0010_admin_account_approval_rls.sql`):** Approved authenticated admins using the `/quan-tri` workflow can read profiles through a dedicated RLS policy. The approval update workflow accepts only `account_status` and `rejection_reason`; it does not change `role` or any identity/profile field. A database trigger writes `approved_by = auth.uid()` and the current UTC timestamp to `approved_at`, so clients cannot provide those audit fields. Admins cannot change their own account status.
 - **Private Material Storage Foundation (`0012_private_material_storage.sql`):** Supabase Storage bucket `materials` is private (`public = false`). Object `SELECT`, `INSERT`, `UPDATE`, and `DELETE` access on `storage.objects` is limited to authenticated users whose matching `public.profiles` row has role `admin` and account status `approved`. Public and anonymous access is denied. Upload workflows and signed URLs are intentionally deferred to later tasks.
+- **Material Asset Metadata (`0013_material_asset_metadata.sql`):** `material_assets` records the product, uploader, original filename, MIME type, byte size, private visibility, storage path, and monotonically increasing version of each upload. Its product must also exist in `materials`, so a course or tutor product cannot receive a material file. RLS grants metadata `SELECT` and `INSERT` only to approved authenticated admins.
+
+### Private material file convention
+
+- Files are stored only in the private `materials` bucket using `materials/<product-id>/v<version>/<generated-id>-<sanitized-filename>`.
+- Allowed uploads are PDF (maximum 20 MiB) and MP4, WebM, or QuickTime video (maximum 500 MiB). Server validation checks both MIME type and a practical file signature.
+- Uploading creates a new version. Neither previous metadata rows nor previous storage objects are overwritten or deleted.
+- Signed URLs and entitlement-based learner access are intentionally deferred to Task 5.2-C.
 
 ---
 
@@ -181,6 +190,7 @@ psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0009_c
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0010_admin_account_approval_rls.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0011_admin_catalog_crud_rls.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0012_private_material_storage.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0013_material_asset_metadata.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/seed.sql
 ```
 

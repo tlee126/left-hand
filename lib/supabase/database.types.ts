@@ -206,6 +206,63 @@ export type Database = {
           },
         ]
       }
+      material_assets: {
+        Row: {
+          byte_size: number
+          created_at: string
+          id: string
+          mime_type: string
+          original_name: string
+          product_id: string
+          storage_path: string
+          updated_at: string
+          uploaded_by: string | null
+          version: number
+          visibility: string
+        }
+        Insert: {
+          byte_size: number
+          created_at?: string
+          id?: string
+          mime_type: string
+          original_name: string
+          product_id: string
+          storage_path: string
+          updated_at?: string
+          uploaded_by?: string | null
+          version: number
+          visibility?: string
+        }
+        Update: {
+          byte_size?: number
+          created_at?: string
+          id?: string
+          mime_type?: string
+          original_name?: string
+          product_id?: string
+          storage_path?: string
+          updated_at?: string
+          uploaded_by?: string | null
+          version?: number
+          visibility?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "material_assets_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "material_assets_product_material_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "materials"
+            referencedColumns: ["product_id"]
+          },
+        ]
+      }
       products: {
         Row: {
           category: Database["public"]["Enums"]["category_enum"]
