@@ -1295,20 +1295,34 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       const sql = await fs.readFile(migrationPath, "utf-8");
       const sql0004 = await fs.readFile(path.join(migrationsDir, "0004_profiles_schema_and_policies.sql"), "utf-8");
       const sql0005 = await fs.readFile(path.join(migrationsDir, "0005_account_approval_gate.sql"), "utf-8");
+      const injectIntoFunction = (statement: string) => sql.replace(
+        "    RETURN NEW;",
+        `    ${statement}\n    RETURN NEW;`
+      );
       const fixtures = [
         sql.replace(/CREATE TRIGGER on_auth_user_created[\s\S]*?handle_auth_user_profile\(\);/i, ""),
         sql.replace("INSERT INTO public.profiles (id, email, full_name)", "INSERT INTO public.profiles (id, email)"),
         sql.replace(/IF resolved_full_name = '' THEN[\s\S]*?END IF;/i, ""),
         sql.replace("SET search_path = public", "SET search_path = pg_catalog, public"),
-        `${sql}\nDO $$ BEGIN EXECUTE 'SELECT 1'; END $$;`,
+        injectIntoFunction("DELETE FROM public.products;"),
+        injectIntoFunction("UPDATE public.products SET title = title;"),
+        injectIntoFunction("INSERT INTO public.products (slug) VALUES ('fixture');"),
+        injectIntoFunction("SELECT 1;"),
+        injectIntoFunction("PERFORM 1;"),
+        injectIntoFunction("EXECUTE 'SELECT 1';"),
+        injectIntoFunction("TRUNCATE TABLE public.products;"),
+        injectIntoFunction("ALTER TABLE public.products ADD COLUMN fixture_column TEXT;"),
+        injectIntoFunction("DROP TABLE public.products;"),
+        injectIntoFunction("CREATE TABLE public.fixture_table (id integer);"),
+        injectIntoFunction("SET ROLE postgres;"),
         `${sql}\nGRANT EXECUTE ON FUNCTION public.handle_auth_user_profile() TO PUBLIC;`,
         `${sql}\nREVOKE ALL ON FUNCTION public.handle_auth_user_profile() FROM service_role;`,
         `${sql}\nSET ROLE postgres;`,
         `${sql}\nALTER ROLE authenticated BYPASSRLS;`
       ];
 
-      for (const fixture of fixtures) {
-        assert.throws(() => assertMigration0017Contract(fixture), /./);
+      for (const [index, fixture] of fixtures.entries()) {
+        assert.throws(() => assertMigration0017Contract(fixture), /./, `unsafe 0017 fixture ${index} must be rejected`);
       }
       assert.throws(
         () => assertMigration0017Contract(sql, { sql0004: sql0004.replace("DEFAULT 'student'", "DEFAULT 'admin'") }),
@@ -1318,6 +1332,15 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         () => assertMigration0017Contract(sql, { sql0005: sql0005.replace("DEFAULT 'pending'", "DEFAULT 'approved'") }),
         /account_status default pending/i
       );
+    });
+
+    test("ignores comments while enforcing the exact function body", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const commented = sql.replace(
+        "    RETURN NEW;",
+        "    -- DELETE FROM public.products;\n    /* UPDATE public.products SET title = title; */\n    RETURN NEW;"
+      );
+      assert.doesNotThrow(() => assertMigration0017Contract(commented));
     });
 
     test("rejects a mutation in every immutable migration 0001-0016", async () => {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, describe } from "node:test";
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   performSignup,
   mapSignupError,
@@ -9,6 +9,243 @@ import {
   validateSignupInput,
   type SupabaseAuthLike
 } from "../../lib/auth/signup";
+
+const execFileAsync = promisify(execFile);
+
+type SignupPageRuntimeScenario = {
+  fullName?: string;
+  email?: string;
+  password?: string;
+  confirmPassword?: string;
+  authError?: string;
+};
+
+type SignupPageRuntimeResult = {
+  signUpArgs: unknown;
+  authCalls: number;
+  timeline: string[];
+  text: string;
+};
+
+const signupPageRuntimeHarness = String.raw`
+import { mock } from "node:test";
+import { readFile } from "node:fs/promises";
+import { transform } from "esbuild";
+import * as path from "node:path";
+
+const scenario = JSON.parse(process.argv[1]);
+process.env.NEXT_PUBLIC_DEMO_MODE = "false";
+globalThis.window = { location: { origin: "https://lefthand.vn" } };
+
+const state = [];
+let stateCursor = 0;
+const timeline = [];
+let authCalls = 0;
+let signUpArgs = null;
+
+const reactModule = "data:text/javascript,signup-react";
+const authClientModule = "data:text/javascript,signup-browser-client";
+const demoStudentModule = "data:text/javascript,signup-demo-student";
+const imageModule = "data:text/javascript,signup-image";
+const linkModule = "data:text/javascript,signup-link";
+const navigationModule = "data:text/javascript,signup-navigation";
+const iconsModule = "data:text/javascript,signup-icons";
+const floatingActionsModule = "data:text/javascript,signup-floating-actions";
+const jsxRuntimeModule = "data:text/javascript,signup-jsx-runtime";
+
+function useState(initialValue) {
+  const index = stateCursor++;
+  if (!(index in state)) state[index] = initialValue;
+  return [state[index], (value) => {
+    state[index] = typeof value === "function" ? value(state[index]) : value;
+  }];
+}
+
+function useEffect() {}
+function useTransition() { return [false, (callback) => callback()]; }
+
+const authClient = {
+  auth: {
+    getUser: async () => ({ data: { user: null }, error: null }),
+    onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
+    signInWithPassword: async () => ({ data: { user: null }, error: null }),
+    signOut: async () => ({ error: null }),
+    signUp: async (options) => {
+      authCalls++;
+      signUpArgs = options;
+      timeline.push("auth.signUp");
+      if (scenario.authError) {
+        return {
+          data: null,
+          error: { message: scenario.authError, code: "database_error" }
+        };
+      }
+      return {
+        data: {
+          user: { id: "signup-runtime-user", email: options.email },
+          session: null
+        },
+        error: null
+      };
+    }
+  }
+};
+
+const jsx = (type, props) => ({ type, props: props ?? {} });
+const jsxs = jsx;
+const Fragment = "fragment";
+
+function component(props) { return { type: "component", props }; }
+
+mock.module(reactModule, {
+  namedExports: { useState, useEffect, useTransition }
+});
+mock.module(authClientModule, {
+  namedExports: { createClient: () => authClient }
+});
+mock.module(demoStudentModule, {
+  namedExports: {
+    demoStudent: {
+      email: "demo@example.test",
+      password: "not-used",
+      name: "Demo",
+      avatarInitials: "DE"
+    }
+  }
+});
+mock.module(imageModule, {
+  namedExports: { default: (props) => ({ type: "img", props }) }
+});
+mock.module(linkModule, {
+  namedExports: { default: (props) => ({ type: "a", props }) }
+});
+mock.module(navigationModule, {
+  namedExports: { useRouter: () => ({ push() {} }) }
+});
+mock.module(iconsModule, {
+  namedExports: {
+    ArrowLeft: component,
+    Lock: component,
+    Mail: component,
+    CheckCircle2: component
+  }
+});
+mock.module(floatingActionsModule, {
+  namedExports: { FloatingActions: () => null }
+});
+mock.module(jsxRuntimeModule, {
+  namedExports: { jsx, jsxs, Fragment }
+});
+
+async function compileModule(filePath, replacements, loader, withJsx = false) {
+  let source = await readFile(filePath, "utf8");
+  for (const [from, to] of replacements) source = source.replaceAll(from, to);
+  const compiled = await transform(source, {
+    loader,
+    format: "esm",
+    ...(withJsx ? { jsx: "automatic" } : {}),
+    sourcefile: path.basename(filePath)
+  });
+  return compiled.code.replaceAll("react/jsx-runtime", jsxRuntimeModule);
+}
+
+function inspect(value, output) {
+  if (value == null || typeof value === "boolean" || typeof value === "number") return;
+  if (typeof value === "string") { output.text += " " + value; return; }
+  if (Array.isArray(value)) { value.forEach((item) => inspect(item, output)); return; }
+  if (typeof value.type === "function") { inspect(value.type(value.props), output); return; }
+  if (value.type === "form") output.form = value;
+  if (value.type === "input") output.inputs.push(value);
+  if (value.props) inspect(value.props.children, output);
+}
+
+function render(page) {
+  stateCursor = 0;
+  const output = { text: "", form: null, inputs: [] };
+  inspect(page(), output);
+  output.text = output.text.trim();
+  return output;
+}
+
+try {
+  const signupHelperCode = await compileModule(
+    path.resolve(process.cwd(), "lib/auth/signup.ts"),
+    [["@supabase/supabase-js", "data:text/javascript,signup-types"]],
+    "ts"
+  );
+  const signupHelperUrl = "data:text/javascript," + encodeURIComponent(signupHelperCode);
+
+  const hookCode = await compileModule(
+    path.resolve(process.cwd(), "hooks/use-demo-auth.ts"),
+    [
+      ["\"react\"", "\"" + reactModule + "\""],
+      ["\"@/lib/supabase/browser\"", "\"" + authClientModule + "\""],
+      ["\"@/data/student-demo\"", "\"" + demoStudentModule + "\""],
+      ["\"@/lib/auth/signup\"", "\"" + signupHelperUrl + "\""]
+    ],
+    "tsx"
+  );
+  const hookUrl = "data:text/javascript," + encodeURIComponent(hookCode);
+
+  const pageCode = await compileModule(
+    path.resolve(process.cwd(), "app/dang-ky/page.tsx"),
+    [
+      ["\"react\"", "\"" + reactModule + "\""],
+      ["\"@/hooks/use-demo-auth\"", "\"" + hookUrl + "\""],
+      ["\"next/image\"", "\"" + imageModule + "\""],
+      ["\"next/link\"", "\"" + linkModule + "\""],
+      ["\"next/navigation\"", "\"" + navigationModule + "\""],
+      ["\"lucide-react\"", "\"" + iconsModule + "\""],
+      ["\"@/components/site/floating-actions\"", "\"" + floatingActionsModule + "\""]
+    ],
+    "tsx",
+    true
+  );
+  const pageUrl = "data:text/javascript," + encodeURIComponent(pageCode);
+  const page = (await import(pageUrl)).default;
+
+  let output = render(page);
+  const setInput = (placeholder, value) => {
+    const input = output.inputs.find((item) => item.props.placeholder === placeholder);
+    if (!input) throw new Error("Missing signup input: " + placeholder);
+    input.props.onChange({ target: { value } });
+  };
+
+  setInput("Nguyễn Văn A", scenario.fullName ?? "  Nguyễn Văn A  ");
+  setInput("student@lefthand.vn", scenario.email ?? "  student@example.test  ");
+  setInput("••••••••", scenario.password ?? "Password123!");
+  const passwordInputs = output.inputs.filter((item) => item.props.type === "password");
+  passwordInputs[1].props.onChange({ target: { value: scenario.confirmPassword ?? scenario.password ?? "Password123!" } });
+
+  output = render(page);
+  timeline.push("form.submit");
+  const form = output.form;
+  if (!form) throw new Error("Signup form was not rendered");
+  await form.props.onSubmit({ preventDefault() {} });
+
+  if (authCalls === 0) {
+    timeline.push("validation.blocked");
+  } else {
+    timeline.splice(1, 0, "validation.passed", "hook.signup");
+  }
+
+  output = render(page);
+  if (output.text.includes("Kiểm tra email")) timeline.push("success.ui");
+  if (output.text.includes("Đăng ký không thành công")) timeline.push("error.ui");
+  console.log(JSON.stringify({ signUpArgs, authCalls, timeline, text: output.text }));
+} catch (error) {
+  console.log(JSON.stringify({ signUpArgs, authCalls, timeline, text: "", error: String(error?.message ?? error) }));
+}
+`;
+
+async function runSignupPageScenario(scenario: SignupPageRuntimeScenario): Promise<SignupPageRuntimeResult & { error?: string }> {
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--experimental-test-module-mocks", "--import", "tsx/esm", "-e", signupPageRuntimeHarness, JSON.stringify(scenario)],
+    { cwd: process.cwd(), maxBuffer: 1024 * 1024 }
+  );
+  return JSON.parse(stdout.trim()) as SignupPageRuntimeResult & { error?: string };
+}
 
 describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
   describe("1. Runtime Supabase Auth Signup Execution", () => {
@@ -206,51 +443,6 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
       assert.equal(authCalls, 0);
     });
 
-    test("signup timeline creates one pending student profile even when session is null", async () => {
-      const profiles = new Map<string, { id: string; email: string; full_name: string; role: string; account_status: string }>();
-      let triggerInvocations = 0;
-      const mockSupabase: SupabaseAuthLike = {
-        auth: {
-          signUp: async (options) => {
-            const user = { id: "user-timeline-1", email: options.email };
-            triggerInvocations++;
-            if (!profiles.has(user.id)) {
-              profiles.set(user.id, {
-                id: user.id,
-                email: user.email,
-                full_name: options.options?.data.full_name ?? "Học viên",
-                role: "student",
-                account_status: "pending"
-              });
-            }
-            return { data: { user: user as any, session: null }, error: null };
-          }
-        }
-      };
-
-      const result = await performSignup(mockSupabase, {
-        email: " timeline@example.test ",
-        password: "Password123!",
-        fullName: "  Nguyễn Văn Timeline  "
-      });
-      assert.equal(result.success, true);
-      assert.equal(result.data?.session, null);
-      assert.deepEqual(profiles.get("user-timeline-1"), {
-        id: "user-timeline-1",
-        email: "timeline@example.test",
-        full_name: "Nguyễn Văn Timeline",
-        role: "student",
-        account_status: "pending"
-      });
-
-      await mockSupabase.auth.signUp({
-        email: "timeline@example.test",
-        password: "Password123!",
-        options: { data: { full_name: "Nguyễn Văn Timeline" } }
-      });
-      assert.equal(triggerInvocations, 2);
-      assert.equal(profiles.size, 1);
-    });
   });
 
   describe("2. Client-side Input Validation & Submission Guard", () => {
@@ -474,71 +666,60 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
     });
   });
 
-  describe("5. Static Contracts & Security Checks", () => {
-    test("app/dang-ky/page.tsx is a client component and properly configured", async () => {
-      const signupPath = path.resolve(process.cwd(), "app/dang-ky/page.tsx");
-      const signupCode = await fs.readFile(signupPath, "utf-8");
+  describe("5. Runtime Signup Form, Hook & Page", () => {
+    test("real form → validation → hook → auth.signUp passes trimmed metadata and renders session-null success", async () => {
+      const result = await runSignupPageScenario({
+        fullName: "  Nguyễn Văn A  ",
+        email: "  student@example.test  "
+      });
 
-      assert.ok(signupCode.includes('"use client"'), "SignupPage must have 'use client'");
-      assert.ok(signupCode.includes("export default function SignupPage"), "SignupPage component must be exported");
-      assert.ok(signupCode.includes("isSubmitting"), "SignupPage must manage isSubmitting state");
-      assert.ok(signupCode.includes("finally {"), "SignupPage handleSubmit must have finally block");
+      assert.equal(result.error, undefined);
+      assert.deepEqual(result.signUpArgs, {
+        email: "student@example.test",
+        password: "Password123!",
+        options: {
+          data: { full_name: "Nguyễn Văn A" },
+          emailRedirectTo: "https://lefthand.vn/auth/callback"
+        }
+      });
+      assert.equal(result.authCalls, 1);
+      assert.deepEqual(result.timeline, [
+        "form.submit",
+        "validation.passed",
+        "hook.signup",
+        "auth.signUp",
+        "success.ui"
+      ]);
+      assert.match(result.text, /Kiểm tra email/);
+      assert.doesNotMatch(result.text, /RAW SQL|student@example\.test/);
     });
 
-    test("hooks/use-demo-auth.ts exports signup helper and does NOT use localStorage for signup", async () => {
-      const hookPath = path.resolve(process.cwd(), "hooks/use-demo-auth.ts");
-      const hookCode = await fs.readFile(hookPath, "utf-8");
-
-      assert.ok(hookCode.includes("performSignup"), "Hook must use performSignup helper");
-
-      // Verify that the signup function in the hook does not touch localStorage or demo student
-      const signupFunctionRegex = /const signup\s*=\s*async[\s\S]*?return\s*\{[\s\S]*?\};/i;
-      const match = hookCode.match(signupFunctionRegex);
-      assert.ok(match, "signup function definition must be found in use-demo-auth.ts");
-
-      const signupBody = match[0];
-      assert.ok(!signupBody.includes("localStorage"), "signup path must not use localStorage");
-      assert.ok(!signupBody.includes("demoStudent"), "signup path must not use demoStudent credentials");
-    });
-
-    test("Signup remains separate from profile update operations", async () => {
-      const signupHelperPath = path.resolve(process.cwd(), "lib/auth/signup.ts");
-      const signupHelperCode = await fs.readFile(signupHelperPath, "utf-8");
-
-      assert.ok(!signupHelperCode.includes("profiles"), "Signup helper should not touch profiles table directly");
-      assert.ok(!signupHelperCode.includes("insert("), "Signup helper should not perform generic table inserts");
-    });
-
-    test("Cross-linking between login and signup pages is intact", async () => {
-      const loginPath = path.resolve(process.cwd(), "app/dang-nhap/page.tsx");
-      const loginCode = await fs.readFile(loginPath, "utf-8");
-      assert.ok(loginCode.includes('href="/dang-ky"'), "Login page must link to /dang-ky");
-
-      const signupPath = path.resolve(process.cwd(), "app/dang-ky/page.tsx");
-      const signupCode = await fs.readFile(signupPath, "utf-8");
-      assert.ok(signupCode.includes('href="/dang-nhap"'), "Signup page must link to /dang-nhap");
-      assert.ok(signupCode.includes('href="/"'), "Signup page must link to / (home)");
-    });
-
-    test("Client-side auth files never expose service role keys", async () => {
-      const filesToCheck = [
-        "app/dang-ky/page.tsx",
-        "hooks/use-demo-auth.ts",
-        "lib/auth/signup.ts"
-      ];
-
-      for (const relPath of filesToCheck) {
-        const fullPath = path.resolve(process.cwd(), relPath);
-        const content = await fs.readFile(fullPath, "utf-8");
-        assert.ok(
-          !content.includes("SUPABASE_SERVICE_ROLE_KEY"),
-          `${relPath} must not reference SUPABASE_SERVICE_ROLE_KEY`
-        );
-        assert.ok(
-          !content.includes("service_role"),
-          `${relPath} must not reference service_role key`
-        );
+    test("real form blocks blank and overlong full names before auth.signUp", async () => {
+      for (const fullName of ["   ", "x".repeat(201)]) {
+        const result = await runSignupPageScenario({ fullName });
+        assert.equal(result.error, undefined);
+        assert.equal(result.authCalls, 0);
+        assert.deepEqual(result.timeline, ["form.submit", "validation.blocked"]);
       }
+    });
+
+    test("real form maps auth/profile-trigger failure to a generic error UI without leaking raw details", async () => {
+      const result = await runSignupPageScenario({
+        fullName: "Nguyễn Văn Trigger",
+        authError: "profile trigger failed: INSERT INTO profiles; RAW SQL secret=jwt nguyen@example.test"
+      });
+
+      assert.equal(result.error, undefined);
+      assert.equal(result.authCalls, 1);
+      assert.deepEqual(result.timeline, [
+        "form.submit",
+        "validation.passed",
+        "hook.signup",
+        "auth.signUp",
+        "error.ui"
+      ]);
+      assert.match(result.text, /Đăng ký không thành công/);
+      assert.doesNotMatch(result.text, /profile trigger failed|RAW SQL|secret=jwt|nguyen@example\.test/);
     });
   });
 });

@@ -1063,18 +1063,41 @@ export function assertMigration0017Contract(
 
   const functionStatement = normalized.find((statement) => statement.startsWith("create or replace function public.handle_auth_user_profile")) || "";
   fail(Boolean(functionStatement), "Migration 0017 must define the dedicated auth profile trigger function");
-  fail(/returns trigger\b/i.test(functionStatement), "Migration 0017 profile function must return trigger");
-  fail(/security definer\b/i.test(functionStatement), "Migration 0017 profile function must use SECURITY DEFINER");
-  fail(/set search_path\s*=\s*public\b/i.test(functionStatement), "Migration 0017 SECURITY DEFINER function must fix search_path to public");
-  fail(/raw_user_meta_data\s*->>\s*'full_name'/i.test(functionStatement), "Migration 0017 must read metadata full_name");
-  fail(/raw_user_meta_data\s*->>\s*'name'/i.test(functionStatement), "Migration 0017 must support metadata name fallback");
-  fail(/split_part\s*\(\s*coalesce\s*\(\s*new\.email\s*,\s*''\s*\)\s*,\s*'@'\s*,\s*1\s*\)/i.test(functionStatement), "Migration 0017 must support the email local-part fallback");
-  fail(/'học viên'/i.test(functionStatement), "Migration 0017 must use the safe non-empty Học viên fallback");
-  fail(/btrim\s*\(/i.test(functionStatement) && /left\s*\([\s\S]*?,\s*200\s*\)/i.test(functionStatement), "Migration 0017 must trim and bound full_name");
-  fail(/if\s+resolved_full_name\s*=\s*''\s+then[\s\S]*?resolved_full_name\s*:=\s*'học viên'/i.test(functionStatement), "Migration 0017 must never leave full_name empty");
-  fail(/insert\s+into\s+public\.profiles\s*\(\s*id\s*,\s*email\s*,\s*full_name\s*\)/i.test(functionStatement), "Migration 0017 must explicitly insert id, email, and full_name into public.profiles");
-  fail(/values\s*\(\s*new\.id\s*,\s*new\.email\s*,\s*resolved_full_name\s*\)/i.test(functionStatement), "Migration 0017 must map auth user id, email, and resolved full_name");
-  fail(/on\s+conflict\s*\(\s*id\s*\)\s+do\s+nothing/i.test(functionStatement), "Migration 0017 profile insert must be idempotent on id");
+  const functionMatch = functionStatement.match(
+    /^create or replace function public\.handle_auth_user_profile\(\) returns trigger language plpgsql security definer set search_path = public as (\$[a-z_][a-z0-9_]*\$|\$\$)\s*([\s\S]*?)\s*\1$/i
+  );
+  fail(Boolean(functionMatch), "Migration 0017 profile function must use the fixed SECURITY DEFINER header");
+
+  const expectedFunctionBody = normalizeSql(`
+    DECLARE
+        metadata_full_name TEXT;
+        metadata_name TEXT;
+        email_local_part TEXT;
+        resolved_full_name TEXT;
+    BEGIN
+        metadata_full_name := NULLIF(BTRIM(NEW.raw_user_meta_data ->> 'full_name'), '');
+        metadata_name := NULLIF(BTRIM(NEW.raw_user_meta_data ->> 'name'), '');
+        email_local_part := NULLIF(BTRIM(SPLIT_PART(COALESCE(NEW.email, ''), '@', 1)), '');
+
+        resolved_full_name := LEFT(
+            BTRIM(COALESCE(metadata_full_name, metadata_name, email_local_part, 'Học viên')),
+            200
+        );
+        IF resolved_full_name = '' THEN
+            resolved_full_name := 'Học viên';
+        END IF;
+
+        INSERT INTO public.profiles (id, email, full_name)
+        VALUES (NEW.id, NEW.email, resolved_full_name)
+        ON CONFLICT (id) DO NOTHING;
+
+        RETURN NEW;
+    END;
+  `).toLowerCase();
+  fail(
+    functionMatch !== null && normalizeSql(functionMatch[2]).toLowerCase() === expectedFunctionBody,
+    "Migration 0017 function body must exactly match the bounded profile-insert allowlist"
+  );
 
   fail(normalized.includes("drop trigger if exists on_auth_user_created on auth.users"), "Migration 0017 must safely replace the auth signup trigger");
   fail(normalized.includes("create trigger on_auth_user_created after insert on auth.users for each row execute function public.handle_auth_user_profile()"), "Migration 0017 must create an AFTER INSERT trigger on auth.users");
