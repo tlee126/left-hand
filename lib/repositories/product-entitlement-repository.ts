@@ -15,6 +15,8 @@ export interface GrantProductEntitlementInput {
   expiresAt?: string | null;
 }
 
+const GRANT_INPUT_KEYS = new Set(["userId", "productId", "expiresAt"]);
+
 export class ProductEntitlementInputError extends Error {
   constructor(message = "Invalid product entitlement input.") {
     super(message);
@@ -52,12 +54,20 @@ function canonicalUuid(value: unknown): string {
   return value.toLowerCase();
 }
 
+function hasExactKeys(record: object, allowedKeys: ReadonlySet<string>): boolean {
+  const keys = Reflect.ownKeys(record);
+  return keys.length === allowedKeys.size && keys.every((key) => typeof key === "string" && allowedKeys.has(key));
+}
+
 function validateGrantInput(input: unknown): { userId: string; productId: string; expiresAt: string | null } {
   if (input === null || typeof input !== "object" || Array.isArray(input)) {
     throw new ProductEntitlementInputError();
   }
 
   const record = input as Record<string, unknown>;
+  if (!hasExactKeys(record, GRANT_INPUT_KEYS)) {
+    throw new ProductEntitlementInputError();
+  }
   const userId = canonicalUuid(record.userId);
   const productId = canonicalUuid(record.productId);
   let expiresAt: string | null = null;
@@ -142,6 +152,7 @@ export async function revokeProductEntitlement(
   userId: string,
   productId: string
 ): Promise<ProductEntitlement | null> {
+  if (arguments.length !== 2) throw new ProductEntitlementInputError();
   const canonicalUserId = canonicalUuid(userId);
   const canonicalProductId = canonicalUuid(productId);
 

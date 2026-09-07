@@ -13,6 +13,7 @@ let PRODUCT_ENTITLEMENT_SELECT: string;
 
 let mockClientInstance: any = null;
 let mockCreateClientError: unknown = null;
+let mockCreateClientCalls = 0;
 
 before(async () => {
   const moduleLoader = require("node:module") as { _load: (...args: any[]) => unknown };
@@ -29,6 +30,7 @@ before(async () => {
     loaded: true,
     exports: {
       createClient: async () => {
+        mockCreateClientCalls += 1;
         if (mockCreateClientError) throw mockCreateClientError;
         return mockClientInstance;
       }
@@ -48,6 +50,7 @@ before(async () => {
 afterEach(() => {
   mockClientInstance = null;
   mockCreateClientError = null;
+  mockCreateClientCalls = 0;
 });
 
 interface MockQueryCall {
@@ -145,6 +148,11 @@ describe("Task 5.2-C0: product entitlement repository", () => {
     assert.strictEqual(await getActiveProductEntitlement(USER_ID, PRODUCT_ID), null);
   });
 
+  test("returns null when no entitlement row exists", async () => {
+    createMockClient({ queryData: null });
+    assert.strictEqual(await getActiveProductEntitlement(USER_ID, PRODUCT_ID), null);
+  });
+
   test("rejects invalid UUIDs before creating or querying the database", async () => {
     for (const operation of [
       () => getActiveProductEntitlement("not-a-uuid", PRODUCT_ID),
@@ -155,6 +163,7 @@ describe("Task 5.2-C0: product entitlement repository", () => {
     ]) {
       const client = createMockClient();
       await assert.rejects(operation, ProductEntitlementInputError);
+      assert.strictEqual(mockCreateClientCalls, 0);
       assert.strictEqual(client.calls.length, 0);
     }
   });
@@ -164,10 +173,8 @@ describe("Task 5.2-C0: product entitlement repository", () => {
     const result = await grantProductEntitlement({
       userId: USER_ID.toUpperCase(),
       productId: PRODUCT_ID,
-      expiresAt: "2030-01-01T00:00:00.000Z",
-      role: "admin",
-      granted_by: "attacker-controlled-id"
-    } as any);
+      expiresAt: "2030-01-01T00:00:00.000Z"
+    });
 
     assert.deepStrictEqual(result, BASE_ROW);
     assert.deepStrictEqual(client.calls.find((call) => call.method === "insert")?.args, [{
@@ -181,18 +188,45 @@ describe("Task 5.2-C0: product entitlement repository", () => {
     assert.deepStrictEqual(Object.keys(payload).sort(), ["expires_at", "granted_by", "product_id", "status", "user_id"]);
   });
 
+  test("rejects unknown grant fields before creating or querying the database", async () => {
+    for (const input of [
+      { userId: USER_ID, productId: PRODUCT_ID, role: "admin" },
+      { userId: USER_ID, productId: PRODUCT_ID, accountStatus: "approved" },
+      { userId: USER_ID, productId: PRODUCT_ID, approvedBy: ADMIN_ID },
+      { userId: USER_ID, productId: PRODUCT_ID, updatedBy: ADMIN_ID },
+      { userId: USER_ID, productId: PRODUCT_ID, serviceRole: true }
+    ]) {
+      const client = createMockClient();
+      await assert.rejects(() => grantProductEntitlement(input as any), ProductEntitlementInputError);
+      assert.strictEqual(mockCreateClientCalls, 0);
+      assert.strictEqual(client.calls.length, 0);
+    }
+  });
+
   test("revokes by exact user/product IDs and sets revoked status plus timestamp", async () => {
     const client = createMockClient({ queryData: { ...BASE_ROW, status: "revoked", revoked_at: "2026-09-07T00:00:00.000Z" } });
     const result = await revokeProductEntitlement(USER_ID.toUpperCase(), PRODUCT_ID);
     assert.equal(result?.status, "revoked");
     const update = client.calls.find((call) => call.method === "update")?.args[0] as Record<string, unknown>;
-    assert.equal(update.status, "revoked");
+    assert.deepStrictEqual(update, { status: "revoked", revoked_at: update.revoked_at });
     assert.equal(typeof update.revoked_at, "string");
     assert.match(String(update.revoked_at), /^\d{4}-\d{2}-\d{2}T/);
     assert.deepStrictEqual(
       client.calls.filter((call) => call.method === "eq").map((call) => call.args),
       [["user_id", USER_ID], ["product_id", PRODUCT_ID]]
     );
+  });
+
+  test("rejects object or extra positional revoke inputs before creating or querying", async () => {
+    for (const operation of [
+      () => revokeProductEntitlement({ userId: USER_ID, productId: PRODUCT_ID, role: "admin" } as any),
+      () => revokeProductEntitlement(USER_ID, PRODUCT_ID, { grantedBy: ADMIN_ID } as any)
+    ]) {
+      const client = createMockClient();
+      await assert.rejects(operation, ProductEntitlementInputError);
+      assert.strictEqual(mockCreateClientCalls, 0);
+      assert.strictEqual(client.calls.length, 0);
+    }
   });
 
   test("maps client/database failures to generic repository errors without raw details", async () => {
