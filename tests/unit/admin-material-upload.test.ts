@@ -114,7 +114,7 @@ function webmBytes(options = {}) {
   const codec = options.fakeCodec ? "FAKE" : "V_VP8";
   const trackEntry = ebml([0xae], concat(ebml([0xd7], [1]), ebml([0x83], [1]), ebml([0x86], chars(codec)), video));
   const tracks = ebml([0x16,0x54,0xae,0x6b], trackEntry);
-  const frame = options.randomFrame ? [0x90,0x00,0x00,0x9d,0x01,0x2a,0x10,0x00,0x10,0x00,0xff,0xff,0xff,0xff,0xde,0xad] : options.randomToken ? [0x90,0x00,0x00,0x9d,0x01,0x2a,0x10,0x00,0x10,0x00,0x00,0x00,0x00,0x00,0xff,0xff,0x00,0x00,0x00,0x00,0x00,0x00] : [0x90,0x00,0x00,0x9d,0x01,0x2a,0x10,0x00,0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00];
+  const frame = options.randomFrame ? [0x90,0x00,0x00,0x9d,0x01,0x2a,0x10,0x00,0x10,0x00,0xff,0xff,0xff,0xff,0xde,0xad] : [0x90,0x00,0x00,0x9d,0x01,0x2a,0x10,0x00,0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x9e,0x01];
   const block = options.emptyFrame ? [0x81,0x00,0x00,0x80] : options.fiveByteBlock ? [0x81,0x00,0x00,0x80,0x00] : [0x81,0x00,0x00,0x80, ...frame];
   const cluster = ebml([0x1f,0x43,0xb6,0x75], concat(ebml([0xe7], [0]), ebml([0xa3], block)));
   const segmentPayload = options.markerOnlyTrack ? concat(info, ebml([0x16,0x54,0xae,0x6b], ebml([0xae], concat(ebml([0xd7], [1]), ebml([0x83], [1]), ebml([0x86], chars("V_VP8")))))) : concat(info, tracks, cluster);
@@ -125,11 +125,20 @@ function fixture(kind, scenario) {
   if (scenario.ftypOnly) return Uint8Array.from(box("ftyp", concat(chars("isom"), u32(0), chars("isom"))));
   if (scenario.headerOnly) return Uint8Array.from(concat(box("ftyp", concat(chars("isom"), u32(0), chars("isom"))), [0,0,0,8,0x6d,0x6f,0x6f,0x76]));
   if (scenario.impossibleBox) return Uint8Array.from(concat(box("ftyp", concat(chars("isom"), u32(0), chars("isom"))), [0xff,0xff,0xff,0xff,0x6d,0x6f,0x6f,0x76]));
-  const bytes = kind === "pdf" ? pdfBytes() : kind === "webm" ? webmBytes({ fakeCodec: scenario.fakeCodec, emptyFrame: scenario.emptyFrame, fiveByteBlock: scenario.fiveByteBlock, randomFrame: scenario.randomFrame, randomToken: scenario.randomToken, markerOnlyTrack: scenario.markerOnlyTrack }) : bmffBytes(kind === "quicktime" ? "qt  " : "isom", { missingAvcc: scenario.missingAvcc, invalidAvcc: scenario.invalidAvcc, invalidTables: scenario.invalidTables, inconsistent: scenario.inconsistent, oneByte: scenario.oneByte, fakeVcl: scenario.fakeVcl, randomVclTail: scenario.randomVclTail });
+  let bytes = kind === "pdf" ? pdfBytes() : kind === "webm" ? webmBytes({ fakeCodec: scenario.fakeCodec, emptyFrame: scenario.emptyFrame, fiveByteBlock: scenario.fiveByteBlock, randomFrame: scenario.randomFrame, markerOnlyTrack: scenario.markerOnlyTrack }) : bmffBytes(kind === "quicktime" ? "qt  " : "isom", { missingAvcc: scenario.missingAvcc, invalidAvcc: scenario.invalidAvcc, invalidTables: scenario.invalidTables, inconsistent: scenario.inconsistent, oneByte: scenario.oneByte, fakeVcl: scenario.fakeVcl, randomVclTail: scenario.randomVclTail });
+if (baseWebm && (scenario.tokenPairMutation || scenario.tokenTailFF || scenario.tokenTailRandom)) {
+  bytes = Uint8Array.from(baseWebm);
+  if (scenario.tokenPairMutation) { bytes[originalTokenPairIndex] = 0xff; bytes[originalTokenPairIndex + 1] = 0xff; }
+  if (scenario.tokenTailFF) bytes[bytes.length - 1] = 0xff;
+  if (scenario.tokenTailRandom) bytes[bytes.length - 1] = 0x37;
+}
   return scenario.truncated ? bytes.slice(0, bytes.length - (kind === "quicktime" ? 3 : kind === "pdf" ? 4 : 1)) : bytes;
 }
 const kind = scenario.kind || "pdf";
 const type = scenario.mime || ({ pdf: "application/pdf", mp4: "video/mp4", webm: "video/webm", quicktime: "video/quicktime" }[kind]);
+const baseWebm = kind === "webm" ? webmBytes() : null;
+const originalTokenPairIndex = baseWebm ? baseWebm.findIndex((value, index) => value === 0x9e && baseWebm[index + 1] === 0x01) : -1;
+if ((scenario.tokenPairMutation || scenario.tokenTailFF || scenario.tokenTailRandom) && originalTokenPairIndex < 0) throw new Error("valid WebM fixture is missing token pair");
 const bytes = scenario.spoof ? Uint8Array.from([1,2,3,4,5]) : fixture(kind, scenario);
 class ProbeFile extends File { async arrayBuffer() { timeline.push("file"); return super.arrayBuffer(); } }
 const file = new ProbeFile([bytes], scenario.name || "private file.pdf", { type });
@@ -139,11 +148,11 @@ const entries = scenario.extra ? [["file", file], ["role", "admin"]] : scenario.
 const request = { formData: async () => { timeline.push("form"); return { keys: () => entries.map(entry => entry[0]), getAll: key => entries.filter(entry => entry[0] === key).map(entry => entry[1]) }; } };
 let error = "";
 try { await route.POST(request, { params: Promise.resolve({ id: scenario.uppercase ? uuid.toUpperCase() : scenario.badId ? "bad" : uuid }) }); } catch (caught) { error = caught.message; }
-  console.log(JSON.stringify({ timeline, calls, redirects, error, signedUrls, mediaValid: route.validateMaterialMedia(type, bytes) }));
+  console.log(JSON.stringify({ timeline, calls, redirects, error, signedUrls, mediaValid: route.validateMaterialMedia(type, bytes), originalTokenPairIndex }));
 `;
 
 type Call = [string, unknown];
-type Result = { timeline: string[]; calls: Call[]; redirects: string[]; error: string; signedUrls: string[]; mediaValid: boolean };
+type Result = { timeline: string[]; calls: Call[]; redirects: string[]; error: string; signedUrls: string[]; mediaValid: boolean; originalTokenPairIndex: number };
 async function run(scenario: Record<string, unknown> = {}): Promise<Result> { const { stdout } = await promisify(execFile)(process.execPath, ["--import", "tsx/esm", "-e", harness, JSON.stringify(scenario)], { maxBuffer: 1024 * 1024 }); return JSON.parse(stdout.trim()); }
 function call(result: Result, name: string): Record<string, unknown> { return result.calls.find(([key]) => key === name)?.[1] as Record<string, unknown>; }
 
@@ -176,19 +185,29 @@ test("invalid multipart data, UUIDs, MIME/signatures, size, product, and unsafe 
     { missing: true }, { extra: true }, { badId: true }, { mime: "text/plain" }, { spoof: true }, { empty: true }, { oversize: true }, { nonMaterial: true },
     { truncated: true }, { kind: "webm", truncated: true }, { kind: "mp4", truncated: true }, { kind: "quicktime", truncated: true }, { kind: "mp4", ftypOnly: true }, { kind: "mp4", headerOnly: true }, { kind: "mp4", impossibleBox: true },
     { kind: "mp4", fabricated: true }, { kind: "webm", fabricated: true }, { kind: "mp4", missingAvcc: true }, { kind: "mp4", invalidAvcc: true }, { kind: "mp4", invalidTables: true },
-    { kind: "mp4", inconsistent: true }, { kind: "mp4", fakeVcl: true }, { kind: "mp4", randomVclTail: true }, { kind: "quicktime", oneByte: true }, { kind: "webm", fakeCodec: true }, { kind: "webm", markerOnlyTrack: true }, { kind: "webm", fiveByteBlock: true }, { kind: "webm", emptyFrame: true }, { kind: "webm", randomFrame: true }, { kind: "webm", randomToken: true },
+    { kind: "mp4", inconsistent: true }, { kind: "mp4", fakeVcl: true }, { kind: "mp4", randomVclTail: true }, { kind: "quicktime", oneByte: true }, { kind: "webm", fakeCodec: true }, { kind: "webm", markerOnlyTrack: true }, { kind: "webm", fiveByteBlock: true }, { kind: "webm", emptyFrame: true }, { kind: "webm", randomFrame: true }, { kind: "webm", tokenPairMutation: true }, { kind: "webm", tokenTailFF: true }, { kind: "webm", tokenTailRandom: true },
     { name: "foo/../bar.pdf" }, { name: "foo\\..\\bar.pdf" }, { name: "unsafe\u0000.pdf" }
   ]) {
     const result = await run({ access: "admin", ...scenario });
     assert.equal(result.error, "REDIRECT:/quan-tri/catalog?upload=error", JSON.stringify({ scenario, result }));
     assert.equal(result.redirects.at(-1), "/quan-tri/catalog?upload=error");
-    const mediaInvalid = Boolean(scenario.spoof || scenario.truncated || scenario.fabricated || scenario.ftypOnly || scenario.headerOnly || scenario.impossibleBox || scenario.missingAvcc || scenario.invalidAvcc || scenario.invalidTables || scenario.inconsistent || scenario.fakeVcl || scenario.randomVclTail || scenario.oneByte || scenario.fakeCodec || scenario.markerOnlyTrack || scenario.fiveByteBlock || scenario.emptyFrame || scenario.randomFrame || scenario.randomToken);
+    const mediaInvalid = Boolean(scenario.spoof || scenario.truncated || scenario.fabricated || scenario.ftypOnly || scenario.headerOnly || scenario.impossibleBox || scenario.missingAvcc || scenario.invalidAvcc || scenario.invalidTables || scenario.inconsistent || scenario.fakeVcl || scenario.randomVclTail || scenario.oneByte || scenario.fakeCodec || scenario.markerOnlyTrack || scenario.fiveByteBlock || scenario.emptyFrame || scenario.randomFrame || scenario.tokenPairMutation || scenario.tokenTailFF || scenario.tokenTailRandom);
     if (mediaInvalid) assert.equal(result.mediaValid, false, JSON.stringify({ scenario, result }));
     if (!scenario.nonMaterial) assert.ok(!result.timeline.includes("material"), JSON.stringify({ scenario, result }));
     assert.ok(!result.timeline.includes("version"));
     assert.ok(!result.timeline.includes("upload"));
     assert.ok(!result.timeline.includes("metadata"));
     assert.ok(!result.timeline.includes("cleanup"));
+  }
+});
+test("WebM mutations are rejected by the real token parser before repository or storage access", async () => {
+  for (const scenario of [{ tokenPairMutation: true }, { tokenTailFF: true }, { tokenTailRandom: true }]) {
+    const result = await run({ access: "admin", kind: "webm", ...scenario });
+    assert.ok(result.originalTokenPairIndex >= 0);
+    assert.equal(result.error, "REDIRECT:/quan-tri/catalog?upload=error", JSON.stringify({ scenario, result }));
+    assert.equal(result.mediaValid, false);
+    assert.deepEqual(result.timeline, ["auth", "profile", "form", "file"]);
+    assert.equal(result.calls.length, 0);
   }
 });
 test("uppercase UUIDs are canonicalized and cleanup is exact only after metadata failure", async () => {

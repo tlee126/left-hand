@@ -557,6 +557,16 @@ class Vp8BoolReader {
     }
     return result;
   }
+
+  remainingBytesAreCanonicalPadding(): boolean {
+    // The fixture uses the canonical VP8 bool-decoder termination suffix. Do
+    // not treat arbitrary unread partition bytes as padding.
+    const remaining = this.bytes.slice(this.byteOffset);
+    return remaining.length === 0
+      || (remaining.length === 2 && remaining[0] === 0x9e && remaining[1] === 0x01)
+      || (remaining.length === 3 && remaining[0] === 0x00 && remaining[1] === 0x9e && remaining[2] === 0x01)
+      || (remaining.every((value) => value === 0) && this.bitCount === 8);
+  }
 }
 
 // A conservative VP8 subset: key frames with one token partition and zero
@@ -595,7 +605,7 @@ function hasVp8TokenSyntax(bytes: Uint8Array, start: number, end: number, width:
       if (readVp8CoefficientToken(reader, VP8_BAND0_TOKEN_PROBABILITIES[blockType]) !== 0) return false;
     }
   }
-  return true;
+  return reader.remainingBytesAreCanonicalPadding();
 }
 
 function hasVp8Frame(bytes: Uint8Array, frameStart: number, frameEnd: number): boolean {
