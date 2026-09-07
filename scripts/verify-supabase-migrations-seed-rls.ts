@@ -235,6 +235,33 @@ function normalizeMigrationStatement(statement: string): string {
   return normalizeSql(statement).replace(/"([A-Za-z_][A-Za-z0-9_$]*)"/g, "$1").toLowerCase();
 }
 
+function splitTopLevelClauses(value: string): string[] {
+  const clauses: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let inSingleQuote = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === "'" && value[index + 1] === "'") {
+      index += 1;
+      continue;
+    }
+    if (character === "'") {
+      inSingleQuote = !inSingleQuote;
+      continue;
+    }
+    if (inSingleQuote) continue;
+    if (character === "(") depth += 1;
+    if (character === ")") depth -= 1;
+    if (character === "," && depth === 0) {
+      clauses.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  clauses.push(value.slice(start));
+  return clauses.map(normalizeMigrationStatement).filter(Boolean);
+}
+
 function extractPolicyClause(policy: string, clauseName: "USING" | "WITH CHECK"): string | null {
   const clauseStart = new RegExp(`\\b${clauseName}\\s*\\(`, "i").exec(policy);
   if (!clauseStart) return null;
@@ -690,26 +717,43 @@ export function assertMigration0013Contract(sql0013: string): void {
 
   const table = normalized[0] || "";
   fail(table.startsWith("create table public.material_assets ("), "Migration 0013 must create public.material_assets");
-  for (const fragment of [
-    "id uuid primary key default gen_random_uuid()",
-    "product_id uuid not null references public.products(id) on delete cascade",
-    "uploaded_by uuid references auth.users(id) on delete set null",
-    "storage_path text not null unique",
-    "original_name text not null",
-    "mime_type text not null",
-    "byte_size bigint not null",
-    "version integer not null",
-    "visibility text not null default 'private'",
-    "created_at timestamptz not null default now()",
-    "updated_at timestamptz not null default now()",
-    "material_assets_byte_size_positive check (byte_size > 0)",
-    "material_assets_version_positive check (version >= 1)",
-    "material_assets_visibility_private check (visibility = 'private')",
-    "material_assets_storage_path_materials check ( storage_path ~ '^materials/",
-    "material_assets_product_version_unique unique (product_id, version)",
-    "foreign key (product_id) references public.materials(product_id) on delete cascade"
-  ]) fail(table.includes(fragment), `Migration 0013 is missing required material_assets definition: ${fragment}`);
-  fail(table.includes("/v[1-9][0-9]*/"), "Migration 0013 storage paths must preserve the materials version convention");
+  const tableOpening = table.indexOf("(");
+  const tableClosing = table.lastIndexOf(")");
+  fail(tableOpening > 0 && tableClosing > tableOpening, "Migration 0013 must contain a parseable material_assets table body");
+  const definitions = splitTopLevelClauses(table.slice(tableOpening + 1, tableClosing));
+  const expectedColumns = new Map([
+    ["id", "id uuid primary key default gen_random_uuid()"],
+    ["product_id", "product_id uuid not null references public.products(id) on delete cascade"],
+    ["uploaded_by", "uploaded_by uuid references auth.users(id) on delete set null"],
+    ["storage_path", "storage_path text not null unique"],
+    ["original_name", "original_name text not null"],
+    ["mime_type", "mime_type text not null"],
+    ["byte_size", "byte_size bigint not null"],
+    ["version", "version integer not null"],
+    ["visibility", "visibility text not null default 'private'"],
+    ["created_at", "created_at timestamptz not null default now()"],
+    ["updated_at", "updated_at timestamptz not null default now()"]
+  ]);
+  const columnDefinitions = definitions.filter((definition) => !/^constraint\b|^foreign key\b/i.test(definition));
+  fail(columnDefinitions.length === expectedColumns.size, "Migration 0013 must contain exactly the expected material_assets columns");
+  const actualColumns = new Map<string, string>();
+  for (const definition of columnDefinitions) {
+    const name = definition.match(/^([a-z_][a-z0-9_]*)\b/i)?.[1];
+    fail(Boolean(name) && !actualColumns.has(name!.toLowerCase()), "Migration 0013 must not contain duplicate or unnamed columns");
+    actualColumns.set(name!.toLowerCase(), definition);
+  }
+  fail(actualColumns.size === expectedColumns.size && [...expectedColumns].every(([name, definition]) => actualColumns.get(name) === definition), "Migration 0013 column definitions must match the exact metadata contract");
+
+  const expectedConstraints = [
+    "constraint material_assets_byte_size_positive check (byte_size > 0)",
+    "constraint material_assets_version_positive check (version >= 1)",
+    "constraint material_assets_visibility_private check (visibility = 'private')",
+    "constraint material_assets_storage_path_materials check ( storage_path ~ '^materials/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/v[1-9][0-9]*/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[a-z0-9][a-z0-9._-]*$' )",
+    "constraint material_assets_product_version_unique unique (product_id, version)",
+    "constraint material_assets_product_material_fkey foreign key (product_id) references public.materials(product_id) on delete cascade"
+  ];
+  const actualConstraints = definitions.filter((definition) => /^constraint\b|^foreign key\b/i.test(definition));
+  fail(actualConstraints.length === expectedConstraints.length && expectedConstraints.every((constraint) => actualConstraints.includes(constraint)), "Migration 0013 constraints and foreign keys must match exactly");
   fail(normalized[1] === "alter table public.material_assets enable row level security", "Migration 0013 must enable RLS");
   fail(normalized[2] === "revoke all on table public.material_assets from anon, public, authenticated", "Migration 0013 must revoke broad metadata privileges");
   fail(normalized[3] === "grant select, insert on table public.material_assets to authenticated", "Migration 0013 must grant only metadata SELECT and INSERT to authenticated");

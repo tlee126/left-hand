@@ -38,7 +38,13 @@ export interface CreateMaterialAssetInput {
 }
 
 function validateCreateInput(input: CreateMaterialAssetInput): void {
-  if (!isValidMaterialUuid(input.productId) || typeof input.storagePath !== "string" || !input.storagePath.startsWith(`materials/${input.productId}/v${input.version}/`) || input.storagePath.includes("..") || !isValidMaterialUuid(input.storagePath.split("/")[3]?.slice(0, 36)) || sanitizeMaterialFilename(input.originalName) !== input.storagePath.split("/")[3]?.slice(37) || !isSupportedMaterialMimeType(input.mimeType) || !Number.isSafeInteger(input.byteSize) || input.byteSize <= 0 || !Number.isSafeInteger(input.version) || input.version < 1) {
+  if (!isValidMaterialUuid(input.productId)) throw new MaterialAssetInputError();
+  const productId = input.productId.toLowerCase();
+  const pathSegments = typeof input.storagePath === "string" ? input.storagePath.split("/") : [];
+  const pathPart = pathSegments[3];
+  const generatedId = pathPart?.slice(0, 36);
+  const expectedPathPattern = new RegExp(`^materials/${productId}/v[1-9][0-9]*/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}-[a-z0-9][a-z0-9._-]*$`);
+  if (typeof input.storagePath !== "string" || pathSegments.length !== 4 || !expectedPathPattern.test(input.storagePath) || input.storagePath.includes("..") || !generatedId || !isValidMaterialUuid(generatedId) || sanitizeMaterialFilename(input.originalName) !== pathPart?.slice(37) || !isSupportedMaterialMimeType(input.mimeType) || !Number.isSafeInteger(input.byteSize) || input.byteSize <= 0 || !Number.isSafeInteger(input.version) || input.version < 1 || !input.storagePath.startsWith(`materials/${productId}/v${input.version}/`)) {
     throw new MaterialAssetInputError();
   }
 }
@@ -49,9 +55,10 @@ function validateProductIds(productIds: readonly string[]): void {
 
 export async function getNextMaterialAssetVersion(productId: string): Promise<number> {
   if (!isValidMaterialUuid(productId)) throw new MaterialAssetInputError();
+  const canonicalProductId = productId.toLowerCase();
   try {
     const supabase = await createClient();
-    const { data, error } = await supabase.from("material_assets").select("version").eq("product_id", productId).order("version", { ascending: false }).limit(1).maybeSingle();
+    const { data, error } = await supabase.from("material_assets").select("version").eq("product_id", canonicalProductId).order("version", { ascending: false }).limit(1).maybeSingle();
     if (error) throw new Error();
     return (data?.version ?? 0) + 1;
   } catch {
@@ -61,9 +68,10 @@ export async function getNextMaterialAssetVersion(productId: string): Promise<nu
 
 export async function isMaterialProduct(productId: string): Promise<boolean> {
   if (!isValidMaterialUuid(productId)) throw new MaterialAssetInputError();
+  const canonicalProductId = productId.toLowerCase();
   try {
     const supabase = await createClient();
-    const { data, error } = await supabase.from("materials").select("product_id").eq("product_id", productId).maybeSingle();
+    const { data, error } = await supabase.from("materials").select("product_id").eq("product_id", canonicalProductId).maybeSingle();
     if (error) throw new Error();
     return data !== null;
   } catch {
@@ -73,12 +81,13 @@ export async function isMaterialProduct(productId: string): Promise<boolean> {
 
 export async function createMaterialAsset(input: CreateMaterialAssetInput): Promise<MaterialAsset> {
   validateCreateInput(input);
+  const productId = input.productId.toLowerCase();
   try {
     const supabase = await createClient();
     const { data: authData, error: authError } = await supabase.auth.getUser();
     if (authError || !authData.user || !isValidMaterialUuid(authData.user.id)) throw new Error();
     const payload: MaterialAssetInsert = {
-      product_id: input.productId,
+      product_id: productId,
       uploaded_by: authData.user.id,
       storage_path: input.storagePath,
       original_name: input.originalName,
