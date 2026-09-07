@@ -114,11 +114,35 @@ function webmBytes(options = {}) {
   const codec = options.fakeCodec ? "FAKE" : "V_VP8";
   const trackEntry = ebml([0xae], concat(ebml([0xd7], [1]), ebml([0x83], [1]), ebml([0x86], chars(codec)), video));
   const tracks = ebml([0x16,0x54,0xae,0x6b], trackEntry);
-  const frame = options.randomFrame ? [0x90,0x00,0x00,0x9d,0x01,0x2a,0x10,0x00,0x10,0x00,0xff,0xff,0xff,0xff,0xde,0xad] : [0x90,0x00,0x00,0x9d,0x01,0x2a,0x10,0x00,0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x9e,0x01];
+  const tokenPartition = [...new Array(19).fill(0), 0x9e, 0x01, 0x00];
+  const frame = options.randomFrame ? [0x90,0x00,0x00,0x9d,0x01,0x2a,0x10,0x00,0x10,0x00,0xff,0xff,0xff,0xff,0xde,0xad] : [0x90,0x00,0x00,0x9d,0x01,0x2a,0x30,0x00,0x30,0x00,0x00,0x00,0x00,0x00, ...tokenPartition];
   const block = options.emptyFrame ? [0x81,0x00,0x00,0x80] : options.fiveByteBlock ? [0x81,0x00,0x00,0x80,0x00] : [0x81,0x00,0x00,0x80, ...frame];
   const cluster = ebml([0x1f,0x43,0xb6,0x75], concat(ebml([0xe7], [0]), ebml([0xa3], block)));
   const segmentPayload = options.markerOnlyTrack ? concat(info, ebml([0x16,0x54,0xae,0x6b], ebml([0xae], concat(ebml([0xd7], [1]), ebml([0x83], [1]), ebml([0x86], chars("V_VP8")))))) : concat(info, tracks, cluster);
   return Uint8Array.from(concat(ebmlHeader, [0x18,0x53,0x80,0x67], vint(segmentPayload.length), segmentPayload));
+}
+function readFixtureVint(bytes, offset) {
+  if (offset < 0 || offset >= bytes.length) throw new Error("invalid fixture VINT offset");
+  let mask = 0x80;
+  let length = 1;
+  while (length <= 8 && (bytes[offset] & mask) === 0) { mask >>= 1; length += 1; }
+  if (length > 8 || offset + length > bytes.length) throw new Error("invalid fixture VINT");
+  let value = bytes[offset] & (mask - 1);
+  for (let index = 1; index < length; index += 1) value = value * 256 + bytes[offset + index];
+  return { length, value };
+}
+function findFixtureTokenPartition(bytes) {
+  const blockId = bytes.lastIndexOf(0xa3);
+  const blockSize = readFixtureVint(bytes, blockId + 1);
+  const blockDataStart = blockId + 1 + blockSize.length;
+  const blockEnd = blockDataStart + blockSize.value;
+  const track = readFixtureVint(bytes, blockDataStart);
+  const frameStart = blockDataStart + track.length + 3;
+  const tag = bytes[frameStart] | (bytes[frameStart + 1] << 8) | (bytes[frameStart + 2] << 16);
+  const firstPartitionSize = tag >> 5;
+  const tokenStart = frameStart + 10 + firstPartitionSize;
+  if (blockEnd !== bytes.length || tokenStart >= blockEnd) throw new Error("invalid fixture token partition");
+  return { frameStart, tokenStart, tokenEnd: blockEnd };
 }
 function fixture(kind, scenario) {
   if (scenario.fabricated) return kind === "webm" ? Uint8Array.from(concat([0x1a,0x45,0xdf,0xa3], vint(6), ebml([0x42,0x82], chars("webm")), [0x18,0x53,0x80,0x67,0x81,0x00])) : Uint8Array.from(concat(box("ftyp", concat(chars(kind === "quicktime" ? "qt  " : "isom"), u32(0), chars(kind === "quicktime" ? "qt  " : "isom"))), box("avc1", new Array(78).fill(0)), box("mdat", [0])));
@@ -129,16 +153,20 @@ function fixture(kind, scenario) {
 if (baseWebm && (scenario.tokenPairMutation || scenario.tokenTailFF || scenario.tokenTailRandom)) {
   bytes = Uint8Array.from(baseWebm);
   if (scenario.tokenPairMutation) { bytes[originalTokenPairIndex] = 0xff; bytes[originalTokenPairIndex + 1] = 0xff; }
-  if (scenario.tokenTailFF) bytes[bytes.length - 1] = 0xff;
-  if (scenario.tokenTailRandom) bytes[bytes.length - 1] = 0x37;
+  if (scenario.tokenTailFF) bytes[tokenPartitionEnd - 1] = 0xff;
+  if (scenario.tokenTailRandom) bytes[tokenPartitionEnd - 1] = 0x37;
 }
   return scenario.truncated ? bytes.slice(0, bytes.length - (kind === "quicktime" ? 3 : kind === "pdf" ? 4 : 1)) : bytes;
 }
 const kind = scenario.kind || "pdf";
 const type = scenario.mime || ({ pdf: "application/pdf", mp4: "video/mp4", webm: "video/webm", quicktime: "video/quicktime" }[kind]);
 const baseWebm = kind === "webm" ? webmBytes() : null;
-const originalTokenPairIndex = baseWebm ? baseWebm.findIndex((value, index) => value === 0x9e && baseWebm[index + 1] === 0x01) : -1;
+const tokenPartition = baseWebm ? findFixtureTokenPartition(baseWebm) : null;
+const originalTokenPairIndex = tokenPartition ? baseWebm.findIndex((value, index) => index >= tokenPartition.tokenStart && index + 1 < tokenPartition.tokenEnd && value === 0x9e && baseWebm[index + 1] === 0x01) : -1;
+const tokenPartitionStart = tokenPartition?.tokenStart ?? -1;
+const tokenPartitionEnd = tokenPartition?.tokenEnd ?? -1;
 if ((scenario.tokenPairMutation || scenario.tokenTailFF || scenario.tokenTailRandom) && originalTokenPairIndex < 0) throw new Error("valid WebM fixture is missing token pair");
+if ((scenario.tokenPairMutation || scenario.tokenTailFF || scenario.tokenTailRandom) && (originalTokenPairIndex < tokenPartitionStart || originalTokenPairIndex + 1 >= tokenPartitionEnd)) throw new Error("token pair is outside the token partition");
 const bytes = scenario.spoof ? Uint8Array.from([1,2,3,4,5]) : fixture(kind, scenario);
 class ProbeFile extends File { async arrayBuffer() { timeline.push("file"); return super.arrayBuffer(); } }
 const file = new ProbeFile([bytes], scenario.name || "private file.pdf", { type });
@@ -148,11 +176,14 @@ const entries = scenario.extra ? [["file", file], ["role", "admin"]] : scenario.
 const request = { formData: async () => { timeline.push("form"); return { keys: () => entries.map(entry => entry[0]), getAll: key => entries.filter(entry => entry[0] === key).map(entry => entry[1]) }; } };
 let error = "";
 try { await route.POST(request, { params: Promise.resolve({ id: scenario.uppercase ? uuid.toUpperCase() : scenario.badId ? "bad" : uuid }) }); } catch (caught) { error = caught.message; }
-  console.log(JSON.stringify({ timeline, calls, redirects, error, signedUrls, mediaValid: route.validateMaterialMedia(type, bytes), originalTokenPairIndex }));
+const mutationOffset = tokenPartition && scenario.tokenPairMutation ? originalTokenPairIndex : tokenPartition && (scenario.tokenTailFF || scenario.tokenTailRandom) ? tokenPartition.tokenEnd - 1 : -1;
+const frameHeaderUnchanged = tokenPartition ? bytes.slice(tokenPartition.frameStart, tokenPartition.tokenStart).every((value, index) => value === baseWebm[index + tokenPartition.frameStart]) : false;
+const tokenPrefixUnchanged = mutationOffset >= 0 ? bytes.slice(tokenPartitionStart, mutationOffset).every((value, index) => value === baseWebm[index + tokenPartitionStart]) : false;
+  console.log(JSON.stringify({ timeline, calls, redirects, error, signedUrls, mediaValid: route.validateMaterialMedia(type, bytes), originalTokenPairIndex, tokenPartitionStart, tokenPartitionEnd, frameHeaderUnchanged, tokenPrefixUnchanged }));
 `;
 
 type Call = [string, unknown];
-type Result = { timeline: string[]; calls: Call[]; redirects: string[]; error: string; signedUrls: string[]; mediaValid: boolean; originalTokenPairIndex: number };
+type Result = { timeline: string[]; calls: Call[]; redirects: string[]; error: string; signedUrls: string[]; mediaValid: boolean; originalTokenPairIndex: number; tokenPartitionStart: number; tokenPartitionEnd: number; frameHeaderUnchanged: boolean; tokenPrefixUnchanged: boolean };
 async function run(scenario: Record<string, unknown> = {}): Promise<Result> { const { stdout } = await promisify(execFile)(process.execPath, ["--import", "tsx/esm", "-e", harness, JSON.stringify(scenario)], { maxBuffer: 1024 * 1024 }); return JSON.parse(stdout.trim()); }
 function call(result: Result, name: string): Record<string, unknown> { return result.calls.find(([key]) => key === name)?.[1] as Record<string, unknown>; }
 
@@ -201,9 +232,15 @@ test("invalid multipart data, UUIDs, MIME/signatures, size, product, and unsafe 
   }
 });
 test("WebM mutations are rejected by the real token parser before repository or storage access", async () => {
+  const valid = await run({ access: "admin", kind: "webm" });
+  assert.equal(valid.mediaValid, true);
+  assert.equal(valid.error, "REDIRECT:/quan-tri/catalog?upload=success");
   for (const scenario of [{ tokenPairMutation: true }, { tokenTailFF: true }, { tokenTailRandom: true }]) {
     const result = await run({ access: "admin", kind: "webm", ...scenario });
-    assert.ok(result.originalTokenPairIndex >= 0);
+    assert.ok(result.originalTokenPairIndex >= result.tokenPartitionStart);
+    assert.ok(result.originalTokenPairIndex + 1 < result.tokenPartitionEnd);
+    assert.equal(result.frameHeaderUnchanged, true);
+    assert.equal(result.tokenPrefixUnchanged, true);
     assert.equal(result.error, "REDIRECT:/quan-tri/catalog?upload=error", JSON.stringify({ scenario, result }));
     assert.equal(result.mediaValid, false);
     assert.deepEqual(result.timeline, ["auth", "profile", "form", "file"]);
