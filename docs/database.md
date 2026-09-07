@@ -3,7 +3,7 @@
 This document outlines the PostgreSQL database schema for the LEFT HAND learning platform, designed for Supabase.
 
 > [!NOTE]
-> **Status:** Topological migrations `0001_core_schema.sql` through `0014_product_entitlements.sql` and idempotent `supabase/seed.sql` are prepared locally and verified via automated contract checks. They have **NOT** yet been applied to the hosted Supabase project.
+> **Status:** Topological migrations `0001_core_schema.sql` through `0015_learning_progress.sql` and idempotent `supabase/seed.sql` are prepared locally and verified via automated contract checks. They have **NOT** yet been applied to the hosted Supabase project.
 
 ---
 
@@ -11,7 +11,7 @@ This document outlines the PostgreSQL database schema for the LEFT HAND learning
 
 The schema employs a normalized, typed relational model separating core product identity from specialized format metadata:
 
-| Table | Primary Key | Description |
+| Table | Primary / Unique Key | Description |
 | :--- | :--- | :--- |
 | `profiles` | `id` (UUID) | User account profile data (full name, email, phone, faculty, student code, avatar). Anchors future authentication. |
 | `subjects` | `id` (UUID) | Canonical academic subjects (e.g. *Kế toán tài chính 1*, *Xác suất thống kê*). |
@@ -19,6 +19,7 @@ The schema employs a normalized, typed relational model separating core product 
 | `materials` | `product_id` (UUID FK) | 1-to-1 extension of `products` for study guides, PDFs, and formula cheat-sheets (page counts, tags, deliverables, target audience). |
 | `material_assets` | `id` (UUID) | Immutable metadata for each private PDF/video version uploaded for a material product. |
 | `product_entitlements` | `id` (UUID) | One user-to-product entitlement source row with active, revoked, or expired lifecycle state. |
+| `learning_progress` | Unique `(user_id, product_id, item_type, item_id)` | Student-owned progress for entitled material and lesson items, with bounded watch percentage and lifecycle timestamps. |
 | `courses` | `product_id` (UUID FK) | 1-to-1 extension of `products` for live review classes and video courses (format, session count, schedule, mentor, syllabus, enrollment status). |
 | `course_lessons` | `id` (UUID) | 1-to-N lessons / syllabus items under a specific course (order index, lesson title, duration). |
 | `tutors` | `product_id` (UUID FK) | 1-to-1 extension of `products` for 1-on-1 and small group peer tutors (name, faculty, format description, strengths, bio). |
@@ -101,6 +102,17 @@ erDiagram
         text status
     }
 
+    LEARNING_PROGRESS {
+        uuid user_id FK
+        uuid product_id FK
+        text item_type
+        uuid item_id
+        text status
+        numeric watched_percent
+        timestamptz started_at
+        timestamptz completed_at
+    }
+
     SUBJECTS ||--o{ PRODUCTS : "subject_id"
     PRODUCTS ||--o| MATERIALS : "1-to-1"
     PRODUCTS ||--o| COURSES : "1-to-1"
@@ -108,6 +120,7 @@ erDiagram
     COURSES ||--o{ COURSE_LESSONS : "course_id"
     TUTORS ||--o{ TUTOR_SUBJECTS : "tutor_product_id"
     SUBJECTS ||--o{ TUTOR_SUBJECTS : "subject_id"
+    PRODUCTS ||--o{ LEARNING_PROGRESS : "product_id"
 ```
 
 ---
@@ -128,7 +141,7 @@ erDiagram
 ## 4. Security & Row Level Security (RLS) Policy
 
 - **Supabase Auth Integration:** `profiles.id` is explicitly anchored to `auth.users(id)` with `ON DELETE CASCADE`. No detached or unauthenticated profile records can exist.
-- **RLS Enabled:** All 8 application tables (`profiles`, `subjects`, `products`, `materials`, `courses`, `course_lessons`, `tutors`, `tutor_subjects`) have `ROW LEVEL SECURITY` enabled by default.
+- **RLS Enabled:** All application tables have `ROW LEVEL SECURITY` enabled. Catalog reads, profiles, entitlements, private-material metadata, and learning progress each have separate policies.
 - **Public Catalog Read Access (`0002_public_catalog_read_policies.sql` & `0003_public_catalog_table_grants.sql`):**
   - Schema `USAGE` on `public` and table-level `SELECT` privileges are granted to `anon` and `authenticated` roles for catalog tables (`subjects`, `products`, `materials`, `courses`, `course_lessons`, `tutors`, `tutor_subjects`).
   - Public anonymous (`anon`) and authenticated (`authenticated`) users can query catalog items through Row Level Security.
@@ -152,13 +165,14 @@ erDiagram
 - **Private Material Storage Foundation (`0012_private_material_storage.sql`):** Supabase Storage bucket `materials` is private (`public = false`). Object `SELECT`, `INSERT`, `UPDATE`, and `DELETE` access on `storage.objects` is limited to authenticated users whose matching `public.profiles` row has role `admin` and account status `approved`. Public and anonymous access is denied. Upload workflows and signed URLs are intentionally deferred to later tasks.
 - **Material Asset Metadata (`0013_material_asset_metadata.sql`):** `material_assets` records the product, uploader, original filename, MIME type, byte size, private visibility, storage path, and monotonically increasing version of each upload. Its product must also exist in `materials`, so a course or tutor product cannot receive a material file. RLS grants metadata `SELECT` and `INSERT` only to approved authenticated admins.
 - **Product Entitlements (`0014_product_entitlements.sql`):** `product_entitlements` is the entitlement source of truth keyed uniquely by `(user_id, product_id)`. It stores only entitlement lifecycle and audit timestamps, requires valid status/expiry/revocation combinations, and has a lookup index on `(user_id, product_id, status)`. Authenticated users can read only their own rows; approved authenticated admins can read all rows and insert, update, or delete them. No payment, order, checkout, webhook, storage, or signed-URL data is stored here.
+- **Learning Progress (`0015_learning_progress.sql`):** `learning_progress` is keyed uniquely by `(user_id, product_id, item_type, item_id)`. `item_type` is limited to `material` or `lesson`, `status` is limited to `not_started`, `in_progress`, or `completed`, and `watched_percent` is constrained to `0`–`100`. Authenticated users can select, insert, and update only rows whose `user_id = auth.uid()`; there is no anonymous, public, admin-wide, delete, service-role, or bypass-RLS access. The `updated_at` trigger reuses `update_updated_at_column()` from migration 0004.
 
 ### Private material file convention
 
 - Files are stored only in the private `materials` bucket using `materials/<product-id>/v<version>/<generated-id>-<sanitized-filename>`.
 - Allowed uploads are PDF (maximum 20 MiB) and MP4, WebM, or QuickTime video (maximum 500 MiB). Server validation checks both MIME type and a practical file signature.
 - Uploading creates a new version. Neither previous metadata rows nor previous storage objects are overwritten or deleted.
-- Signed URLs and entitlement-based learner access are intentionally deferred to Task 5.2-C.
+- Signed URLs and entitlement-based learner access are enforced by the existing server-side entitlement and signed-URL boundaries.
 
 ---
 
@@ -194,6 +208,7 @@ psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0011_a
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0012_private_material_storage.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0013_material_asset_metadata.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0014_product_entitlements.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0015_learning_progress.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/seed.sql
 ```
 

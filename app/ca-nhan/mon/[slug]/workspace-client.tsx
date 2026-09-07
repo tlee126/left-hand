@@ -1,20 +1,120 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, BookOpen, Download, FileText, Home, Sparkles } from "lucide-react";
 import { Header } from "@/components/site/header";
 import { Footer } from "@/components/site/footer";
 import { FloatingActions } from "@/components/site/floating-actions";
+import type {
+  LearningProgress,
+  LearningProgressItemType,
+  UpsertLearningProgressInput
+} from "@/lib/repositories/learning-progress-repository";
 import type { StudentWorkspaceData } from "@/lib/repositories/student-workspace-repository";
 
-interface SubjectWorkspaceClientProps { workspace: StudentWorkspaceData; }
+interface SubjectWorkspaceClientProps {
+  workspace: StudentWorkspaceData & { progress?: LearningProgress[] };
+}
 type TabKey = "overview" | "documents" | "courses" | "unavailable";
+type ProgressMap = Record<string, LearningProgress>;
+type RetryMap = Record<string, UpsertLearningProgressInput>;
+
+function progressKey(productId: string, itemType: LearningProgressItemType, itemId: string): string {
+  return `${productId}:${itemType}:${itemId}`;
+}
+
+function makeProgressMap(progress: LearningProgress[] | undefined): ProgressMap {
+  return (progress ?? []).reduce<ProgressMap>((result, row) => {
+    result[progressKey(row.product_id, row.item_type, row.item_id)] = row;
+    return result;
+  }, {});
+}
+
+function completedProgress(
+  previous: LearningProgress | undefined,
+  productId: string,
+  itemType: LearningProgressItemType,
+  itemId: string
+): UpsertLearningProgressInput {
+  const now = new Date().toISOString();
+  return {
+    productId,
+    itemType,
+    itemId,
+    status: "completed",
+    watchedPercent: 100,
+    startedAt: previous?.started_at ?? now,
+    completedAt: previous?.completed_at ?? now
+  };
+}
+
+function progressPercent(progress: ProgressMap, productId: string, itemType: LearningProgressItemType, itemId: string): number {
+  return progress[progressKey(productId, itemType, itemId)]?.watched_percent ?? 0;
+}
+
+function progressLabel(progress: ProgressMap, productId: string, itemType: LearningProgressItemType, itemId: string): string {
+  return progressPercent(progress, productId, itemType, itemId) >= 100 ? "Đã hoàn thành" : "Chưa hoàn thành";
+}
 
 export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [openingProductId, setOpeningProductId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [progress, setProgress] = useState<ProgressMap>(() => makeProgressMap(workspace.progress));
+  const [retryItems, setRetryItems] = useState<RetryMap>({});
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
+  const pendingKeys = useRef(new Set<string>());
+
+  async function saveProgress(input: UpsertLearningProgressInput) {
+    const key = progressKey(input.productId, input.itemType, input.itemId);
+    if (pendingKeys.current.has(key)) return;
+    pendingKeys.current.add(key);
+    setPendingKey(key);
+    setNotice(null);
+
+    const previous = progress[key];
+    const optimistic: LearningProgress = {
+      user_id: previous?.user_id ?? "",
+      product_id: input.productId,
+      item_type: input.itemType,
+      item_id: input.itemId,
+      status: input.status,
+      watched_percent: input.watchedPercent,
+      started_at: input.startedAt ?? null,
+      completed_at: input.completedAt ?? null,
+      created_at: previous?.created_at ?? new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    setProgress((current) => ({ ...current, [key]: optimistic }));
+    setRetryItems((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+
+    try {
+      const response = await fetch("/api/progress", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+        cache: "no-store"
+      });
+      if (!response.ok) throw new Error();
+    } catch {
+      setProgress((current) => {
+        const next = { ...current };
+        if (previous) next[key] = previous;
+        else delete next[key];
+        return next;
+      });
+      setRetryItems((current) => ({ ...current, [key]: input }));
+      setNotice("Tiến độ chưa được lưu. Vui lòng thử lại.");
+    } finally {
+      pendingKeys.current.delete(key);
+      setPendingKey((current) => current === key ? null : current);
+    }
+  }
 
   async function openMaterial(productId: string) {
     setOpeningProductId(productId);
@@ -32,6 +132,10 @@ export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProp
   }
 
   const hasData = workspace.materials.length > 0 || workspace.courses.some((course) => course.lessons.length > 0);
+  const totalItems = workspace.materials.length + workspace.courses.reduce((sum, course) => sum + course.lessons.length, 0);
+  const completedItems = workspace.materials.filter((material) => progressPercent(progress, material.productId, "material", material.productId) >= 100).length
+    + workspace.courses.reduce((sum, course) => sum + course.lessons.filter((lesson) => progressPercent(progress, course.productId, "lesson", lesson.id) >= 100).length, 0);
+  const overallPercent = totalItems ? Math.round((completedItems / totalItems) * 100) : 0;
   const tabs: Array<{ id: TabKey; label: string; count?: number }> = [
     { id: "overview", label: "Tổng quan" }, { id: "documents", label: "Tài liệu", count: workspace.materials.length },
     { id: "courses", label: "Khóa học", count: workspace.courses.length }, { id: "unavailable", label: "Nội dung khác" }
@@ -44,9 +148,9 @@ export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProp
       <section className="mb-6 rounded-[28px] border border-[#1b2e7428] bg-white p-6 shadow-[0_12px_36px_rgba(19,37,79,0.05)]"><span className="inline-flex rounded-full border border-blue-100 bg-[#edf2ff] px-3 py-1 text-[11px] font-extrabold text-[#3657d7]">{workspace.subject.category}</span><h1 className="mt-3 text-2xl font-black text-[#132a67] sm:text-3xl">{workspace.subject.name}</h1><p className="mt-2 text-xs font-semibold text-[#617092]">Học liệu đã được cấp quyền cho môn học này.</p></section>
       <nav className="mb-6 flex gap-1.5 overflow-x-auto rounded-[20px] border border-[#1b2e7420] bg-white p-2 shadow-sm">{tabs.map((tab) => <button key={tab.id} type="button" onClick={() => setActiveTab(tab.id)} className={`inline-flex h-10 shrink-0 items-center gap-2 rounded-xl px-4 text-xs font-extrabold ${activeTab === tab.id ? "bg-[#132a67] text-white" : "text-[#617092] hover:bg-slate-50"}`}>{tab.label}{tab.count !== undefined && <span className="rounded-full bg-white/20 px-1.5 py-0.5 text-[10px]">{tab.count}</span>}</button>)}</nav>
       <section className="rounded-[24px] border border-[#1b2e7422] bg-white p-6 shadow-sm">
-        {activeTab === "overview" && (hasData ? <div><h2 className="flex items-center gap-2 text-base font-extrabold text-[#132a67]"><Sparkles className="h-5 w-5 text-accent" />Không gian tự học</h2><p className="mt-3 text-sm leading-relaxed text-[#5f6d8f]">Chọn tab Tài liệu hoặc Khóa học để xem nội dung bạn được cấp quyền. Tiến độ học chưa được lưu trong phiên bản này.</p></div> : <Unavailable />)}
-        {activeTab === "documents" && (workspace.materials.length ? <div className="space-y-3"><h2 className="text-base font-extrabold text-[#132a67]">Danh mục tài liệu</h2>{workspace.materials.map((material) => <article key={material.productId} className="flex flex-col gap-4 rounded-2xl border border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="flex items-center gap-2 text-sm font-bold text-[#132a67]"><FileText className="h-5 w-5 text-blue-600" />{material.title}</h3><p className="mt-1 text-xs text-[#5f6d8f]">{material.description}</p><p className="mt-2 text-[11px] font-semibold text-[#8091b8]">{material.pages} trang</p></div><button type="button" disabled={openingProductId === material.productId} onClick={() => openMaterial(material.productId)} className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full bg-[#132a67] px-4 text-xs font-bold text-white disabled:opacity-60"><Download className="h-3.5 w-3.5" />{openingProductId === material.productId ? "Đang mở..." : "Mở tài liệu"}</button></article>)}</div> : <Unavailable />)}
-        {activeTab === "courses" && (workspace.courses.length ? <div className="space-y-5"><h2 className="flex items-center gap-2 text-base font-extrabold text-[#132a67]"><BookOpen className="h-5 w-5 text-violet-600" />Chương trình bài giảng</h2>{workspace.courses.map((course) => <article key={course.productId} className="rounded-2xl border border-slate-100 p-4"><h3 className="text-sm font-bold text-[#132a67]">{course.title}</h3>{course.lessons.length ? <ol className="mt-3 space-y-2">{course.lessons.map((lesson) => <li key={lesson.id} className="text-xs text-[#5f6d8f]"><span className="mr-2 font-bold text-[#132a67]">{lesson.orderIndex}.</span>{lesson.title}{lesson.durationMinutes ? ` · ${lesson.durationMinutes} phút` : ""}</li>)}</ol> : <p className="mt-3 text-xs font-semibold text-[#8091b8]">Chưa có dữ liệu</p>}</article>)}</div> : <Unavailable />)}
+        {activeTab === "overview" && (hasData ? <div><h2 className="flex items-center gap-2 text-base font-extrabold text-[#132a67]"><Sparkles className="h-5 w-5 text-accent" />Không gian tự học</h2><p className="mt-3 text-sm leading-relaxed text-[#5f6d8f]">Chọn tab Tài liệu hoặc Khóa học để xem nội dung bạn được cấp quyền.</p><p className="mt-4 text-sm font-extrabold text-[#132a67]">Tiến độ đã lưu: {overallPercent}% <span className="ml-2 text-xs font-semibold text-[#8091b8]">({completedItems}/{totalItems} mục)</span></p><div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-[#3657d7]" style={{ width: `${overallPercent}%` }} /></div></div> : <Unavailable />)}
+        {activeTab === "documents" && (workspace.materials.length ? <div className="space-y-3"><h2 className="text-base font-extrabold text-[#132a67]">Danh mục tài liệu</h2>{workspace.materials.map((material) => { const itemId = material.productId; const key = progressKey(material.productId, "material", itemId); const retry = retryItems[key]; const completed = progressLabel(progress, material.productId, "material", itemId) === "Đã hoàn thành"; return <article key={material.productId} className="flex flex-col gap-4 rounded-2xl border border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="flex items-center gap-2 text-sm font-bold text-[#132a67]"><FileText className="h-5 w-5 text-blue-600" />{material.title}</h3><p className="mt-1 text-xs text-[#5f6d8f]">{material.description}</p><p className="mt-2 text-[11px] font-semibold text-[#8091b8]">{material.pages} trang · {progressPercent(progress, material.productId, "material", itemId)}% · {completed ? "Đã hoàn thành" : "Chưa hoàn thành"}</p></div><div className="flex flex-wrap gap-2"><button type="button" disabled={openingProductId === material.productId} onClick={() => openMaterial(material.productId)} className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full bg-[#132a67] px-4 text-xs font-bold text-white disabled:opacity-60"><Download className="h-3.5 w-3.5" />{openingProductId === material.productId ? "Đang mở..." : "Mở tài liệu"}</button><ProgressButton pending={pendingKey === key} completed={completed} retry={Boolean(retry)} onClick={() => retry ? saveProgress(retry) : saveProgress(completedProgress(progress[key], material.productId, "material", itemId))} /></div></article>; })}</div> : <Unavailable />)}
+        {activeTab === "courses" && (workspace.courses.length ? <div className="space-y-5"><h2 className="flex items-center gap-2 text-base font-extrabold text-[#132a67]"><BookOpen className="h-5 w-5 text-violet-600" />Chương trình bài giảng</h2>{workspace.courses.map((course) => <article key={course.productId} className="rounded-2xl border border-slate-100 p-4"><h3 className="text-sm font-bold text-[#132a67]">{course.title}</h3>{course.lessons.length ? <ol className="mt-3 space-y-2">{course.lessons.map((lesson) => { const key = progressKey(course.productId, "lesson", lesson.id); const retry = retryItems[key]; const completed = progressLabel(progress, course.productId, "lesson", lesson.id) === "Đã hoàn thành"; return <li key={lesson.id} className="flex flex-col gap-2 border-b border-slate-50 py-2 text-xs text-[#5f6d8f] last:border-b-0 sm:flex-row sm:items-center sm:justify-between"><span><span className="mr-2 font-bold text-[#132a67]">{lesson.orderIndex}.</span>{lesson.title}{lesson.durationMinutes ? ` · ${lesson.durationMinutes} phút` : ""}<span className="ml-2 font-semibold text-[#8091b8]">{progressPercent(progress, course.productId, "lesson", lesson.id)}% · {completed ? "Đã hoàn thành" : "Chưa hoàn thành"}</span></span><ProgressButton pending={pendingKey === key} completed={completed} retry={Boolean(retry)} onClick={() => retry ? saveProgress(retry) : saveProgress(completedProgress(progress[key], course.productId, "lesson", lesson.id))} /></li>; })}</ol> : <p className="mt-3 text-xs font-semibold text-[#8091b8]">Chưa có dữ liệu</p>}</article>)}</div> : <Unavailable />)}
         {activeTab === "unavailable" && <Unavailable />}{notice && <p role="status" className="mt-4 text-xs font-semibold text-rose-600">{notice}</p>}
       </section>
     </main><Footer /><FloatingActions />
@@ -54,3 +158,17 @@ export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProp
 }
 
 function Unavailable() { return <p className="text-sm font-semibold text-[#8091b8]">Chưa có dữ liệu</p>; }
+
+function ProgressButton({
+  pending,
+  completed,
+  retry,
+  onClick
+}: {
+  pending: boolean;
+  completed: boolean;
+  retry: boolean;
+  onClick: () => void;
+}) {
+  return <button type="button" disabled={pending || completed} onClick={onClick} className="inline-flex h-9 items-center justify-center rounded-full border border-[#132a67] px-3 text-xs font-bold text-[#132a67] disabled:cursor-not-allowed disabled:opacity-60">{pending ? "Đang lưu..." : retry ? "Lưu lại" : completed ? "Đã lưu" : "Đánh dấu đã học"}</button>;
+}

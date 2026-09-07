@@ -22,6 +22,7 @@ import {
   assertMigration0012Contract,
   assertMigration0013Contract,
   assertMigration0014Contract,
+  assertMigration0015Contract,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
 } from "../../scripts/verify-supabase-migrations-seed-rls";
@@ -206,13 +207,14 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "0011_admin_catalog_crud_rls.sql",
         "0012_private_material_storage.sql",
         "0013_material_asset_metadata.sql",
-        "0014_product_entitlements.sql"
+        "0014_product_entitlements.sql",
+        "0015_learning_progress.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
     });
 
-    test("the canonical history verifier rejects a content mutation in every migration 0001-0013", async () => {
+    test("the canonical history verifier rejects a content mutation in every migration 0001-0014", async () => {
       const snapshots: Record<string, string> = {};
       for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
         snapshots[filename] = await fs.readFile(path.join(migrationsDir, filename), "utf-8");
@@ -1191,6 +1193,46 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       assert.doesNotThrow(() => assertMigration0014Contract(`${sql}\n-- service_role; SECURITY DEFINER; SET ROLE postgres\n/* nested /* public */ comment */`));
       assert.throws(() => assertMigration0014Contract(`${sql}\nSELECT 'secret=value; GRANT ALL;';`), /./);
       assert.throws(() => assertMigration0014Contract(`${sql}\nDO $$ BEGIN EXECUTE 'SELECT 1; SELECT 2'; END $$;`), /./);
+    });
+  });
+
+  describe("11. Migration 0015 Learning Progress (Runtime Contract Fixtures)", () => {
+    const migrationPath = path.join(migrationsDir, "0015_learning_progress.sql");
+
+    test("accepts the exact learning progress schema, indexes, grants, trigger, and own-row RLS contract", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      assert.doesNotThrow(() => assertMigration0015Contract(sql));
+    });
+
+    test("rejects missing RLS, public/cross-user access, missing uniqueness, invalid ranges, and arbitrary grants", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const fixtures = [
+        sql.replace("ALTER TABLE public.learning_progress ENABLE ROW LEVEL SECURITY;", "ALTER TABLE public.learning_progress DISABLE ROW LEVEL SECURITY;"),
+        sql.replace("GRANT SELECT, INSERT, UPDATE ON TABLE public.learning_progress TO authenticated", "GRANT SELECT, INSERT, UPDATE ON TABLE public.learning_progress TO public"),
+        sql.replace("USING (public.learning_progress.user_id = auth.uid())", "USING (true)"),
+        sql.replace("WITH CHECK (public.learning_progress.user_id = auth.uid())", "WITH CHECK (true)"),
+        sql.replace("CONSTRAINT learning_progress_user_product_item_unique UNIQUE (user_id, product_id, item_type, item_id)", "CONSTRAINT learning_progress_user_product_item_unique UNIQUE (user_id, product_id)"),
+        sql.replace("watched_percent <= 100", "watched_percent <= 101"),
+        sql.replace("item_type IN ('material', 'lesson')", "item_type IN ('material', 'lesson', 'admin')"),
+        sql.replace("status IN ('not_started', 'in_progress', 'completed')", "status IN ('not_started', 'in_progress')"),
+        `${sql}\nGRANT SELECT ON TABLE public.products TO authenticated;`,
+        `${sql}\nGRANT ALL ON TABLE public.learning_progress TO authenticated;`,
+        `${sql}\nCREATE POLICY learning_progress_public ON public.learning_progress FOR SELECT TO public USING (true);`
+      ];
+      for (const fixture of fixtures) assert.throws(() => assertMigration0015Contract(fixture), /./);
+    });
+
+    test("rejects service_role, BYPASSRLS, role escalation, timestamp-function replacement, and dynamic SQL", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const fixtures = [
+        `${sql}\nCREATE POLICY learning_progress_service ON public.learning_progress FOR SELECT TO service_role USING (true);`,
+        `${sql}\nALTER ROLE authenticated BYPASSRLS;`,
+        `${sql}\nSET ROLE postgres;`,
+        `${sql}\nCREATE FUNCTION unsafe() RETURNS void LANGUAGE sql SECURITY DEFINER AS $$ SELECT; $$;`,
+        `${sql}\nDO $$ BEGIN EXECUTE 'SELECT 1'; END $$;`,
+        sql.replace("EXECUTE FUNCTION update_updated_at_column()", "EXECUTE FUNCTION unsafe_updated_at()")
+      ];
+      for (const fixture of fixtures) assert.throws(() => assertMigration0015Contract(fixture), /./);
     });
   });
 });
