@@ -57,7 +57,7 @@ function hasPdfStructure(bytes: Uint8Array): boolean {
     && /(?:\d+\s+\d+\s+obj\b|\bxref\b|\bstream\b)/.test(body);
 }
 
-interface BmffBox { type: string; end: number; size: number; }
+interface BmffBox { type: string; start: number; end: number; size: number; payloadStart: number; }
 
 function readBmffBox(bytes: Uint8Array, offset: number): BmffBox | null {
   if (offset + 8 > bytes.length) return null;
@@ -72,25 +72,74 @@ function readBmffBox(bytes: Uint8Array, offset: number): BmffBox | null {
     size = extended;
     headerSize = 16;
   }
-  if (size < headerSize || size > bytes.length - offset || (declared === 0 && offset + size !== bytes.length)) return null;
-  return { type, end: offset + size, size };
+  if (declared === 0) size = bytes.length - offset;
+  if (size < headerSize || size > bytes.length - offset) return null;
+  return { type, start: offset, end: offset + size, size, payloadStart: offset + headerSize };
+}
+
+function bmffChildren(bytes: Uint8Array, parent: BmffBox): BmffBox[] | null {
+  const children: BmffBox[] = [];
+  for (let offset = parent.payloadStart; offset < parent.end;) {
+    const child = readBmffBox(bytes, offset);
+    if (!child || child.end > parent.end) return null;
+    children.push(child);
+    offset = child.end;
+  }
+  return children;
+}
+
+function bmffChild(bytes: Uint8Array, parent: BmffBox, type: string): BmffBox | null {
+  return bmffChildren(bytes, parent)?.find((box) => box.type === type) || null;
+}
+
+function hasNonEmptyTrack(bytes: Uint8Array, trak: BmffBox, mediaRanges: Array<{ start: number; end: number }>): boolean {
+  const tkhd = bmffChild(bytes, trak, "tkhd");
+  const mdia = bmffChild(bytes, trak, "mdia");
+  if (!tkhd || tkhd.size < 24 || !mdia) return false;
+  const mdhd = bmffChild(bytes, mdia, "mdhd");
+  const hdlr = bmffChild(bytes, mdia, "hdlr");
+  const minf = bmffChild(bytes, mdia, "minf");
+  if (!mdhd || mdhd.size < 28 || !hdlr || hdlr.size < 20 || !minf) return false;
+  const timescale = readUint32(bytes, mdhd.payloadStart + 12);
+  const duration = readUint32(bytes, mdhd.payloadStart + 16);
+  const handler = ascii(bytes, hdlr.payloadStart + 8, hdlr.payloadStart + 12);
+  if (timescale === 0 || duration === 0 || !["vide", "soun", "text", "subt"].includes(handler)) return false;
+  const stbl = bmffChild(bytes, minf, "stbl");
+  if (!stbl) return false;
+  const stsd = bmffChild(bytes, stbl, "stsd");
+  const stts = bmffChild(bytes, stbl, "stts");
+  const stsc = bmffChild(bytes, stbl, "stsc");
+  const stsz = bmffChild(bytes, stbl, "stsz");
+  const offsets = bmffChild(bytes, stbl, "stco") || bmffChild(bytes, stbl, "co64");
+  if (!stsd || stsd.size < 24 || !stts || stts.size < 24 || !stsc || stsc.size < 28 || !stsz || stsz.size < 20 || !offsets || offsets.size < 20) return false;
+  if (readUint32(bytes, stsd.payloadStart + 4) === 0 || readUint32(bytes, stts.payloadStart + 4) === 0 || readUint32(bytes, stts.payloadStart + 8) === 0 || readUint32(bytes, stsc.payloadStart + 4) === 0 || readUint32(bytes, stsz.payloadStart + 8) === 0 || readUint32(bytes, offsets.payloadStart + 4) === 0) return false;
+  const firstOffset = offsets.type === "stco" ? readUint32(bytes, offsets.payloadStart + 8) : readUint64(bytes, offsets.payloadStart + 8);
+  return firstOffset !== null && mediaRanges.some((range) => firstOffset >= range.start && firstOffset < range.end);
 }
 
 function hasBmffStructure(bytes: Uint8Array, mimeType: string): boolean {
   const ftyp = readBmffBox(bytes, 0);
-  if (!ftyp || ftyp.type !== "ftyp" || ftyp.size < 16 || (ftyp.size - 8) % 4 !== 0 || ftyp.end > bytes.length) return false;
-  const compatibleBrands = [];
-  for (let offset = 8; offset + 4 <= ftyp.end; offset += 4) compatibleBrands.push(ascii(bytes, offset, offset + 4));
-  if (mimeType === "video/quicktime" && !compatibleBrands.includes("qt  ")) return false;
+  if (!ftyp || ftyp.type !== "ftyp" || ftyp.size < 20 || (ftyp.size - 16) % 4 !== 0) return false;
+  const majorBrand = ascii(bytes, ftyp.payloadStart, ftyp.payloadStart + 4);
+  const compatibleBrands = [majorBrand];
+  for (let offset = ftyp.payloadStart + 8; offset < ftyp.end; offset += 4) compatibleBrands.push(ascii(bytes, offset, offset + 4));
+  const mp4Brands = new Set(["isom", "iso2", "mp41", "mp42", "avc1", "dash", "M4V "]);
+  if (mimeType === "video/quicktime" ? !compatibleBrands.includes("qt  ") : !compatibleBrands.some((brand) => mp4Brands.has(brand))) return false;
   let offset = ftyp.end;
-  let hasMediaBox = false;
+  let moov: BmffBox | null = null;
+  const mediaRanges: Array<{ start: number; end: number }> = [];
   while (offset < bytes.length) {
     const box = readBmffBox(bytes, offset);
     if (!box) return false;
-    if ((box.type === "moov" || box.type === "mdat") && box.size > 8) hasMediaBox = true;
+    if (box.type === "moov") { if (moov) return false; moov = box; }
+    if (box.type === "mdat" && box.size > box.payloadStart - box.start) mediaRanges.push({ start: box.payloadStart, end: box.end });
     offset = box.end;
   }
-  return offset === bytes.length && hasMediaBox;
+  if (offset !== bytes.length || !moov || mediaRanges.length === 0) return false;
+  const mvhd = bmffChild(bytes, moov, "mvhd");
+  const tracks = bmffChildren(bytes, moov)?.filter((box) => box.type === "trak") || [];
+  if (!mvhd || mvhd.size < 28 || readUint32(bytes, mvhd.payloadStart + 12) === 0 || readUint32(bytes, mvhd.payloadStart + 16) === 0 || tracks.length === 0) return false;
+  return tracks.some((track) => hasNonEmptyTrack(bytes, track, mediaRanges));
 }
 
 function readEbmlVint(bytes: Uint8Array, offset: number, preserveMarker = false): { length: number; value: number } | null {
@@ -132,17 +181,54 @@ function hasWebmStructure(bytes: Uint8Array): boolean {
   const segmentEnd = segmentStart + segmentSize.value;
   if (segmentEnd !== bytes.length || segmentSize.value === 0) return false;
   offset = segmentStart;
-  let hasSegmentChild = false;
+  let hasInfo = false;
+  let hasTracks = false;
+  let hasCluster = false;
   while (offset < segmentEnd) {
     const id = readEbmlVint(bytes, offset, true);
     if (!id) return false;
     offset += id.length;
     const size = readEbmlVint(bytes, offset);
     if (!size || offset + size.length + size.value > segmentEnd) return false;
-    hasSegmentChild = true;
+    const payloadStart = offset + size.length;
+    const payloadEnd = payloadStart + size.value;
+    if (id.value === 0x1549a966) {
+      let child = payloadStart;
+      let validInfo = false;
+      while (child < payloadEnd) {
+        const childId = readEbmlVint(bytes, child, true); if (!childId) return false; child += childId.length;
+        const childSize = readEbmlVint(bytes, child); if (!childSize || child + childSize.length + childSize.value > payloadEnd) return false;
+        if (childId.value === 0x2ad7b1 && childSize.value > 0) validInfo = true;
+        child += childSize.length + childSize.value;
+      }
+      hasInfo = child === payloadEnd && validInfo;
+    } else if (id.value === 0x1654ae6b) {
+      let child = payloadStart;
+      let validTrack = false;
+      while (child < payloadEnd) {
+        const childId = readEbmlVint(bytes, child, true); if (!childId) return false; child += childId.length;
+        const childSize = readEbmlVint(bytes, child); if (!childSize || child + childSize.length + childSize.value > payloadEnd) return false;
+        if (childId.value === 0xae && childSize.value >= 8) {
+          const entry = bytes.slice(child + childSize.length, child + childSize.length + childSize.value);
+          validTrack ||= entry.includes(0xd7) && entry.includes(0x83) && entry.includes(0x86);
+        }
+        child += childSize.length + childSize.value;
+      }
+      hasTracks = child === payloadEnd && validTrack;
+    } else if (id.value === 0x1f43b675) {
+      let child = payloadStart;
+      let validCluster = false;
+      while (child < payloadEnd) {
+        const childId = readEbmlVint(bytes, child, true); if (!childId) return false; child += childId.length;
+        const childSize = readEbmlVint(bytes, child); if (!childSize || child + childSize.length + childSize.value > payloadEnd) return false;
+        if (childId.value === 0xa3 && childSize.value >= 5) validCluster = true;
+        child += childSize.length + childSize.value;
+      }
+      hasCluster = child === payloadEnd && validCluster;
+    }
     offset += size.length + size.value;
   }
-  return offset === segmentEnd && hasSegmentChild;
+  return offset === segmentEnd && hasInfo && hasTracks && hasCluster;
 }
 
 function matchesFileSignature(mimeType: string, bytes: Uint8Array): boolean {

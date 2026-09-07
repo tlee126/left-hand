@@ -1119,6 +1119,13 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       for (const fixture of fixtures) assert.throws(() => assertMigration0013Contract(fixture), /./);
     });
 
+    test("rejects an active uppercase UUID storage-path mutation", async () => {
+      const sql = await fs.readFile(migrationPath, "utf-8");
+      const mutated = sql.replaceAll("[0-9a-f]", "[0-9A-Fa-f]");
+      assert.notEqual(mutated, sql);
+      assert.throws(() => assertMigration0013Contract(mutated), /constraint|storage path|metadata/i);
+    });
+
     test("parses comments, quoted semicolons, and dollar-quoted unsafe statements safely", async () => {
       const sql = await fs.readFile(migrationPath, "utf-8");
       assert.doesNotThrow(() => assertMigration0013Contract(`${sql}\n-- service_role; SECURITY DEFINER\n/* nested /* public */ comment */`));

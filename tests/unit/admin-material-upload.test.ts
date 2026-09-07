@@ -60,9 +60,19 @@ const repoUrl = toUrl(repoCode.replaceAll(supabaseModule, supabaseUrl).replaceAl
 const route = await import(toUrl(routeCode.replaceAll(authModule, authUrl).replaceAll(repoModule, repoUrl).replaceAll(storageModule, storageUrl).replaceAll(navModule, navUrl)));
 function concat(...parts) { return parts.flatMap(part => part); }
 function pdfBytes() { return new TextEncoder().encode("%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n"); }
-function bmffBytes(brand) { return Uint8Array.from(concat([0,0,0,20], [..."ftyp"].map(c => c.charCodeAt(0)), [...brand].map(c => c.charCodeAt(0)), [0,0,0,0], [...brand].map(c => c.charCodeAt(0)), [0,0,0,9], [..."mdat"].map(c => c.charCodeAt(0)), [0])); }
-function webmBytes() { return Uint8Array.from(concat([0x1a,0x45,0xdf,0xa3,0x97,0x42,0x86,0x81,0x01,0x42,0xf7,0x81,0x01,0x42,0xf2,0x81,0x04,0x42,0xf3,0x81,0x08,0x42,0x82,0x84,0x77,0x65,0x62,0x6d], [0x18,0x53,0x80,0x67,0x83,0xec,0x81,0x00])); }
-function fixture(kind, scenario) { if (scenario.truncated) return Uint8Array.from(kind === "pdf" ? [0x25,0x50,0x44,0x46,0x2d] : kind === "webm" ? [0x1a,0x45,0xdf,0xa3] : [0,0,0,24,0x66,0x74,0x79,0x70]); if (kind === "pdf") return pdfBytes(); if (kind === "webm") return webmBytes(); return bmffBytes(kind === "quicktime" ? "qt  " : "isom"); }
+function u32(value) { return [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255]; }
+function chars(value) { return [...value].map(c => c.charCodeAt(0)); }
+function box(type, payload) { return [...u32(payload.length + 8), ...chars(type), ...payload]; }
+function bmffBytes(brand) {
+  const full = [0,0,0,0];
+  const stbl = offset => box("stbl", concat(box("stsd", concat(full, u32(1), [0,0,0,8, ...chars("avc1")])), box("stts", concat(full, u32(1), u32(1), u32(1))), box("stsc", concat(full, u32(1), u32(1), u32(1), u32(1))), box("stsz", concat(full, u32(1), u32(1))), box("stco", concat(full, u32(1), u32(offset)))));
+  const makeMoov = offset => box("moov", concat(box("mvhd", concat(full, u32(1), u32(1), u32(1000), u32(1000))), box("trak", concat(box("tkhd", concat(full, u32(1), u32(1), u32(1))), box("mdia", concat(box("mdhd", concat(full, u32(1), u32(1), u32(1000), u32(1000))), box("hdlr", concat(full, u32(0), chars("vide"))), box("minf", stbl(offset))))))));
+  const ftyp = box("ftyp", concat(chars(brand), u32(0), chars(brand)));
+  const moov = makeMoov(0);
+  return Uint8Array.from(concat(ftyp, makeMoov(ftyp.length + moov.length + 8), box("mdat", [0])));
+}
+function webmBytes() { return Uint8Array.from(concat([0x1a,0x45,0xdf,0xa3,0x97,0x42,0x86,0x81,0x01,0x42,0xf7,0x81,0x01,0x42,0xf2,0x81,0x04,0x42,0xf3,0x81,0x08,0x42,0x82,0x84,0x77,0x65,0x62,0x6d], [0x18,0x53,0x80,0x67,0xaf, 0x15,0x49,0xa9,0x66,0x87,0x2a,0xd7,0xb1,0x83,0x0f,0x42,0x40, 0x16,0x54,0xae,0x6b,0x8f,0xae,0x8d,0xd7,0x81,0x01,0x83,0x81,0x01,0x86,0x85,0x56,0x5f,0x56,0x50,0x38, 0x1f,0x43,0xb6,0x75,0x8a,0xe7,0x81,0x00,0xa3,0x85,0x81,0x00,0x00,0x80,0x00])); }
+function fixture(kind, scenario) { const bytes = kind === "pdf" ? pdfBytes() : kind === "webm" ? webmBytes() : bmffBytes(kind === "quicktime" ? "qt  " : "isom"); if (scenario.fabricated) return kind === "webm" ? Uint8Array.from([0x1a,0x45,0xdf,0xa3,0x84,0x42,0x82,0x84,0x77,0x65,0x62,0x6d,0x18,0x53,0x80,0x67,0x80]) : Uint8Array.from(concat(box("ftyp", concat(chars(kind === "quicktime" ? "qt  " : "isom"), u32(0), chars(kind === "quicktime" ? "qt  " : "isom"))), box("mdat", [0]))); return scenario.truncated ? bytes.slice(0, bytes.length - (kind === "quicktime" ? 3 : bytes.length - 4)) : bytes; }
 const kind = scenario.kind || "pdf";
 const type = scenario.mime || ({ pdf: "application/pdf", mp4: "video/mp4", webm: "video/webm", quicktime: "video/quicktime" }[kind]);
 const bytes = scenario.spoof ? Uint8Array.from([1,2,3,4,5]) : fixture(kind, scenario);
@@ -107,7 +117,7 @@ test("approved admins execute the real route, repository, and storage modules", 
 });
 test("authorization remains first and blocks anonymous or non-approved users", async () => { for (const access of ["anonymous", "student", "pending", "rejected", "suspended"]) { const result = await run({ access }); assert.deepEqual(result.timeline, ["auth", ...(access === "anonymous" ? [] : ["profile"])]); assert.ok(result.error.startsWith("REDIRECT:")); } });
 test("invalid multipart data, UUIDs, MIME/signatures, size, product, and unsafe names fail generically", async () => {
-  for (const scenario of [{ missing: true }, { extra: true }, { badId: true }, { mime: "text/plain" }, { spoof: true }, { empty: true }, { oversize: true }, { nonMaterial: true }, { truncated: true }, { kind: "webm", truncated: true }, { kind: "mp4", truncated: true }, { name: "foo/../bar.pdf" }, { name: "foo\\..\\bar.pdf" }, { name: "unsafe\u0000.pdf" }]) {
+  for (const scenario of [{ missing: true }, { extra: true }, { badId: true }, { mime: "text/plain" }, { spoof: true }, { empty: true }, { oversize: true }, { nonMaterial: true }, { truncated: true }, { kind: "webm", truncated: true }, { kind: "mp4", truncated: true }, { kind: "quicktime", truncated: true }, { kind: "mp4", fabricated: true }, { kind: "webm", fabricated: true }, { name: "foo/../bar.pdf" }, { name: "foo\\..\\bar.pdf" }, { name: "unsafe\u0000.pdf" }]) {
     const result = await run({ access: "admin", ...scenario });
     assert.equal(result.error, "REDIRECT:/quan-tri/catalog?upload=error");
     assert.equal(result.redirects.at(-1), "/quan-tri/catalog?upload=error");
