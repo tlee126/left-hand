@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Search } from "lucide-react";
 import { TutorCard } from "@/components/catalog/tutor-card";
 import { EmptyState } from "@/components/catalog/empty-state";
 import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
-import type { PublishedTutor } from "@/lib/domain/catalog";
-import { normalizeSlug } from "@/lib/domain/subjects";
+import { CatalogPagination } from "@/components/catalog/catalog-pagination";
+import type { CatalogFilters, CatalogPage, PublishedTutor } from "@/lib/domain/catalog";
 import { tutorFilterOptions, type TutorFilter } from "@/components/catalog/catalog-options";
 
 type SortOption = "relevant" | "rating-desc" | "available-slot";
@@ -19,16 +20,43 @@ const sortOptions = [
 ];
 
 interface TutorsCatalogClientProps {
-  initialTutors: PublishedTutor[];
+  initialTutors: readonly PublishedTutor[];
+  pagination: CatalogPage<PublishedTutor>;
+  initialFilters: CatalogFilters;
 }
 
 export function TutorsCatalogClient({
-  initialTutors
+  initialTutors,
+  pagination,
+  initialFilters
 }: TutorsCatalogClientProps) {
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<TutorFilter>("Tất cả");
-  const [sortBy, setSortBy] = useState<SortOption>("relevant");
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [query, setQuery] = useState(initialFilters.search ?? "");
+  const filter: TutorFilter = initialFilters.tutorMode === "online"
+    ? "Online"
+    : initialFilters.tutorMode === "one-to-one"
+      ? "1:1"
+      : initialFilters.category ?? "Tất cả";
+  const sortBy = (initialFilters.sort as SortOption | undefined) ?? "relevant";
   const filterContainerRef = useRef<HTMLDivElement>(null);
+
+  const updateQuery = (key: string, value?: string) => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("page");
+    if (value) params.set(key, value); else params.delete(key);
+    router.push(params.toString() ? `${pathname}?${params.toString()}` : pathname, { scroll: false });
+  };
+
+  const updateFilters = (entries: Array<[string, string | undefined]>) => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("page");
+    for (const [key, value] of entries) {
+      if (value) params.set(key, value); else params.delete(key);
+    }
+    router.push(params.toString() ? `${pathname}?${params.toString()}` : pathname, { scroll: false });
+  };
 
   // Auto-scroll filter chip into view
   useEffect(() => {
@@ -45,59 +73,14 @@ export function TutorsCatalogClient({
     }
   }, [filter]);
 
+  useEffect(() => {
+    setQuery(initialFilters.search ?? "");
+  }, [initialFilters.search]);
+
   const handleReset = () => {
     setQuery("");
-    setFilter("Tất cả");
-    setSortBy("relevant");
+    router.push(pathname, { scroll: false });
   };
-
-  const processedTutors = useMemo(() => {
-    let result = [...initialTutors];
-
-    // Filter by subject group or format
-    if (filter !== "Tất cả") {
-      result = result.filter((item) => {
-        if (filter === "Online") {
-          return item.tutor.format.toLowerCase().includes("online");
-        }
-        if (filter === "1:1") {
-          return item.tutor.format.toLowerCase().includes("1:1");
-        }
-        return item.category === filter;
-      });
-    }
-
-    // Filter by search query
-    const normalizedQuery = query.trim().toLowerCase();
-    if (normalizedQuery) {
-      result = result.filter((item) => {
-        return (
-          item.tutor.name.toLowerCase().includes(normalizedQuery) ||
-          item.tutor.faculty.toLowerCase().includes(normalizedQuery) ||
-          item.tutor.shortBio.toLowerCase().includes(normalizedQuery) ||
-          item.tutor.subjects.some((s) => normalizeSlug(s.name).includes(normalizeSlug(normalizedQuery))) ||
-          item.tutor.strengths.some((str) => str.toLowerCase().includes(normalizedQuery))
-        );
-      });
-    }
-
-    // Sort
-    result.sort((a, b) => {
-      if (sortBy === "rating-desc") {
-        return b.rating - a.rating;
-      }
-      if (sortBy === "available-slot") {
-        const aHasSlot = a.tutor.availability.toLowerCase().includes("còn");
-        const bHasSlot = b.tutor.availability.toLowerCase().includes("còn");
-        if (aHasSlot && !bHasSlot) return -1;
-        if (!aHasSlot && bHasSlot) return 1;
-        return b.rating - a.rating;
-      }
-      return 0; // "relevant"
-    });
-
-    return result;
-  }, [initialTutors, filter, query, sortBy]);
 
   return (
     <div className="section-shell px-4 py-8 sm:px-8 sm:py-10 lg:px-10">
@@ -128,7 +111,12 @@ export function TutorsCatalogClient({
                   <button
                     key={opt.label}
                     type="button"
-                    onClick={() => setFilter(opt.label)}
+                  onClick={() => {
+                    if (opt.label === "Online") updateFilters([["tutorMode", "online"], ["category", undefined]]);
+                    else if (opt.label === "1:1") updateFilters([["tutorMode", "one-to-one"], ["category", undefined]]);
+                    else if (opt.label === "Tất cả") updateFilters([["tutorMode", undefined], ["category", undefined]]);
+                    else updateFilters([["category", opt.label], ["tutorMode", undefined]]);
+                  }}
                     data-filter-active={isActive ? "true" : "false"}
                     className={[
                       "inline-flex h-10 items-center rounded-full px-4 text-xs font-semibold transition shrink-0",
@@ -151,6 +139,7 @@ export function TutorsCatalogClient({
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === "Enter") updateQuery("search", query.trim() || undefined); }}
                   placeholder="Tìm tutor, môn học..."
                   className="h-10 w-full rounded-[16px] border border-[#d8deef] bg-slate-50/90 pl-10 pr-4 text-xs font-medium text-[#22325f] outline-none transition placeholder:text-[#98a4be] focus:border-accent/45 focus:bg-white focus:ring-4 focus:ring-accent/10"
                 />
@@ -158,7 +147,7 @@ export function TutorsCatalogClient({
 
               <select
                 value={sortBy}
-                onChange={(event) => setSortBy(event.target.value as SortOption)}
+                onChange={(event) => updateQuery("sort", event.target.value === "relevant" ? undefined : event.target.value)}
                 className="h-10 rounded-[16px] border border-[#d8deef] bg-slate-50/90 px-4 text-xs font-semibold text-[#22325f] outline-none transition focus:border-accent/45 focus:bg-white"
               >
                 {sortOptions.map((opt) => (
@@ -174,9 +163,9 @@ export function TutorsCatalogClient({
 
       {/* Results grid */}
       <div className="mt-6">
-        {processedTutors.length > 0 ? (
+        {initialTutors.length > 0 ? (
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {processedTutors.map((item) => (
+            {initialTutors.map((item) => (
               <TutorCard key={item.id} item={item} />
             ))}
           </div>
@@ -186,6 +175,7 @@ export function TutorsCatalogClient({
             message="Không tìm thấy tutor phù hợp."
           />
         )}
+        <CatalogPagination page={pagination} />
       </div>
     </div>
   );

@@ -86,3 +86,52 @@ export type PublishedCatalogProduct =
   | PublishedMaterial
   | PublishedCourse
   | PublishedTutor;
+
+export type CatalogSort =
+  | "newest"
+  | "price-asc"
+  | "price-desc"
+  | "rating-desc"
+  | "relevant"
+  | "available-slot";
+
+/** Shared, URL-safe server-side catalog query contract. */
+export interface CatalogFilters {
+  readonly search?: string;
+  readonly category?: Category;
+  /** Canonical subject slug, never a presentation label. */
+  readonly subject?: string;
+  readonly minPrice?: number;
+  readonly maxPrice?: number;
+  readonly sort?: CatalogSort;
+  readonly limit?: number;
+  readonly offset?: number;
+  readonly page?: number;
+  readonly courseFormat?: CourseFormat;
+  readonly courseFormats?: readonly CourseFormat[];
+  readonly enrollmentStatus?: EnrollmentStatus;
+  readonly tutorMode?: "online" | "one-to-one";
+}
+
+export interface CatalogPage<T> {
+  readonly items: readonly T[];
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+  readonly page: number;
+  readonly hasNext: boolean;
+  readonly hasPrevious: boolean;
+}
+
+/** One normalization rule shared by every server catalog query and UI search input. */
+export function normalizeCatalogSearch(value: string): string {
+  if (typeof value !== "string") return "";
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[đĐ]/g, "d")
+    .toLocaleLowerCase("vi-VN")
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}

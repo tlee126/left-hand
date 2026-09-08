@@ -20,6 +20,7 @@ import { coverThemes } from "@/components/catalog/theme";
 import type { Category, ColorTheme } from "@/lib/domain/subjects";
 import { formatVND } from "@/lib/domain/product-types";
 import type { PublishedCourse, PublishedMaterial } from "@/lib/domain/catalog";
+import { normalizeCatalogSearch } from "@/lib/domain/catalog";
 
 type ResourceItem = {
   id: string;
@@ -195,7 +196,7 @@ export function FeaturedResources({ materials, courses, loadError = false }: Fea
   }, [activeFilter]);
 
   const filteredResources = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
+    const normalized = normalizeCatalogSearch(query);
 
     return resources.filter((item) => {
       const passesFilter = matchesFilter(item, activeFilter);
@@ -207,10 +208,9 @@ export function FeaturedResources({ materials, courses, loadError = false }: Fea
         item.meta,
         ...(item.tags || [])
       ]
-        .join(" ")
-        .toLowerCase();
+        .join(" ");
 
-      const passesQuery = normalized.length === 0 || haystack.includes(normalized);
+      const passesQuery = normalized.length === 0 || normalizeCatalogSearch(haystack).includes(normalized);
 
       return passesFilter && passesQuery;
     });

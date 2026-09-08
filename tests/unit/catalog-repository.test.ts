@@ -12,11 +12,15 @@ import {
   listPublishedMaterials,
   listPublishedProducts,
   listPublishedTutors,
+  listMaterials,
+  getProductBySlug,
+  type CatalogFilters,
   mapRowToCourseItem,
   mapRowToMaterialItem,
   mapRowToTutorItem,
   type CatalogClient
 } from "../../lib/repositories/catalog-repository";
+import { normalizeCatalogSearch } from "../../lib/domain/catalog";
 
 const timestamps = { created_at: "2026-08-25T00:00:00Z", updated_at: "2026-08-25T00:00:00Z" };
 
@@ -67,14 +71,32 @@ function tutorRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function mockClient(rows: Record<string, unknown[] | unknown> = {}, error: unknown = null): CatalogClient {
+function mockClient(rows: Record<string, unknown[] | unknown> = {}, error: unknown = null, calls: string[] = []): CatalogClient {
   return {
     from(table: string) {
-      const data = rows[table] ?? [];
+      let data = rows[table] ?? [];
+      const allRows = Array.isArray(data) ? data : data === null ? [] : [data];
       const query = {
-        select() { return query; }, eq() { return query; }, order() { return query; },
-        then(resolve: (value: { data: unknown; error: unknown }) => unknown) { return Promise.resolve(resolve({ data, error })); },
-        maybeSingle() { return Promise.resolve({ data, error }); }
+        select() { calls.push("select"); return query; },
+        eq(column: string, value: unknown) {
+          calls.push(`eq:${column}=${String(value)}`);
+          if (Array.isArray(data)) data = data.filter((row) => (row as Record<string, unknown>)[column] === value);
+          else if (data && typeof data === "object" && (data as Record<string, unknown>)[column] !== value) data = [];
+          return query;
+        },
+        gte(column: string, value: unknown) { calls.push(`gte:${column}=${String(value)}`); return query; },
+        lte(column: string, value: unknown) { calls.push(`lte:${column}=${String(value)}`); return query; },
+        in(column: string, values: readonly unknown[]) { calls.push(`in:${column}=${values.join(",")}`); return query; },
+        ilike(column: string, value: unknown) { calls.push(`ilike:${column}=${String(value)}`); return query; },
+        or(value: string) { calls.push(`or:${value}`); return query; },
+        order(column: string, options: { ascending: boolean }) { calls.push(`order:${column}:${options.ascending ? "asc" : "desc"}`); return query; },
+        range(from: number, to: number) { calls.push(`range:${from}-${to}`); data = (Array.isArray(data) ? data : allRows).slice(from, to + 1); return query; },
+        then(resolve: (value: { data: unknown; error: unknown; count?: number }) => unknown) { return Promise.resolve(resolve({ data, error, count: Array.isArray(data) ? data.length : data ? 1 : 0 })); },
+        maybeSingle() {
+          const values = Array.isArray(data) ? data : data ? [data] : [];
+          if (values.length > 1) return Promise.resolve({ data: null, error: { code: "PGRST116" } });
+          return Promise.resolve({ data: values[0] ?? null, error });
+        }
       };
       return query;
     }
@@ -135,6 +157,49 @@ describe("Canonical catalog repository DTO mapper", () => {
 });
 
 describe("Catalog repository runtime data flow", () => {
+  test("normalizes accented, unaccented, case-insensitive and excess-whitespace search once", () => {
+    assert.strictEqual(normalizeCatalogSearch("  KẾ toán   "), "ke toan");
+    assert.strictEqual(normalizeCatalogSearch("Đặng"), "dang");
+    assert.strictEqual(normalizeCatalogSearch("!!!"), "");
+    assert.strictEqual(normalizeCatalogSearch(""), "");
+  });
+
+  test("runs filters, bounded range, and deterministic secondary ordering in the repository", async () => {
+    const calls: string[] = [];
+    const filters: CatalogFilters = {
+      search: "Kế toán",
+      category: "Kế toán",
+      subject: "ke-toan-tai-chinh-1",
+      minPrice: 0,
+      maxPrice: 100000,
+      sort: "price-asc",
+      limit: 100,
+      page: 2
+    };
+    const result = await listMaterials(filters, mockClient({ products: [materialRow()] }, null, calls));
+    assert.strictEqual(result.limit, 48);
+    assert.strictEqual(result.offset, 48);
+    assert.ok(calls.includes("eq:publication_status=published"));
+    assert.ok(calls.includes("eq:category=Kế toán"));
+    assert.ok(calls.includes("eq:subjects.slug=ke-toan-tai-chinh-1"));
+    assert.ok(calls.includes("gte:price_vnd=0"));
+    assert.ok(calls.includes("lte:price_vnd=100000"));
+    assert.ok(calls.some((call) => call.startsWith("or:title.ilike.")));
+    assert.deepStrictEqual(calls.slice(-4), ["order:price_vnd:asc", "order:created_at:desc", "order:id:asc", "range:48-95"]);
+    assert.deepStrictEqual(result.items, []);
+  });
+
+  test("fails closed for duplicate detail rows and malformed child joins", async () => {
+    await assert.rejects(
+      () => getProductBySlug("material", "ke-toan-tai-chinh-1", mockClient({ products: [materialRow(), materialRow({ id: "prod-duplicate" })] })),
+      { message: "Failed to get published catalog product." }
+    );
+    await assert.rejects(
+      () => getProductBySlug("material", "ke-toan-tai-chinh-1", mockClient({ products: materialRow({ materials: null }) })),
+      { message: "Failed to get published catalog product." }
+    );
+  });
+
   test("uses database rows, filters draft/archived and handles empty result", async () => {
     const client = mockClient({ products: [materialRow(), materialRow({ id: "draft", slug: "draft", publication_status: "draft" })] });
     const materials = await listPublishedMaterials(client);
@@ -158,7 +223,7 @@ describe("Catalog repository runtime data flow", () => {
   test("all public repositories return their discriminated DTOs", async () => {
     assert.strictEqual((await listPublishedCourses(mockClient({ products: [courseRow()] })))[0].kind, "course");
     assert.strictEqual((await listPublishedTutors(mockClient({ products: [tutorRow()] })))[0].kind, "tutor");
-    assert.strictEqual((await getPublishedProductBySlug("ke-toan-tai-chinh-1", mockClient({ products: materialRow() })))?.publication_status, "published");
+    assert.strictEqual((await getPublishedProductBySlug("ke-toan-tai-chinh-1", mockClient({ products: materialRow() })))?.publicationStatus, "published");
     assert.strictEqual(await getPublishedCourseBySlug("missing", mockClient({ products: null })), null);
     assert.strictEqual(await getPublishedTutorBySlug("missing", mockClient({ products: null })), null);
   });
@@ -167,7 +232,8 @@ describe("Catalog repository runtime data flow", () => {
 test("repository implementation keeps canonical mapping and no formatted-price logic", async () => {
   const source = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/catalog-repository.ts"), "utf8");
   assert.match(source, /PublishedMaterial|PublishedCourse|PublishedTutor/);
-  assert.match(source, /materials!inner\(\*\), subjects\(\*\)/);
-  assert.match(source, /tutors!inner\(\*, tutor_subjects\(is_primary, subjects\(\*\)\)\), subjects\(\*\)/);
+  assert.match(source, /const MATERIAL_COLUMNS = "product_id, pages, tags, includes, suitable_for/);
+  assert.match(source, /const TUTOR_COLUMNS = "product_id, name, faculty, format, availability/);
+  assert.doesNotMatch(source, /select\(\s*["'`]\*|!inner\(\*/);
   assert.doesNotMatch(source, /formatVND|parseFloat|price:\s*string/);
 });
