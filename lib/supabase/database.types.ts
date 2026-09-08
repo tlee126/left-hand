@@ -89,6 +89,7 @@ export type Database = {
           status: string
           updated_at: string
           updated_by: string | null
+          version: number
         }
         Insert: {
           created_at?: string
@@ -107,6 +108,7 @@ export type Database = {
           status?: string
           updated_at?: string
           updated_by?: string | null
+          version?: number
         }
         Update: {
           created_at?: string
@@ -125,8 +127,55 @@ export type Database = {
           status?: string
           updated_at?: string
           updated_by?: string | null
+          version?: number
         }
         Relationships: []
+      }
+      consultation_status_history: {
+        Row: {
+          changed_at: string
+          changed_by: string
+          consultation_id: string
+          id: string
+          new_status: string
+          old_status: string
+          version: number
+        }
+        Insert: {
+          changed_at?: string
+          changed_by: string
+          consultation_id: string
+          id?: string
+          new_status: string
+          old_status: string
+          version: number
+        }
+        Update: {
+          changed_at?: string
+          changed_by?: string
+          consultation_id?: string
+          id?: string
+          new_status?: string
+          old_status?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "consultation_status_history_changed_by_fkey"
+            columns: ["changed_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedSchema: "auth"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "consultation_status_history_consultation_id_fkey"
+            columns: ["consultation_id"]
+            isOneToOne: false
+            referencedRelation: "consultations"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       course_lessons: {
         Row: {

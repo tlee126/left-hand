@@ -11,11 +11,51 @@ export const VALID_CONSULTATION_STATUSES: readonly ConsultationStatus[] = [
   "closed"
 ] as const;
 
+/**
+ * State machine for the admin consultation workflow.
+ * A same-state submission is an idempotent no-op; reopening/backward moves
+ * are intentionally not part of the contract.
+ */
+export const CONSULTATION_STATUS_TRANSITIONS: Readonly<
+  Record<ConsultationStatus, readonly ConsultationStatus[]>
+> = {
+  new: ["new", "contacted"],
+  contacted: ["contacted", "qualified"],
+  qualified: ["qualified", "closed"],
+  closed: ["closed"]
+};
+
+export function isValidConsultationStatusTransition(
+  currentStatus: unknown,
+  nextStatus: unknown
+): nextStatus is ConsultationStatus {
+  if (
+    typeof currentStatus !== "string" ||
+    !VALID_CONSULTATION_STATUSES.includes(currentStatus as ConsultationStatus) ||
+    typeof nextStatus !== "string" ||
+    !VALID_CONSULTATION_STATUSES.includes(nextStatus as ConsultationStatus)
+  ) {
+    return false;
+  }
+
+  return CONSULTATION_STATUS_TRANSITIONS[currentStatus as ConsultationStatus].includes(
+    nextStatus as ConsultationStatus
+  );
+}
+
 export const DEFAULT_CONSULTATION_PAGE_LIMIT = 20;
 export const MAX_CONSULTATION_PAGE_LIMIT = 100;
 export const MAX_SEARCH_LENGTH = 100;
 
-export const CONSULTATION_COLUMNS = [
+export const CONSULTATION_LIST_COLUMNS = [
+  "id",
+  "status",
+  "created_at"
+] as const;
+
+export const CONSULTATION_LIST_SELECT_COLUMNS = CONSULTATION_LIST_COLUMNS.join(", ");
+
+export const CONSULTATION_DETAIL_COLUMNS = [
   "id",
   "request_id",
   "full_name",
@@ -30,20 +70,43 @@ export const CONSULTATION_COLUMNS = [
   "selected_subject_slug",
   "status",
   "created_at",
-  "updated_at"
+  "updated_at",
+  "updated_by",
+  "version"
 ] as const;
 
-export const CONSULTATION_SELECT_COLUMNS = CONSULTATION_COLUMNS.join(", ");
+export const CONSULTATION_DETAIL_SELECT_COLUMNS = CONSULTATION_DETAIL_COLUMNS.join(", ");
+
+/** @deprecated Use the explicit list/detail projections. */
+export const CONSULTATION_COLUMNS = CONSULTATION_DETAIL_COLUMNS;
+/** @deprecated Use CONSULTATION_DETAIL_SELECT_COLUMNS. */
+export const CONSULTATION_SELECT_COLUMNS = CONSULTATION_DETAIL_SELECT_COLUMNS;
 
 export const CONSULTATION_STATUS_UPDATE_COLUMNS = [
   "id",
   "status",
   "updated_at",
-  "updated_by"
+  "updated_by",
+  "version"
 ] as const;
 
 export const CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS =
   CONSULTATION_STATUS_UPDATE_COLUMNS.join(", ");
+
+export const CONSULTATION_STATUS_HISTORY_COLUMNS = [
+  "id",
+  "consultation_id",
+  "old_status",
+  "new_status",
+  "changed_at",
+  "changed_by",
+  "version"
+] as const;
+
+export const CONSULTATION_STATUS_HISTORY_SELECT_COLUMNS =
+  CONSULTATION_STATUS_HISTORY_COLUMNS.join(", ");
+
+export const MAX_CONSULTATION_HISTORY = 100;
 
 const CONSULTATION_CATALOG_SELECT_COLUMNS = "slug, subjects!inner(slug)";
 
@@ -52,7 +115,23 @@ export interface UpdatedConsultationStatus {
   status: ConsultationStatus;
   updated_at: string;
   updated_by: string | null;
+  version: number;
 }
+
+export interface ConsultationStatusHistoryEntry {
+  id: string;
+  consultation_id: string;
+  old_status: ConsultationStatus;
+  new_status: ConsultationStatus;
+  changed_at: string;
+  version: number;
+  actor_name: string | null;
+}
+
+export type ConsultationListItem = Pick<
+  Consultation,
+  (typeof CONSULTATION_LIST_COLUMNS)[number]
+>;
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -73,6 +152,16 @@ export class ConsultationRepositoryError extends Error {
     super(message);
     this.name = "ConsultationRepositoryError";
   }
+}
+
+function readInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+}
+
+function readActorName(value: unknown): string | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const name = Object.getOwnPropertyDescriptor(value, "full_name")?.value;
+  return typeof name === "string" && name.trim().length > 0 ? name.trim() : null;
 }
 
 type ConsultationCatalogSelection = {
@@ -192,7 +281,7 @@ export interface ListConsultationsOptions {
  */
 export async function listConsultations(
   options?: ListConsultationsOptions
-): Promise<Consultation[]> {
+): Promise<ConsultationListItem[]> {
   if (options !== undefined && options !== null) {
     if (typeof options !== "object" || Array.isArray(options)) {
       throw new ConsultationInputError("Invalid options: options must be an object.");
@@ -272,7 +361,7 @@ export async function listConsultations(
 
   let query = supabase
     .from("consultations")
-    .select(CONSULTATION_SELECT_COLUMNS);
+    .select(CONSULTATION_LIST_SELECT_COLUMNS);
 
   if (options?.status) {
     query = query.eq("status", options.status);
@@ -308,7 +397,26 @@ export async function listConsultations(
     );
   }
 
-  return (data as unknown as Consultation[]) ?? [];
+  const rows = Array.isArray(data) ? data : [];
+  return rows.map((value: unknown) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new ConsultationRepositoryError("Failed to list consultations from database.");
+    }
+    const row = value as Record<string, unknown>;
+    if (
+      typeof row.id !== "string" ||
+      typeof row.status !== "string" ||
+      !VALID_CONSULTATION_STATUSES.includes(row.status as ConsultationStatus) ||
+      typeof row.created_at !== "string"
+    ) {
+      throw new ConsultationRepositoryError("Failed to list consultations from database.");
+    }
+    return {
+      id: row.id,
+      status: row.status as Consultation["status"],
+      created_at: row.created_at
+    } as ConsultationListItem;
+  });
 }
 
 /**
@@ -335,7 +443,7 @@ export async function getConsultationById(
   try {
     const result = await supabase
       .from("consultations")
-      .select(CONSULTATION_SELECT_COLUMNS)
+      .select(CONSULTATION_DETAIL_SELECT_COLUMNS)
       .eq("id", id)
       .maybeSingle();
     data = result.data;
@@ -356,6 +464,121 @@ export async function getConsultationById(
 }
 
 /**
+ * Reads the append-only status history for one consultation. The database
+ * RLS policy remains the authority for approved-admin access.
+ */
+export async function getConsultationStatusHistory(
+  id: string,
+  client?: any
+): Promise<ConsultationStatusHistoryEntry[]> {
+  if (!isValidUuid(id)) {
+    throw new ConsultationInputError("Invalid consultation ID: must be a valid UUID.");
+  }
+
+  try {
+    const supabase = client ?? (await createClient());
+    const result = await supabase
+      .from("consultation_status_history")
+      .select(CONSULTATION_STATUS_HISTORY_SELECT_COLUMNS)
+      .eq("consultation_id", id)
+      .order("changed_at", { ascending: false })
+      .order("id", { ascending: false })
+      .range(0, MAX_CONSULTATION_HISTORY - 1);
+
+    if (result.error) {
+      throw new ConsultationRepositoryError(
+        "Failed to retrieve consultation status history from database."
+      );
+    }
+
+    const rows = Array.isArray(result.data) ? result.data : [];
+    const parsedRows: Array<{
+      id: string;
+      consultation_id: string;
+      old_status: ConsultationStatus;
+      new_status: ConsultationStatus;
+      changed_at: string;
+      version: number;
+      actor_id: string;
+      actor_name: string | null;
+    }> = rows.map((value: unknown) => {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        throw new ConsultationRepositoryError(
+          "Failed to retrieve consultation status history from database."
+        );
+      }
+      const row = value as Record<string, unknown>;
+      const idValue = row.id;
+      const consultationId = row.consultation_id;
+      const oldStatus = row.old_status;
+      const newStatus = row.new_status;
+      const changedAt = row.changed_at;
+      const changedBy = row.changed_by;
+      const version = readInteger(row.version);
+      if (
+        typeof idValue !== "string" ||
+        typeof consultationId !== "string" ||
+        typeof oldStatus !== "string" ||
+        typeof newStatus !== "string" ||
+        typeof changedBy !== "string" ||
+        !isValidConsultationStatusTransition(oldStatus, newStatus) ||
+        oldStatus === newStatus ||
+        typeof changedAt !== "string" ||
+        version === null
+      ) {
+        throw new ConsultationRepositoryError(
+          "Failed to retrieve consultation status history from database."
+        );
+      }
+
+      return {
+        id: idValue,
+        consultation_id: consultationId,
+        old_status: oldStatus as ConsultationStatus,
+        new_status: newStatus as ConsultationStatus,
+        changed_at: changedAt,
+        version,
+        actor_id: changedBy,
+        actor_name: null
+      };
+    });
+
+    const actorIds = [...new Set(parsedRows.map((row) => row.actor_id))];
+    const actorNames = new Map<string, string>();
+    if (actorIds.length > 0) {
+      const actorResult = await supabase
+        .from("profiles")
+        .select("id, full_name")
+        .in("id", actorIds);
+      if (actorResult.error) {
+        throw new ConsultationRepositoryError(
+          "Failed to retrieve consultation status history from database."
+        );
+      }
+      const actorRows = Array.isArray(actorResult.data) ? actorResult.data : [];
+      for (const value of actorRows) {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+        const row = value as Record<string, unknown>;
+        if (typeof row.id === "string") {
+          const name = readActorName(row);
+          if (name !== null) actorNames.set(row.id, name);
+        }
+      }
+    }
+
+    return parsedRows.map(({ actor_id: _actorId, ...row }) => ({
+      ...row,
+      actor_name: actorNames.get(_actorId) ?? null
+    }));
+  } catch (error) {
+    if (error instanceof ConsultationRepositoryError) throw error;
+    throw new ConsultationRepositoryError(
+      "Failed to retrieve consultation status history from database."
+    );
+  }
+}
+
+/**
  * Updates a consultation record's status.
  *
  * Requirements:
@@ -363,14 +586,17 @@ export async function getConsultationById(
  * - Validates status against the existing canonical list ('new', 'contacted', 'qualified', 'closed').
  * - Invalid UUID/status throws ConsultationInputError without querying the database.
  * - Uses server Supabase client (createClient()), with optional positional mock client for testing.
- * - Update payload is strictly { status } - never accepts arbitrary objects or updates other columns.
- * - Queries only consultations, filters by validated UUID, and selects minimal fields (id, status, updated_at, updated_by).
+ * - Update payload is strictly { status, version } - never accepts arbitrary objects or updates other columns.
+ * - Queries only consultations, filters by validated UUID, expected version, and expected current status.
+ * - Returns only database-managed status/audit fields needed by the action.
  * - Returns null when no matching row is returned.
  * - Maps all database/network exceptions to ConsultationRepositoryError without exposing raw DB errors or PII.
  */
 export async function updateConsultationStatus(
   id: string,
   status: ConsultationStatus,
+  expectedVersion: number,
+  expectedStatus: ConsultationStatus,
   client?: any
 ): Promise<UpdatedConsultationStatus | null> {
   if (!isValidUuid(id)) {
@@ -386,6 +612,27 @@ export async function updateConsultationStatus(
     );
   }
 
+  if (
+    typeof expectedVersion !== "number" ||
+    !Number.isSafeInteger(expectedVersion) ||
+    expectedVersion < 0
+  ) {
+    throw new ConsultationInputError("Invalid consultation version.");
+  }
+
+  if (
+    typeof expectedStatus !== "string" ||
+    !VALID_CONSULTATION_STATUSES.includes(expectedStatus as ConsultationStatus)
+  ) {
+    throw new ConsultationInputError("Invalid current consultation status.");
+  }
+
+  if (!isValidConsultationStatusTransition(expectedStatus, status)) {
+    throw new ConsultationInputError("Invalid consultation status transition.");
+  }
+
+  const nextVersion = status === expectedStatus ? expectedVersion : expectedVersion + 1;
+
   let data: unknown;
   let error: unknown;
 
@@ -393,8 +640,10 @@ export async function updateConsultationStatus(
     const supabase = client ?? (await createClient());
     const result = await supabase
       .from("consultations")
-      .update({ status })
+      .update({ status, version: nextVersion })
       .eq("id", id)
+      .eq("version", expectedVersion)
+      .eq("status", expectedStatus)
       .select(CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS)
       .maybeSingle();
     data = result.data;
@@ -420,6 +669,7 @@ export async function updateConsultationStatus(
     id: String(row.id),
     status: row.status as ConsultationStatus,
     updated_at: String(row.updated_at),
-    updated_by: row.updated_by == null ? null : String(row.updated_by)
+    updated_by: row.updated_by == null ? null : String(row.updated_by),
+    version: Number(row.version)
   };
 }

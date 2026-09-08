@@ -70,7 +70,7 @@ const consultationRows = Array.from({ length: scenario.rows ?? 1 }, (_, index) =
   selected_subject_slug: "subject-secret",
   status: "new",
   created_at: "2026-01-01T00:00:00.000Z",
-  updated_at: "2026-01-02T00:00:00.000Z"
+  updated_at: "2026-01-02T00:00:00.000Z", updated_by: "actor-id", version: 0
 }));
 
 const authModule = "data:text/javascript,admin-ui-auth";
@@ -89,9 +89,14 @@ mock.module(accountRepositoryModule, { namedExports: {
 } });
 mock.module(consultationRepositoryModule, { namedExports: {
   VALID_CONSULTATION_STATUSES: ["new", "contacted", "qualified", "closed"],
+  CONSULTATION_STATUS_TRANSITIONS: {
+    new: ["new", "contacted"], contacted: ["contacted", "qualified"],
+    qualified: ["qualified", "closed"], closed: ["closed"]
+  },
   isValidUuid: (id) => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
   listConsultations: async (...args) => { calls.push(args); return consultationRows; },
-  getConsultationById: async (...args) => { calls.push(args); return consultationRows[0]; }
+  getConsultationById: async (...args) => { calls.push(args); return consultationRows[0]; },
+  getConsultationStatusHistory: async () => []
 } });
 mock.module(actionModule, { namedExports: { updateAccountApprovalAction: async () => {} } });
 mock.module(navigationModule, { namedExports: {
@@ -260,12 +265,12 @@ describe("Task 3.1-F-D: admin UI visual consistency", () => {
     assert.equal(detail.error, undefined);
     assert.ok(detail.links.some((link) => link.href === "/quan-tri/tu-van"));
     assert.ok(detail.forms.some((form) => form.hasAction));
-    assert.deepEqual(detail.options, ["new", "contacted", "qualified", "closed"]);
+    assert.deepEqual(detail.options, ["new", "contacted"]);
     for (const field of ["ID lead", "Mã yêu cầu", "Ghi chú", "Đường dẫn nguồn", "Thời gian cập nhật"]) {
       assert.ok(detail.text.includes(field), field);
     }
     assert.ok(detail.text.includes("Cập nhật trạng thái thành công."));
-    assert.ok(!detail.text.includes("Slug môn học đã chọn"));
+    assert.ok(detail.text.includes("Slug môn học đã chọn"));
     assert.ok(!detail.text.includes("selected_subject_slug"));
   });
 

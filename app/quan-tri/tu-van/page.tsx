@@ -4,7 +4,7 @@ import { getAccountAccess } from "@/lib/auth/session";
 import {
   listConsultations,
   VALID_CONSULTATION_STATUSES,
-  type Consultation,
+  type ConsultationListItem,
   type ConsultationStatus,
   type ListConsultationsOptions
 } from "@/lib/repositories/consultation-repository";
@@ -51,10 +51,6 @@ function formatCreatedAt(value: string | null): string {
   }).format(date);
 }
 
-function displayValue(value: string | null): string {
-  return value?.trim() || "—";
-}
-
 export default async function AdminConsultationInboxPage({
   searchParams
 }: {
@@ -84,7 +80,7 @@ export default async function AdminConsultationInboxPage({
   if (search) options.search = search;
   if (status) options.status = status;
 
-  let fetchedRows: Consultation[];
+  let fetchedRows: ConsultationListItem[];
   let loadFailed = false;
   try {
     fetchedRows = await listConsultations(options);
@@ -145,15 +141,11 @@ export default async function AdminConsultationInboxPage({
       ) : (
         <section className="surface-card mt-8 overflow-hidden p-1" aria-label="Danh sách yêu cầu tư vấn">
           <div className="overflow-x-auto rounded-[22px]">
-          <table className="min-w-[900px] text-left text-sm lg:min-w-full">
+            <table className="min-w-[560px] text-left text-sm lg:min-w-full">
             <thead className="bg-paper/80 text-xs uppercase tracking-wide text-ink/60">
               <tr>
                 <th className="px-4 py-3">Thời gian</th>
-                <th className="px-4 py-3">Họ tên</th>
-                <th className="px-4 py-3">Điện thoại</th>
-                <th className="px-4 py-3">Khoa</th>
-                <th className="px-4 py-3">Mối quan tâm</th>
-                <th className="px-4 py-3">Nhu cầu</th>
+                <th className="px-4 py-3">Mã lead</th>
                 <th className="px-4 py-3">Trạng thái</th>
               </tr>
             </thead>
@@ -161,11 +153,7 @@ export default async function AdminConsultationInboxPage({
               {consultations.map((consultation) => (
                 <tr key={consultation.id} className="align-top transition hover:bg-accent/[0.035]">
                   <td className="whitespace-nowrap px-4 py-4 text-ink/65">{formatCreatedAt(consultation.created_at)}</td>
-                  <td className="max-w-56 break-words px-4 py-4 font-extrabold"><Link href={`${INBOX_PATH}/${consultation.id}`} className="text-accent hover:underline">{displayValue(consultation.full_name)}</Link></td>
-                  <td className="max-w-40 break-words px-4 py-4">{displayValue(consultation.phone)}</td>
-                  <td className="max-w-40 break-words px-4 py-4">{displayValue(consultation.faculty)}</td>
-                  <td className="max-w-40 break-words px-4 py-4">{displayValue(consultation.interest)}</td>
-                  <td className="max-w-xs break-words px-4 py-4">{displayValue(consultation.need)}</td>
+                  <td className="max-w-56 break-words px-4 py-4 font-extrabold"><Link href={`${INBOX_PATH}/${consultation.id}`} className="text-accent hover:underline">Mở lead</Link></td>
                   <td className="px-4 py-4"><span className="inline-flex rounded-full border border-accent/15 bg-accent/[0.07] px-2.5 py-1 text-xs font-extrabold text-ink/75">{consultation.status}</span></td>
                 </tr>
               ))}

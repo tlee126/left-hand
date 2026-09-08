@@ -42,7 +42,7 @@ npm run verify:db
 - Admin shell, consultation và catalog CRUD đã có.
 - Private storage, upload metadata và signed URL đã có.
 - Product entitlement, student workspace, learning progress và study plans đã có.
-- Schema repository hiện có migration từ `0001` đến `0023` (`0017` xử lý profile signup, `0018` bổ sung invariant semantic cho catalog, `0019` cung cấp transaction-safe admin catalog RPC, `0020` đóng direct table-mutation boundary, `0021` chuẩn hóa search Unicode, `0022` đóng mutation/semantic boundary, `0023` duy trì search document cho child fields).
+- Schema repository hiện có migration từ `0001` đến `0024` (`0017` xử lý profile signup, `0018` bổ sung invariant semantic cho catalog, `0019` cung cấp transaction-safe admin catalog RPC, `0020` đóng direct table-mutation boundary, `0021` chuẩn hóa search Unicode, `0022` đóng mutation/semantic boundary, `0023` duy trì search document cho child fields, `0024` harden consultation workflow, status history và optimistic concurrency).
 
 `npm run verify:db` kiểm tra tĩnh migration, seed và RLS contract. Đây không phải live database verification; việc xác nhận Supabase instance thực tế cần credentials và môi trường database tương ứng.
 

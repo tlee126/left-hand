@@ -33,7 +33,7 @@ const record = {
   faculty: "Khoa Toan", major: scenario.nullableFields ? null : "Toan ung dung", interest: "Hoc bong", need: "Can tu van chi tiet",
   note: scenario.nullableFields ? null : "PII_NOTE_123", source_path: scenario.nullableFields ? null : "/khoa-hoc/toan", selected_product_slug: scenario.nullableFields ? null : "product-secret",
   selected_subject_slug: scenario.nullableFields ? null : "subject-secret", status: "new", created_at: "2026-01-01T00:00:00.000Z",
-  updated_at: "2026-01-02T00:00:00.000Z"
+  updated_at: "2026-01-02T00:00:00.000Z", updated_by: "actor-id", version: 0
 };
 const authModule = "data:text/javascript,auth-module";
 const profileModule = "data:text/javascript,profile-module";
@@ -45,8 +45,13 @@ mock.module(authModule, { namedExports: { getAccountAccess: async () => access }
 mock.module(profileModule, { namedExports: {} });
 mock.module(repositoryModule, { namedExports: {
   VALID_CONSULTATION_STATUSES: ["new", "contacted", "qualified", "closed"],
+  CONSULTATION_STATUS_TRANSITIONS: {
+    new: ["new", "contacted"], contacted: ["contacted", "qualified"],
+    qualified: ["qualified", "closed"], closed: ["closed"]
+  },
   isValidUuid: (id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
   getConsultationById: async (id) => { calls.push(id); if (scenario.repositoryError) throw new Error("RAW_DATABASE_SECRET"); return scenario.record === false ? null : record; },
+  getConsultationStatusHistory: async () => [],
   listConsultations: async () => [record]
 } });
 mock.module(navigationModule, { namedExports: {
@@ -119,8 +124,8 @@ describe("Task 4.2-D: Admin consultation detail", () => {
       formatTimestamp("2026-01-01T00:00:00.000Z"),
       formatTimestamp("2026-01-02T00:00:00.000Z")
     ]) assert.ok(result.text?.includes(value));
-    assert.ok(!result.text?.includes("subject-secret"));
-    assert.ok(!result.text?.includes("Slug môn học đã chọn"));
+    assert.ok(result.text?.includes("subject-secret"));
+    assert.ok(result.text?.includes("Slug môn học đã chọn"));
     assert.ok(result.links?.some((link) => link.href === "/quan-tri/tu-van" && link.text.includes("Quay")));
   });
   test("renders fallback values for nullable consultation fields", async () => {
@@ -128,11 +133,11 @@ describe("Task 4.2-D: Admin consultation detail", () => {
     assert.deepEqual(result.calls, [validId]);
     assert.ok(result.text?.includes(validId));
     assert.ok(result.text?.includes("request-1"));
-    assert.equal(result.text?.match(/—/g)?.length, 4);
+    assert.equal(result.text?.match(/—/g)?.length, 5);
   });
   test("inbox lead name links to the lead UUID detail path", async () => {
     const result = await runPage({ access: "admin", id: validId, inbox: true });
-    assert.ok(result.links?.some((link) => link.href === "/quan-tri/tu-van/" + validId && link.text.includes("Nguyen Van A")));
+    assert.ok(result.links?.some((link) => link.href === "/quan-tri/tu-van/" + validId && link.text.includes("Mở lead")));
   });
   test("handles missing records and repository errors safely", async () => {
     assert.equal((await runPage({ access: "admin", id: validId, record: false })).error, "NOT_FOUND");

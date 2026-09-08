@@ -14,15 +14,22 @@ import type {
 
 let listConsultations: any;
 let getConsultationById: any;
+let getConsultationStatusHistory: any;
 let updateConsultationStatus: any;
+let isValidConsultationStatusTransition: any;
 let isValidUuid: any;
 let ConsultationInputError: any;
 let ConsultationRepositoryError: any;
 let VALID_CONSULTATION_STATUSES: any;
 let CONSULTATION_COLUMNS: any;
 let CONSULTATION_SELECT_COLUMNS: any;
+let CONSULTATION_LIST_COLUMNS: any;
+let CONSULTATION_LIST_SELECT_COLUMNS: any;
+let CONSULTATION_DETAIL_COLUMNS: any;
+let CONSULTATION_DETAIL_SELECT_COLUMNS: any;
 let CONSULTATION_STATUS_UPDATE_COLUMNS: any;
 let CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS: any;
+let CONSULTATION_STATUS_HISTORY_SELECT_COLUMNS: any;
 let DEFAULT_CONSULTATION_PAGE_LIMIT: any;
 let MAX_CONSULTATION_PAGE_LIMIT: any;
 let MAX_SEARCH_LENGTH: any;
@@ -50,15 +57,33 @@ before(async () => {
   const repo = await import("../../lib/repositories/consultation-repository");
   listConsultations = repo.listConsultations;
   getConsultationById = repo.getConsultationById;
-  updateConsultationStatus = repo.updateConsultationStatus;
+  getConsultationStatusHistory = repo.getConsultationStatusHistory;
+  isValidConsultationStatusTransition = repo.isValidConsultationStatusTransition;
+  const updateConsultationStatusRaw: any = repo.updateConsultationStatus;
+  // Keep legacy fixture calls explicit about their test baseline while new
+  // cases below exercise the required expected-version/current-status API.
+  updateConsultationStatus = (...args: any[]) => {
+    if (args.length === 3 && args[2] && typeof args[2] === "object") {
+      return updateConsultationStatusRaw(args[0], args[1], 0, args[1], args[2]);
+    }
+    if (args.length === 2) {
+      return updateConsultationStatusRaw(args[0], args[1], 0, args[1]);
+    }
+    return updateConsultationStatusRaw(...args);
+  };
   isValidUuid = repo.isValidUuid;
   ConsultationInputError = repo.ConsultationInputError;
   ConsultationRepositoryError = repo.ConsultationRepositoryError;
   VALID_CONSULTATION_STATUSES = repo.VALID_CONSULTATION_STATUSES;
   CONSULTATION_COLUMNS = repo.CONSULTATION_COLUMNS;
   CONSULTATION_SELECT_COLUMNS = repo.CONSULTATION_SELECT_COLUMNS;
+  CONSULTATION_LIST_COLUMNS = repo.CONSULTATION_LIST_COLUMNS;
+  CONSULTATION_LIST_SELECT_COLUMNS = repo.CONSULTATION_LIST_SELECT_COLUMNS;
+  CONSULTATION_DETAIL_COLUMNS = repo.CONSULTATION_DETAIL_COLUMNS;
+  CONSULTATION_DETAIL_SELECT_COLUMNS = repo.CONSULTATION_DETAIL_SELECT_COLUMNS;
   CONSULTATION_STATUS_UPDATE_COLUMNS = repo.CONSULTATION_STATUS_UPDATE_COLUMNS;
   CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS = repo.CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS;
+  CONSULTATION_STATUS_HISTORY_SELECT_COLUMNS = repo.CONSULTATION_STATUS_HISTORY_SELECT_COLUMNS;
   DEFAULT_CONSULTATION_PAGE_LIMIT = repo.DEFAULT_CONSULTATION_PAGE_LIMIT;
   MAX_CONSULTATION_PAGE_LIMIT = repo.MAX_CONSULTATION_PAGE_LIMIT;
   MAX_SEARCH_LENGTH = repo.MAX_SEARCH_LENGTH;
@@ -76,9 +101,11 @@ interface MockQueryCall {
 
 function createMockClient(options?: {
   queryData?: any;
+  actorData?: any;
   queryError?: any;
 }) {
   const calls: MockQueryCall[] = [];
+  let activeTable = "";
 
   const queryBuilder: any = {
     _calls: calls,
@@ -92,6 +119,10 @@ function createMockClient(options?: {
     },
     eq: (...args: any[]) => {
       calls.push({ method: "eq", args });
+      return queryBuilder;
+    },
+    in: (...args: any[]) => {
+      calls.push({ method: "in", args });
       return queryBuilder;
     },
     or: (...args: any[]) => {
@@ -121,7 +152,7 @@ function createMockClient(options?: {
       if (options?.queryError) {
         resolve({ data: null, error: options.queryError });
       } else {
-        resolve({ data: options?.queryData ?? [], error: null });
+        resolve({ data: activeTable === "profiles" ? options?.actorData ?? [] : options?.queryData ?? [], error: null });
       }
     }
   };
@@ -129,6 +160,7 @@ function createMockClient(options?: {
   const client = {
     _calls: calls,
     from: (table: string) => {
+      activeTable = table;
       calls.push({ method: "from", args: [table] });
       return queryBuilder;
     }
@@ -154,7 +186,8 @@ const SAMPLE_CONSULTATION: Consultation = {
   status: "new",
   created_at: "2026-09-01T10:00:00Z",
   updated_at: "2026-09-01T10:00:00Z",
-  updated_by: null
+  updated_by: null,
+  version: 0
 };
 
 describe("Task 4.2-B: Server-side Consultation Repository", () => {
@@ -163,7 +196,11 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
       const client = createMockClient({ queryData: [SAMPLE_CONSULTATION] });
       const results = await listConsultations(undefined);
 
-      assert.deepStrictEqual(results, [SAMPLE_CONSULTATION]);
+      assert.deepStrictEqual(results, [{
+        id: SAMPLE_CONSULTATION.id,
+        status: SAMPLE_CONSULTATION.status,
+        created_at: SAMPLE_CONSULTATION.created_at
+      }]);
 
       const fromCall = client._calls.find((c) => c.method === "from");
       assert.ok(fromCall, "Must call .from()");
@@ -171,7 +208,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
       const selectCall = client._calls.find((c) => c.method === "select");
       assert.ok(selectCall, "Must call .select()");
-      assert.strictEqual(selectCall.args[0], CONSULTATION_SELECT_COLUMNS);
+      assert.strictEqual(selectCall.args[0], CONSULTATION_LIST_SELECT_COLUMNS);
 
       // Verify default range: offset 0, limit 20 -> range(0, 19)
       const rangeCall = client._calls.find((c) => c.method === "range");
@@ -200,7 +237,11 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         const client = createMockClient({ queryData: [SAMPLE_CONSULTATION] });
         const results = await listConsultations({ status });
 
-        assert.deepStrictEqual(results, [SAMPLE_CONSULTATION]);
+        assert.deepStrictEqual(results, [{
+          id: SAMPLE_CONSULTATION.id,
+          status: SAMPLE_CONSULTATION.status,
+          created_at: SAMPLE_CONSULTATION.created_at
+        }]);
 
         const eqCalls = client._calls.filter((c) => c.method === "eq");
         assert.strictEqual(eqCalls.length, 1);
@@ -686,32 +727,39 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
       // Verify only status update is performed, not general update
       const updateMatches = fileContent.match(/\.update\(([^)]*)\)/g) || [];
       assert.strictEqual(updateMatches.length, 1, "Only one .update() call must exist");
-      assert.ok(updateMatches[0].includes("{ status }"), "Update call must be strictly { status }");
+      assert.ok(updateMatches[0].includes("{ status, version: nextVersion }"), "Update call must be strictly status plus expected-version");
     });
 
     test("repository selects only explicit consultation columns matching 0006 schema", () => {
-      assert.strictEqual(CONSULTATION_COLUMNS.length, 15);
-      const expectedColumns = [
+      assert.strictEqual(CONSULTATION_LIST_COLUMNS.length, 3);
+      const expectedListColumns = [
         "id",
+        "status",
+        "created_at"
+      ];
+      assert.deepStrictEqual([...CONSULTATION_LIST_COLUMNS], expectedListColumns);
+
+      const expectedColumns = [
+        ...expectedListColumns,
         "request_id",
-        "full_name",
-        "phone",
-        "faculty",
-        "interest",
-        "need",
         "major",
         "note",
         "source_path",
         "selected_product_slug",
         "selected_subject_slug",
-        "status",
-        "created_at",
-        "updated_at"
+        "updated_at",
+        "updated_by",
+        "version"
       ];
+      assert.strictEqual(CONSULTATION_DETAIL_COLUMNS.length, 17);
 
-      assert.deepStrictEqual([...CONSULTATION_COLUMNS], expectedColumns);
+      assert.deepStrictEqual([...CONSULTATION_DETAIL_COLUMNS], [
+        "id", "request_id", "full_name", "phone", "faculty", "interest", "need",
+        "major", "note", "source_path", "selected_product_slug", "selected_subject_slug",
+        "status", "created_at", "updated_at", "updated_by", "version"
+      ]);
       for (const col of expectedColumns) {
-        assert.ok(CONSULTATION_SELECT_COLUMNS.includes(col), `Select string must include "${col}"`);
+        assert.ok(CONSULTATION_DETAIL_SELECT_COLUMNS.includes(col), `Detail select string must include "${col}"`);
       }
     });
 
@@ -765,11 +813,11 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
       const updateCall = client._calls.find((c) => c.method === "update");
       assert.ok(updateCall, "Must call .update()");
-      assert.deepStrictEqual(updateCall.args, [{ status: "contacted" }]);
+      assert.deepStrictEqual(updateCall.args, [{ status: "contacted", version: 0 }]);
       assert.strictEqual(
         Object.keys(updateCall.args[0]).length,
-        1,
-        "Update payload must contain exactly one property"
+        2,
+        "Update payload must contain exactly status and expected-version fields"
       );
       assert.strictEqual(updateCall.args[0].status, "contacted");
     });
@@ -800,6 +848,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
           status: "qualified",
           updated_at: "2026-09-03T10:00:00Z",
           updated_by: "550e8400-e29b-41d4-a716-446655440001",
+          version: 0,
           full_name: "Nguyễn Văn A",
           phone: "0901234567",
           note: "Secret note"
@@ -816,11 +865,12 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         id: SAMPLE_CONSULTATION.id,
         status: "qualified",
         updated_at: "2026-09-03T10:00:00Z",
-        updated_by: "550e8400-e29b-41d4-a716-446655440001"
+        updated_by: "550e8400-e29b-41d4-a716-446655440001",
+        version: 0
       });
       assert.deepStrictEqual(
         Object.keys(result!).sort(),
-        ["id", "status", "updated_at", "updated_by"]
+        ["id", "status", "updated_at", "updated_by", "version"]
       );
       assert.strictEqual((result as any).full_name, undefined);
       assert.strictEqual((result as any).phone, undefined);
@@ -832,7 +882,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         selectCall.args[0],
         CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS
       );
-      assert.strictEqual(selectCall.args[0], "id, status, updated_at, updated_by");
+      assert.strictEqual(selectCall.args[0], "id, status, updated_at, updated_by, version");
     });
 
     test("all four valid statuses are accepted and updated", async () => {
@@ -855,7 +905,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
         const updateCall = client._calls.find((c) => c.method === "update");
         assert.ok(updateCall);
-        assert.deepStrictEqual(updateCall.args, [{ status }]);
+        assert.deepStrictEqual(updateCall.args, [{ status, version: 0 }]);
       }
     });
 
@@ -978,7 +1028,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
       const updateCall = client._calls.find((c) => c.method === "update");
       assert.ok(updateCall);
       const payloadKeys = Object.keys(updateCall.args[0]);
-      assert.deepStrictEqual(payloadKeys, ["status"]);
+      assert.deepStrictEqual(payloadKeys, ["status", "version"]);
 
       const forbiddenFields = [
         "id",
@@ -1129,7 +1179,8 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         queryData: {
           id: SAMPLE_CONSULTATION.id,
           status: "new",
-          updated_at: "2026-09-03T10:00:00Z"
+          updated_at: "2026-09-03T10:00:00Z",
+          version: 0
         }
       });
       // client is registered to mockClientInstance by createMockClient
@@ -1140,6 +1191,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
       assert.ok(result);
       assert.strictEqual(result.status, "new");
+      assert.strictEqual(result.version, 0);
       const fromCall = client._calls.find((c) => c.method === "from");
       assert.ok(fromCall);
       assert.strictEqual(fromCall.args[0], "consultations");
@@ -1213,6 +1265,132 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         console.log = originalConsoleLog;
         console.warn = originalConsoleWarn;
       }
+    });
+
+    describe("11. Consultation workflow and history", () => {
+      test("accepts only same-state retries and forward transitions", async () => {
+        const validTransitions = [
+          ["new", "new"], ["new", "contacted"],
+          ["contacted", "contacted"], ["contacted", "qualified"],
+          ["qualified", "qualified"], ["qualified", "closed"],
+          ["closed", "closed"]
+        ] as const;
+
+        for (const [currentStatus, nextStatus] of validTransitions) {
+          assert.equal(isValidConsultationStatusTransition(currentStatus, nextStatus), true);
+          const client = createMockClient({
+            queryData: {
+              id: SAMPLE_CONSULTATION.id,
+              status: nextStatus,
+              updated_at: "2026-09-03T10:00:00Z",
+              updated_by: null,
+              version: currentStatus === nextStatus ? 3 : 4
+            }
+          });
+          const result = await updateConsultationStatus(
+            SAMPLE_CONSULTATION.id,
+            nextStatus,
+            3,
+            currentStatus,
+            client
+          );
+          assert.ok(result);
+        }
+      });
+
+      test("rejects every backward/reopen transition before the repository query", async () => {
+        const invalidTransitions = [
+          ["contacted", "new"],
+          ["qualified", "new"],
+          ["qualified", "contacted"],
+          ["closed", "new"],
+          ["closed", "contacted"],
+          ["closed", "qualified"]
+        ] as const;
+
+        for (const [currentStatus, nextStatus] of invalidTransitions) {
+          assert.equal(isValidConsultationStatusTransition(currentStatus, nextStatus), false);
+          const client = createMockClient({ queryData: null });
+          await assert.rejects(
+            () => updateConsultationStatus(SAMPLE_CONSULTATION.id, nextStatus, 3, currentStatus, client),
+            ConsultationInputError
+          );
+          assert.equal(client._calls.length, 0);
+        }
+      });
+
+      test("uses expected version and current status as atomic concurrency guards", async () => {
+        const successClient = createMockClient({
+          queryData: {
+            id: SAMPLE_CONSULTATION.id,
+            status: "contacted",
+            updated_at: "2026-09-03T10:00:00Z",
+            updated_by: "550e8400-e29b-41d4-a716-446655440001",
+            version: 4
+          }
+        });
+        const success = await updateConsultationStatus(
+          SAMPLE_CONSULTATION.id,
+          "contacted",
+          3,
+          "new",
+          successClient
+        );
+        assert.equal(success?.version, 4);
+        assert.deepStrictEqual(
+          successClient._calls.find((c) => c.method === "update")?.args,
+          [{ status: "contacted", version: 4 }]
+        );
+        assert.deepStrictEqual(
+          successClient._calls.filter((c) => c.method === "eq").map((c) => c.args),
+          [["id", SAMPLE_CONSULTATION.id], ["version", 3], ["status", "new"]]
+        );
+        assert.equal(successClient._calls.some((c) => c.method === "from" && c.args[0] === "consultation_status_history"), false);
+
+        const staleClient = createMockClient({ queryData: null });
+        const stale = await updateConsultationStatus(
+          SAMPLE_CONSULTATION.id,
+          "contacted",
+          3,
+          "new",
+          staleClient
+        );
+        assert.equal(stale, null);
+        assert.equal(staleClient._calls.some((c) => c.method === "from" && c.args[0] === "consultation_status_history"), false);
+      });
+
+      test("reads bounded history with a minimal actor projection", async () => {
+        const client = createMockClient({
+          queryData: [{
+            id: "660e8400-e29b-41d4-a716-446655440000",
+            consultation_id: SAMPLE_CONSULTATION.id,
+            old_status: "new",
+            new_status: "contacted",
+            changed_at: "2026-09-03T10:00:00Z",
+            changed_by: "550e8400-e29b-41d4-a716-446655440001",
+            version: 1,
+          }],
+          actorData: [{ id: "550e8400-e29b-41d4-a716-446655440001", full_name: "Admin One", email: "must-not-be-selected" }]
+        });
+        const result = await getConsultationStatusHistory(SAMPLE_CONSULTATION.id, client);
+        assert.deepStrictEqual(result, [{
+          id: "660e8400-e29b-41d4-a716-446655440000",
+          consultation_id: SAMPLE_CONSULTATION.id,
+          old_status: "new",
+          new_status: "contacted",
+          changed_at: "2026-09-03T10:00:00Z",
+          version: 1,
+          actor_name: "Admin One"
+        }]);
+        assert.equal(
+          client._calls.find((c) => c.method === "select")?.args[0],
+          CONSULTATION_STATUS_HISTORY_SELECT_COLUMNS
+        );
+        assert.deepStrictEqual(
+          client._calls.find((c) => c.method === "range")?.args,
+          [0, 99]
+        );
+      });
     });
   });
 });

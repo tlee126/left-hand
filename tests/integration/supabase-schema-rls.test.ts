@@ -31,6 +31,7 @@ import {
   assertCatalogSearchNormalizationMigrationContract,
   assertCatalogIntegrityBoundaryMigrationContract,
   assertCatalogChildSearchMigrationContract,
+  assertConsultationWorkflowMigrationContract,
   stripSqlCommentsAndSplitStatements,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
@@ -248,7 +249,8 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       "0020_catalog_mutation_access_boundary.sql",
       "0021_catalog_search_normalization.sql",
       "0022_catalog_integrity_boundary.sql",
-      "0023_catalog_search_child_fields.sql"
+      "0023_catalog_search_child_fields.sql",
+      "0024_consultation_workflow_hardening.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -1657,6 +1659,31 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
         assert.throws(() => assertCatalogChildSearchMigrationContract(`${sql}\n${statement}`), /./);
       }
       assert.doesNotThrow(() => assertCatalogChildSearchMigrationContract(sql.replace("'[^[:alnum:]\\s-]'", "'[^[:alnum:]\\s-] DELETE FROM public.products'")));
+    });
+  });
+
+  describe("20. Migration 0024 Consultation Workflow Hardening", () => {
+    const migrationPath = path.resolve(process.cwd(), "supabase/migrations/0024_consultation_workflow_hardening.sql");
+
+    test("accepts the exact workflow, history, RLS, and version contract", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      assert.doesNotThrow(() => assertConsultationWorkflowMigrationContract(sql));
+      assert.match(sql, /old_status\s+TEXT\s+NOT\s+NULL/i);
+      assert.match(sql, /new_status\s+TEXT\s+NOT\s+NULL/i);
+      assert.match(sql, /changed_by\s+UUID\s+NOT\s+NULL/i);
+      assert.match(sql, /version\s+INTEGER\s+NOT\s+NULL/i);
+    });
+
+    test("rejects hostile statements and mutation escapes", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      for (const hostile of [
+        "GRANT DELETE ON TABLE public.consultation_status_history TO authenticated;",
+        "DO $$ BEGIN DELETE FROM public.consultation_status_history; END $$;",
+        "ALTER TABLE public.profiles ADD COLUMN leaked text;",
+        "CREATE OR REPLACE FUNCTION public.leaked() RETURNS void LANGUAGE plpgsql AS $$ BEGIN EXECUTE 'SELECT 1'; END $$;"
+      ]) {
+        assert.throws(() => assertConsultationWorkflowMigrationContract(`${sql}\n${hostile}`), /./, hostile);
+      }
     });
   });
 

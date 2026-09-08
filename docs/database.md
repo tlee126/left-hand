@@ -3,7 +3,7 @@
 This document outlines the PostgreSQL database schema for the LEFT HAND learning platform, designed for Supabase.
 
 > [!NOTE]
-> **Status:** Migrations `0001_core_schema.sql` through `0017_profile_on_auth_signup.sql` are already applied and content-locked. Migrations `0018_catalog_semantic_invariants.sql` through `0023_catalog_search_child_fields.sql` are prepared locally and verified via automated contract checks; none of these Phase 2 migrations has been applied to the hosted Supabase project.
+> **Status:** Migrations `0001_core_schema.sql` through `0017_profile_on_auth_signup.sql` are already applied and content-locked. Migrations `0018_catalog_semantic_invariants.sql` through `0024_consultation_workflow_hardening.sql` are prepared locally and verified via automated contract checks; none of these later migrations has been applied to the hosted Supabase project.
 
 ---
 
@@ -25,7 +25,8 @@ The schema employs a normalized, typed relational model separating core product 
 | `course_lessons` | `id` (UUID) | 1-to-N lessons / syllabus items under a specific course (order index, lesson title, duration). |
 | `tutors` | `product_id` (UUID FK) | 1-to-1 extension of `products` for 1-on-1 and small group peer tutors (name, faculty, format description, strengths, bio). |
 | `tutor_subjects` | `(tutor_product_id, subject_id)` | M-to-N join table tracking which subjects each tutor teaches and whether a subject is their primary specialization. |
-| `consultations` | `id` (UUID) | Consultation lead capture. Tracks requests for advice/quotes (status, requester info, requested item). |
+| `consultations` | `id` (UUID) | Consultation lead capture. Tracks requests for advice/quotes (status, requester info, requested item, and optimistic-concurrency version). |
+| `consultation_status_history` | `id` (UUID) | Append-only forward status transitions with database-managed actor, timestamp, and version. |
 
 ---
 
@@ -199,6 +200,7 @@ erDiagram
   - **Trigger Contract:** Trigger `trg_consultations_updated_at` targets `consultations` before update for each row and executes the established `update_updated_at_column()` function from migration 0004 without defining a replacement or using `SECURITY DEFINER`.
   - **Dual-Predicate Admin RLS Policy:** Exactly one UPDATE policy (`consultations_allow_update_status_admin`) is created, targeting `authenticated`. Both `USING` and `WITH CHECK` clauses require `EXISTS (SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')`. No DELETE policy or grants exist.
 - **Consultation Updater Audit Trail (`0009_consultation_updated_by.sql`):** `consultations.updated_by` is a nullable UUID reference to `auth.users(id)` with `ON DELETE SET NULL`. A dedicated database `BEFORE UPDATE` trigger assigns it from `auth.uid()`, so the client cannot choose the updater identity. The existing `0008` trigger continues to manage `updated_at`.
+- **Consultation Workflow Hardening (`0024_consultation_workflow_hardening.sql`):** approved admins may move a consultation only forward (`new → contacted → qualified → closed`); same-state retries are idempotent, while backward/reopen transitions are rejected by the database trigger. `consultations.version` is incremented atomically and required in the repository update predicate. Each real transition inserts one append-only `consultation_status_history` row in the same transaction, with `old_status`, `new_status`, `auth.uid()`, server time, and version. History is readable only by approved admins; update/delete/insert grants are absent and mutation triggers reject tampering.
 - **Admin Account Approval Data Layer (`0010_admin_account_approval_rls.sql`):** Approved authenticated admins using the `/quan-tri` workflow can read profiles through a dedicated RLS policy. The approval update workflow accepts only `account_status` and `rejection_reason`; it does not change `role` or any identity/profile field. A database trigger writes `approved_by = auth.uid()` and the current UTC timestamp to `approved_at`, so clients cannot provide those audit fields. Admins cannot change their own account status.
 - **Private Material Storage Foundation (`0012_private_material_storage.sql`):** Supabase Storage bucket `materials` is private (`public = false`). Object `SELECT`, `INSERT`, `UPDATE`, and `DELETE` access on `storage.objects` is limited to authenticated users whose matching `public.profiles` row has role `admin` and account status `approved`. Public and anonymous access is denied. Upload workflows and signed URLs are intentionally deferred to later tasks.
 - **Material Asset Metadata (`0013_material_asset_metadata.sql`):** `material_assets` records the product, uploader, original filename, MIME type, byte size, private visibility, storage path, and monotonically increasing version of each upload. Its product must also exist in `materials`, so a course or tutor product cannot receive a material file. RLS grants metadata `SELECT` and `INSERT` only to approved authenticated admins.
@@ -244,6 +246,7 @@ psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0006_c
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0007_consultation_admin_rls.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0008_consultation_admin_status_update.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0009_consultation_updated_by.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0024_consultation_workflow_hardening.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0010_admin_account_approval_rls.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0011_admin_catalog_crud_rls.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0012_private_material_storage.sql

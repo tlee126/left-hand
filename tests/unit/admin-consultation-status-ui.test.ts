@@ -9,6 +9,8 @@ type ActionScenario = {
   access: "anonymous" | "non-admin" | "unapproved" | "admin";
   id: string;
   formData: Record<string, string>;
+  currentStatus?: string;
+  version?: number;
   repositoryError?: boolean;
   repositoryReturnsNull?: boolean;
 };
@@ -17,6 +19,8 @@ type PageScenario = {
   access: "anonymous" | "non-admin" | "unapproved" | "admin";
   id: string;
   status?: string;
+  history?: boolean;
+  historyError?: boolean;
   searchParams?: Record<string, string>;
 };
 
@@ -45,12 +49,20 @@ const cacheModule = "data:text/javascript,cache-module";
 mock.module(authModule, { namedExports: { getAccountAccess: async () => access } });
 mock.module(repositoryModule, { namedExports: {
   VALID_CONSULTATION_STATUSES: ["new", "contacted", "qualified", "closed"],
+  CONSULTATION_STATUS_TRANSITIONS: {
+    new: ["new", "contacted"], contacted: ["contacted", "qualified"],
+    qualified: ["qualified", "closed"], closed: ["closed"]
+  },
+  isValidConsultationStatusTransition: (current, next) => current === next ||
+    (current === "new" && next === "contacted") ||
+    (current === "contacted" && next === "qualified") ||
+    (current === "qualified" && next === "closed"),
   isValidUuid: (id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
   updateConsultationStatus: async (...args) => {
     repoCalls.push(args);
     if (scenario.repositoryError) throw new Error("RAW_DATABASE_SECRET_SQL_FAIL_0901234567");
     if (scenario.repositoryReturnsNull) return null;
-    return { id: args[0], status: args[1], updated_at: "2026-01-01T00:00:00.000Z" };
+    return { id: args[0], status: args[1], updated_at: "2026-01-01T00:00:00.000Z", updated_by: "actor-id", version: args[2] + (args[1] === args[3] ? 0 : 1) };
   }
 } });
 mock.module(navigationModule, { namedExports: {
@@ -74,6 +86,8 @@ try {
   for (const [k, v] of Object.entries(scenario.formData || {})) {
     formData.append(k, v);
   }
+  if (!formData.has("currentStatus")) formData.append("currentStatus", scenario.currentStatus || scenario.formData.status || "new");
+  if (!formData.has("version")) formData.append("version", String(scenario.version ?? 0));
   await mod.updateConsultationStatusAction(scenario.id, formData);
   console.log(JSON.stringify({ repoCalls, revalidateCalls, success: true }));
 } catch (error) {
@@ -110,7 +124,9 @@ const record = {
   selected_subject_slug: "subj-slug",
   status: scenario.status || "new",
   created_at: "2026-01-01T00:00:00.000Z",
-  updated_at: "2026-01-02T00:00:00.000Z"
+  updated_at: "2026-01-02T00:00:00.000Z",
+  updated_by: "actor-id",
+  version: 0
 };
 
 const authModule = "data:text/javascript,auth-module";
@@ -124,8 +140,16 @@ mock.module(authModule, { namedExports: { getAccountAccess: async () => access }
 mock.module(profileModule, { namedExports: {} });
 mock.module(repositoryModule, { namedExports: {
   VALID_CONSULTATION_STATUSES: ["new", "contacted", "qualified", "closed"],
+  CONSULTATION_STATUS_TRANSITIONS: {
+    new: ["new", "contacted"], contacted: ["contacted", "qualified"],
+    qualified: ["qualified", "closed"], closed: ["closed"]
+  },
   isValidUuid: (id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
-  getConsultationById: async () => record
+  getConsultationById: async () => record,
+  getConsultationStatusHistory: async () => {
+    if (scenario.historyError) throw new Error("RAW_HISTORY_DATABASE_ERROR");
+    return scenario.history ? [{ id: "history-1", consultation_id: scenario.id, old_status: "new", new_status: "contacted", changed_at: "2026-01-03T00:00:00.000Z", version: 1, actor_name: "Admin One" }] : [];
+  }
 } });
 mock.module(navigationModule, { namedExports: {
   redirect: (loc) => { throw new Error("REDIRECT:" + loc); },
@@ -178,7 +202,7 @@ try {
 `;
 
 async function runAction(scenario: ActionScenario): Promise<{
-  repoCalls: [string, string][];
+  repoCalls: unknown[][];
   revalidateCalls: string[];
   error?: string;
   success?: boolean;
@@ -275,7 +299,7 @@ describe("Task 4.2-E-C: Admin consultation status UI & server action", () => {
         }
       });
 
-      assert.deepEqual(result.repoCalls, [[validId, "contacted"]]);
+      assert.deepEqual(result.repoCalls, [[validId, "contacted", 0, "contacted"]]);
       assert.equal(
         result.error,
         `REDIRECT:/quan-tri/tu-van/${validId}?success=1`
@@ -292,7 +316,7 @@ describe("Task 4.2-E-C: Admin consultation status UI & server action", () => {
           formData: { status }
         });
 
-        assert.deepEqual(result.repoCalls, [[validId, status]]);
+        assert.deepEqual(result.repoCalls, [[validId, status, 0, status]]);
         assert.equal(
           result.error,
           `REDIRECT:/quan-tri/tu-van/${validId}?success=1`
@@ -363,7 +387,7 @@ describe("Task 4.2-E-C: Admin consultation status UI & server action", () => {
         repositoryError: true
       });
 
-      assert.deepEqual(result.repoCalls, [[validId, "closed"]]);
+      assert.deepEqual(result.repoCalls, [[validId, "closed", 0, "closed"]]);
       assert.equal(
         result.error,
         `REDIRECT:/quan-tri/tu-van/${validId}?error=1`
@@ -381,10 +405,10 @@ describe("Task 4.2-E-C: Admin consultation status UI & server action", () => {
         repositoryReturnsNull: true
       });
 
-      assert.deepEqual(result.repoCalls, [[validId, "closed"]]);
+      assert.deepEqual(result.repoCalls, [[validId, "closed", 0, "closed"]]);
       assert.equal(
         result.error,
-        `REDIRECT:/quan-tri/tu-van/${validId}?error=1`
+        `REDIRECT:/quan-tri/tu-van/${validId}?conflict=1`
       );
     });
 
@@ -392,7 +416,7 @@ describe("Task 4.2-E-C: Admin consultation status UI & server action", () => {
       const result = await runAction({
         access: "admin",
         id: validId,
-        formData: { status: "qualified" }
+        formData: { status: "qualified", currentStatus: "qualified", version: "0" }
       });
 
       assert.deepEqual(result.revalidateCalls, [
@@ -403,6 +427,35 @@ describe("Task 4.2-E-C: Admin consultation status UI & server action", () => {
         result.error,
         `REDIRECT:/quan-tri/tu-van/${validId}?success=1`
       );
+    });
+
+    test("rejects backward transitions before repository and exposes only a generic error", async () => {
+      for (const [currentStatus, status] of [
+        ["contacted", "new"],
+        ["qualified", "contacted"],
+        ["closed", "qualified"]
+      ]) {
+        const result = await runAction({
+          access: "admin",
+          id: validId,
+          currentStatus,
+          version: 2,
+          formData: { status, currentStatus, version: "2" }
+        });
+        assert.deepEqual(result.repoCalls, []);
+        assert.equal(result.error, `REDIRECT:/quan-tri/tu-van/${validId}?error=1`);
+      }
+    });
+
+    test("maps an optimistic-concurrency miss to a conflict redirect", async () => {
+      const result = await runAction({
+        access: "admin",
+        id: validId,
+        formData: { status: "contacted", currentStatus: "new", version: "1" },
+        repositoryReturnsNull: true
+      });
+      assert.deepEqual(result.repoCalls, [[validId, "contacted", 1, "new"]]);
+      assert.equal(result.error, `REDIRECT:/quan-tri/tu-van/${validId}?conflict=1`);
     });
   });
 
@@ -422,7 +475,7 @@ describe("Task 4.2-E-C: Admin consultation status UI & server action", () => {
       assert.equal(statusSelect.defaultValue, "contacted");
 
       const optionValues = result.options?.map((o) => o.value);
-      assert.deepEqual(optionValues, ["new", "contacted", "qualified", "closed"]);
+      assert.deepEqual(optionValues, ["contacted", "qualified"]);
 
       assert.ok(result.text?.includes("Trạng thái hiện tại: contacted"));
       assert.ok(result.text?.includes("Cập nhật trạng thái tư vấn"));
@@ -443,6 +496,14 @@ describe("Task 4.2-E-C: Admin consultation status UI & server action", () => {
         assert.equal(statusSelect?.defaultValue, status);
         assert.ok(result.text?.includes(`Trạng thái hiện tại: ${status}`));
         assert.ok(result.text?.includes(`Trạng thái${status}`));
+        const expectedOptions = status === "new"
+          ? ["new", "contacted"]
+          : status === "contacted"
+            ? ["contacted", "qualified"]
+            : status === "qualified"
+              ? ["qualified", "closed"]
+              : ["closed"];
+        assert.deepEqual(result.options?.map((option) => option.value), expectedOptions);
       }
     });
 
@@ -468,6 +529,31 @@ describe("Task 4.2-E-C: Admin consultation status UI & server action", () => {
         result.text?.includes("Không thể cập nhật trạng thái tư vấn. Vui lòng thử lại sau.")
       );
       assert.ok(!result.text?.includes("Cập nhật trạng thái thành công."));
+    });
+
+    test("renders a generic conflict message after a stale update", async () => {
+      const result = await runPage({
+        access: "admin",
+        id: validId,
+        status: "contacted",
+        searchParams: { conflict: "1" }
+      });
+
+      assert.ok(result.text?.includes("được cập nhật bởi người khác"));
+      assert.ok(!result.text?.includes("SQL"));
+    });
+
+    test("renders resolved audit actors and status history safely", async () => {
+      const result = await runPage({ access: "admin", id: validId, history: true });
+      assert.ok(result.text?.includes("new → contacted"));
+      assert.ok(result.text?.includes("Admin One"));
+      assert.ok(result.text?.includes("Lịch sử trạng thái"));
+    });
+
+    test("renders a generic history error without hiding raw database details", async () => {
+      const result = await runPage({ access: "admin", id: validId, historyError: true });
+      assert.ok(result.text?.includes("Không thể tải lịch sử trạng thái lúc này"));
+      assert.ok(!result.text?.includes("RAW_HISTORY_DATABASE_ERROR"));
     });
 
     test("renders no success or error banner when query params are absent", async () => {
@@ -504,8 +590,8 @@ describe("Task 4.2-E-C: Admin consultation status UI & server action", () => {
       ]) {
         assert.ok(result.text?.includes(value), `Should include ${value}`);
       }
-      assert.ok(!result.text?.includes("subj-slug"));
-      assert.ok(!result.text?.includes("Slug môn học đã chọn"));
+      assert.ok(result.text?.includes("subj-slug"));
+      assert.ok(result.text?.includes("Slug môn học đã chọn"));
     });
   });
 });
