@@ -3,6 +3,7 @@
 import { useEffect, useState, useTransition } from "react";
 import type { User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/browser";
+import { mapAuthError } from "@/lib/auth/error-mapper";
 import {
   performSignup,
   mapSignupError,
@@ -13,6 +14,14 @@ import {
   type SignupParams,
   type SignupInputValidation
 } from "@/lib/auth/signup";
+
+type DemoAuthRuntime = typeof import("./demo-auth-runtime");
+let demoRuntimePromise: Promise<DemoAuthRuntime> | null = null;
+
+function loadDemoRuntime(): Promise<DemoAuthRuntime> {
+  demoRuntimePromise ??= import("./demo-auth-runtime");
+  return demoRuntimePromise;
+}
 
 export {
   performSignup,
@@ -49,22 +58,24 @@ export function useDemoAuth() {
     process.env.NODE_ENV !== "production" &&
     process.env.NEXT_PUBLIC_DEMO_MODE === "true";
   const demoEmail = isDemoMode ? process.env.NEXT_PUBLIC_DEMO_EMAIL?.trim() ?? "" : "";
-  const demoPassword = isDemoMode ? process.env.NEXT_PUBLIC_DEMO_PASSWORD ?? "" : "";
-  const hasDemoCredentials = Boolean(demoEmail && demoPassword);
-  const demoUser: AuthStateUser = {
-    name: "Demo Student",
-    email: demoEmail,
-    avatarInitials: "DS",
-    isDemo: true
-  };
   const [user, setUser] = useState<AuthStateUser | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
     let isMounted = true;
+    let unsubscribe: (() => void) | undefined;
 
-    try {
+    const initializeAuth = async () => {
+      let demoRuntime: DemoAuthRuntime | null = null;
+      if (isDemoMode) {
+        try {
+          demoRuntime = await loadDemoRuntime();
+        } catch {
+          demoRuntime = null;
+        }
+      }
+
       const supabase = createClient();
 
       // Initial user check
@@ -85,26 +96,16 @@ export function useDemoAuth() {
             email: email,
             avatarInitials: getInitialsFromEmailOrName(fullName)
           });
-        } else if (hasDemoCredentials && typeof window !== "undefined") {
-          const stored = localStorage.getItem("left-hand-demo-auth");
-          if (stored === "true") {
-            setUser(demoUser);
-          } else {
-            setUser(null);
-          }
+        } else if (demoRuntime?.hasDemoCredentials()) {
+          setUser(demoRuntime.readStoredDemoUser());
         } else {
           setUser(null);
         }
         setLoading(false);
       }).catch(() => {
         if (isMounted) {
-          if (hasDemoCredentials && typeof window !== "undefined") {
-            const stored = localStorage.getItem("left-hand-demo-auth");
-            if (stored === "true") {
-              setUser(demoUser);
-            } else {
-              setUser(null);
-            }
+          if (demoRuntime?.hasDemoCredentials()) {
+            setUser(demoRuntime.readStoredDemoUser());
           } else {
             setUser(null);
           }
@@ -132,52 +133,42 @@ export function useDemoAuth() {
             email: email,
             avatarInitials: getInitialsFromEmailOrName(fullName)
           });
-        } else if (hasDemoCredentials && typeof window !== "undefined") {
-          const stored = localStorage.getItem("left-hand-demo-auth");
-          if (stored === "true") {
-            setUser(demoUser);
-          } else {
-            setUser(null);
-          }
+        } else if (demoRuntime?.hasDemoCredentials()) {
+          setUser(demoRuntime.readStoredDemoUser());
         } else {
           setUser(null);
         }
         setLoading(false);
       });
+      unsubscribe = () => subscription.unsubscribe();
+    };
 
-      return () => {
-        isMounted = false;
-        subscription.unsubscribe();
-      };
-    } catch {
+    void initializeAuth().catch(() => {
       if (isMounted) {
-        if (hasDemoCredentials && typeof window !== "undefined") {
-          const stored = localStorage.getItem("left-hand-demo-auth");
-          if (stored === "true") {
-            setUser(demoUser);
-          } else {
-            setUser(null);
-          }
-        } else {
-          setUser(null);
-        }
+        setUser(null);
         setLoading(false);
       }
-    }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe?.();
+    };
   }, [isDemoMode]);
 
   const login = async (email: string, password?: string): Promise<{ success: boolean; error?: string }> => {
     // If in demo mode and user submitted demo credentials
-    if (
-      hasDemoCredentials &&
-      email.trim().toLowerCase() === demoEmail.toLowerCase() &&
-      password === demoPassword
-    ) {
-      if (typeof window !== "undefined") {
-        localStorage.setItem("left-hand-demo-auth", "true");
+    if (isDemoMode) {
+      try {
+        const demoRuntime = await loadDemoRuntime();
+        if (demoRuntime.matchesDemoCredentials(email, password || "")) {
+          demoRuntime.persistDemoUser();
+          setUser(demoRuntime.demoUser);
+          return { success: true };
+        }
+      } catch {
+        // Fall through to real auth if the local fixture is unavailable.
       }
-      setUser(demoUser);
-      return { success: true };
     }
 
     try {
@@ -188,22 +179,7 @@ export function useDemoAuth() {
       });
 
       if (error) {
-        if (error.message.toLowerCase().includes("email not confirmed") || error.message.toLowerCase().includes("unconfirmed")) {
-          return {
-            success: false,
-            error: "Email của bạn chưa được xác thực. Vui lòng kiểm tra hộp thư (hoặc mục Spam) để nhấn link xác thực tài khoản."
-          };
-        }
-        if (error.message.toLowerCase().includes("invalid login credentials") || error.message.toLowerCase().includes("invalid credentials")) {
-          return {
-            success: false,
-            error: "Email hoặc mật khẩu không chính xác. Vui lòng kiểm tra lại thông tin đăng nhập."
-          };
-        }
-        return {
-          success: false,
-          error: error.message || "Đăng nhập không thành công. Vui lòng thử lại sau."
-        };
+        return { success: false, error: mapAuthError(error, "login").message };
       }
 
       if (data.user) {
@@ -228,11 +204,7 @@ export function useDemoAuth() {
         error: "Không tìm thấy thông tin tài khoản."
       };
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Có lỗi xảy ra trong quá trình đăng nhập.";
-      return {
-        success: false,
-        error: message
-      };
+      return { success: false, error: mapAuthError(err, "login").message };
     }
   };
 
@@ -278,8 +250,13 @@ export function useDemoAuth() {
       // Ignore signOut network errors in local dev
     }
 
-    if (hasDemoCredentials && typeof window !== "undefined") {
-      localStorage.removeItem("left-hand-demo-auth");
+    if (isDemoMode) {
+      try {
+        const demoRuntime = await loadDemoRuntime();
+        demoRuntime.clearStoredDemoUser();
+      } catch {
+        // Ignore unavailable local fixture cleanup.
+      }
     }
     setUser(null);
   };

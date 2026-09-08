@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { cache } from "react";
 import {
   getProfileByUserId,
   StudentProfile,
@@ -116,7 +117,7 @@ export async function requireAuthUser(client?: AuthSessionClient): Promise<User>
  * Uses trusted server-side Supabase auth to get the user and loads the profile via getProfileByUserId().
  * Never relies on client-provided parameters, unvalidated cookies, or localStorage.
  */
-export async function getAccountAccess(client?: AccountAccessClient): Promise<AccountAccessDecision> {
+export const getAccountAccess = cache(async (client?: AccountAccessClient): Promise<AccountAccessDecision> => {
   const user = await getAuthUser(client);
   if (!user) {
     return {
@@ -146,4 +147,4 @@ export async function getAccountAccess(client?: AccountAccessClient): Promise<Ac
     default:
       return { status: "pending", user, profile };
   }
-}
+});

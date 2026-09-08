@@ -1,7 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { getAuthUser } from "@/lib/auth/session";
+import { getAccountAccess } from "@/lib/auth/session";
+import { mapProfileError } from "@/lib/auth/error-mapper";
 import { updateOwnProfile, validateProfileInput } from "@/lib/repositories/profile-repository";
 
 export interface ProfileActionResult {
@@ -14,12 +15,28 @@ export async function updateProfileAction(
   _prevState: ProfileActionResult,
   formData: FormData
 ): Promise<ProfileActionResult> {
-  const user = await getAuthUser();
+  const access = await getAccountAccess();
 
-  if (!user) {
+  if (access.status === "unauthenticated") {
     return {
       success: false,
       message: "Bạn chưa đăng nhập hoặc phiên làm việc đã hết hạn. Vui lòng đăng nhập lại."
+    };
+  }
+
+  if (access.status === "profile_missing") {
+    return { success: false, message: "Không tìm thấy hồ sơ tài khoản. Vui lòng liên hệ quản trị viên." };
+  }
+
+  if (access.status !== "approved" || !access.user) {
+    return {
+      success: false,
+      message:
+        access.status === "pending"
+          ? "Tài khoản đang chờ quản trị viên duyệt."
+          : access.status === "rejected"
+            ? "Tài khoản chưa được duyệt. Vui lòng liên hệ quản trị viên."
+            : "Tài khoản đang bị tạm khóa. Vui lòng liên hệ quản trị viên."
     };
   }
 
@@ -44,12 +61,12 @@ export async function updateProfileAction(
     };
   }
 
-  const result = await updateOwnProfile(user.id, input);
+  const result = await updateOwnProfile(access.user.id, input);
 
   if (!result.success) {
     return {
       success: false,
-      message: result.error || "Không thể lưu thông tin hồ sơ. Vui lòng thử lại sau."
+      message: mapProfileError(result.error).message
     };
   }
 

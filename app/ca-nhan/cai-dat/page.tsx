@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { getAuthUser } from "@/lib/auth/session";
-import { getProfileByUserId } from "@/lib/repositories/profile-repository";
+import { getAccountAccess } from "@/lib/auth/session";
 import { Header } from "@/components/site/header";
 import { Footer } from "@/components/site/footer";
 import { FloatingActions } from "@/components/site/floating-actions";
@@ -10,13 +9,26 @@ import { MotionReveal } from "@/components/site/motion-reveal";
 import { ArrowLeft, User, ShieldCheck } from "lucide-react";
 
 export default async function ProfileSettingsPage() {
-  const user = await getAuthUser();
+  const access = await getAccountAccess();
 
-  if (!user) {
+  if (access.status === "unauthenticated") {
     redirect("/dang-nhap?next=%2Fca-nhan%2Fcai-dat");
   }
 
-  const profile = await getProfileByUserId(user.id);
+  if (access.status === "profile_missing") {
+    redirect("/cho-duyet?status=missing-profile");
+  }
+
+  if (access.status !== "approved") {
+    redirect(`/cho-duyet?status=${access.status}`);
+  }
+
+  if (!access.user || !access.profile) {
+    redirect("/cho-duyet?status=missing-profile");
+  }
+
+  const user = access.user;
+  const profile = access.profile;
 
   return (
     <div className="relative min-h-screen overflow-x-hidden bg-transparent">

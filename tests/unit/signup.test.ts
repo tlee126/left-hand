@@ -168,9 +168,19 @@ function render(page) {
 }
 
 try {
+  const errorMapperCode = await compileModule(
+    path.resolve(process.cwd(), "lib/auth/error-mapper.ts"),
+    [],
+    "ts"
+  );
+  const errorMapperUrl = "data:text/javascript," + encodeURIComponent(errorMapperCode);
+
   const signupHelperCode = await compileModule(
     path.resolve(process.cwd(), "lib/auth/signup.ts"),
-    [["@supabase/supabase-js", "data:text/javascript,signup-types"]],
+    [
+      ["@supabase/supabase-js", "data:text/javascript,signup-types"],
+      ["\"@/lib/auth/error-mapper\"", "\"" + errorMapperUrl + "\""]
+    ],
     "ts"
   );
   const signupHelperUrl = "data:text/javascript," + encodeURIComponent(signupHelperCode);
@@ -181,7 +191,8 @@ try {
       ["\"react\"", "\"" + reactModule + "\""],
       ["\"@/lib/supabase/browser\"", "\"" + authClientModule + "\""],
       ["\"@/data/student-demo\"", "\"" + demoStudentModule + "\""],
-      ["\"@/lib/auth/signup\"", "\"" + signupHelperUrl + "\""]
+      ["\"@/lib/auth/signup\"", "\"" + signupHelperUrl + "\""],
+      ["\"@/lib/auth/error-mapper\"", "\"" + errorMapperUrl + "\""]
     ],
     "tsx"
   );
@@ -231,7 +242,7 @@ try {
 
   output = render(page);
   if (output.text.includes("Kiểm tra email")) timeline.push("success.ui");
-  if (output.text.includes("Đăng ký không thành công")) timeline.push("error.ui");
+  if (output.text.includes("Không thể hoàn tất đăng ký")) timeline.push("error.ui");
   console.log(JSON.stringify({ signUpArgs, authCalls, timeline, text: output.text }));
 } catch (error) {
   console.log(JSON.stringify({ signUpArgs, authCalls, timeline, text: "", error: String(error?.message ?? error) }));
@@ -343,7 +354,7 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
       assert.strictEqual(result.success, false);
       assert.strictEqual(
         result.error,
-        "Email này đã được đăng ký tài khoản. Vui lòng đăng nhập hoặc sử dụng email khác."
+        "Không thể hoàn tất đăng ký lúc này. Vui lòng kiểm tra thông tin và thử lại sau."
       );
     });
 
@@ -417,7 +428,7 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
       });
 
       assert.strictEqual(result.success, false);
-      assert.strictEqual(result.error, "Đăng ký không thành công. Vui lòng thử lại sau.");
+      assert.strictEqual(result.error, "Không thể hoàn tất đăng ký lúc này. Vui lòng kiểm tra thông tin và thử lại sau.");
     });
 
     test("performSignup rejects omitted, blank, and overlong full names before auth", async () => {
@@ -609,7 +620,7 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
   });
 
   describe("4. Error Mapping to Clear Vietnamese Messages", () => {
-    test("mapSignupError maps user already exists error", () => {
+    test("mapSignupError maps duplicate email variants to one generic response", () => {
       const msgs = [
         "User already registered",
         "user_already_exists",
@@ -620,40 +631,40 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
         const mapped = mapSignupError({ message: msg });
         assert.strictEqual(
           mapped,
-          "Email này đã được đăng ký tài khoản. Vui lòng đăng nhập hoặc sử dụng email khác."
+          "Không thể hoàn tất đăng ký lúc này. Vui lòng kiểm tra thông tin và thử lại sau."
         );
       }
     });
 
-    test("mapSignupError maps weak / short password errors", () => {
+    test("mapSignupError does not inspect raw weak-password text", () => {
       const mapped = mapSignupError({ message: "Password should be at least 6 characters." });
       assert.strictEqual(
         mapped,
-        "Mật khẩu quá ngắn hoặc không đủ độ mạnh. Vui lòng đặt mật khẩu ít nhất 8 ký tự."
+        "Không thể hoàn tất đăng ký lúc này. Vui lòng kiểm tra thông tin và thử lại sau."
       );
     });
 
-    test("mapSignupError maps invalid email errors", () => {
+    test("mapSignupError does not inspect raw invalid-email text", () => {
       const mapped = mapSignupError({ message: "Unable to validate email address: invalid format" });
       assert.strictEqual(
         mapped,
-        "Địa chỉ email không hợp lệ. Vui lòng kiểm tra lại."
+        "Không thể hoàn tất đăng ký lúc này. Vui lòng kiểm tra thông tin và thử lại sau."
       );
     });
 
-    test("mapSignupError maps signup disabled errors", () => {
+    test("mapSignupError does not inspect raw signup-disabled text", () => {
       const mapped = mapSignupError({ message: "Signups not allowed for this instance" });
       assert.strictEqual(
         mapped,
-        "Chức năng đăng ký tạm thời bị khóa. Vui lòng liên hệ quản trị viên."
+        "Không thể hoàn tất đăng ký lúc này. Vui lòng kiểm tra thông tin và thử lại sau."
       );
     });
 
-    test("mapSignupError maps rate limit errors", () => {
+    test("mapSignupError does not inspect raw rate-limit text", () => {
       const mapped = mapSignupError({ message: "over_email_send_rate_limit" });
       assert.strictEqual(
         mapped,
-        "Bạn đã gửi quá nhiều yêu cầu đăng ký. Vui lòng đợi vài phút rồi thử lại."
+        "Không thể hoàn tất đăng ký lúc này. Vui lòng kiểm tra thông tin và thử lại sau."
       );
     });
 
@@ -661,7 +672,7 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
       const mapped = mapSignupError({ message: "Internal server database error #50312" });
       assert.strictEqual(
         mapped,
-        "Đăng ký không thành công. Vui lòng thử lại sau."
+        "Không thể hoàn tất đăng ký lúc này. Vui lòng kiểm tra thông tin và thử lại sau."
       );
     });
   });
@@ -718,7 +729,7 @@ describe("Task 3.1D: Real User Signup Flow & Runtime Behavior", () => {
         "auth.signUp",
         "error.ui"
       ]);
-      assert.match(result.text, /Đăng ký không thành công/);
+      assert.match(result.text, /Không thể hoàn tất đăng ký/);
       assert.doesNotMatch(result.text, /profile trigger failed|RAW SQL|secret=jwt|nguyen@example\.test/);
     });
   });

@@ -84,6 +84,13 @@ mock.module(signupModule, {
 });
 
 const source = await readFile(path.resolve(process.cwd(), "hooks/use-demo-auth.ts"), "utf8");
+const demoRuntimeSource = await readFile(path.resolve(process.cwd(), "hooks/demo-auth-runtime.ts"), "utf8");
+const demoRuntimeCompiled = await transform(demoRuntimeSource, {
+  loader: "ts",
+  format: "esm",
+  sourcefile: "demo-auth-runtime.ts"
+});
+const demoRuntimeUrl = "data:text/javascript," + encodeURIComponent(demoRuntimeCompiled.code);
 const compiled = await transform(source, {
   loader: "tsx",
   format: "esm",
@@ -92,7 +99,8 @@ const compiled = await transform(source, {
 const hookCode = compiled.code
   .replaceAll('"react"', JSON.stringify(reactModule))
   .replaceAll('"@/lib/supabase/browser"', JSON.stringify(authClientModule))
-  .replaceAll('"@/lib/auth/signup"', JSON.stringify(signupModule));
+  .replaceAll('"@/lib/auth/signup"', JSON.stringify(signupModule))
+  .replaceAll('"./demo-auth-runtime"', JSON.stringify(demoRuntimeUrl));
 const hook = (await import("data:text/javascript," + encodeURIComponent(hookCode))).useDemoAuth;
 
 const auth = hook();

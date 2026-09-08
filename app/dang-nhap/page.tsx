@@ -2,27 +2,39 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useDemoAuth } from "@/hooks/use-demo-auth";
+import { AUTH_CALLBACK_ERROR_MESSAGE } from "@/lib/auth/error-mapper";
+import { getSafeRedirectPath } from "@/lib/auth/redirect";
 import { ArrowLeft, Lock, Mail, Sparkles } from "lucide-react";
 import { FloatingActions } from "@/components/site/floating-actions";
 
-export default function LoginPage() {
+function LoginPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { login, isLoggedIn, loading: authLoading, isDemoMode, demoEmail } = useDemoAuth();
+  const nextPath = getSafeRedirectPath(searchParams.get("next"));
+  const callbackError = searchParams.get("error");
+  const submittedLoginRef = useRef(false);
   
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  useEffect(() => {
+    if (callbackError === "auth_callback") {
+      setError(AUTH_CALLBACK_ERROR_MESSAGE);
+    }
+  }, [callbackError]);
+
   // If already logged in, redirect immediately to student personal dashboard
   useEffect(() => {
-    if (!authLoading && isLoggedIn) {
-      router.push("/ca-nhan");
+    if (!authLoading && isLoggedIn && !submittedLoginRef.current) {
+      router.push(nextPath);
     }
-  }, [authLoading, isLoggedIn, router]);
+  }, [authLoading, isLoggedIn, nextPath, router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,14 +42,22 @@ export default function LoginPage() {
 
     setError(null);
     setIsSubmitting(true);
+    submittedLoginRef.current = true;
 
-    const result = await login(email, password);
-    setIsSubmitting(false);
+    try {
+      const result = await login(email, password);
 
-    if (result.success) {
-      router.push("/ca-nhan");
-    } else {
-      setError(result.error || "Email hoặc mật khẩu không chính xác. Vui lòng kiểm tra lại.");
+      if (result.success) {
+        router.push(nextPath);
+      } else {
+        submittedLoginRef.current = false;
+        setError(result.error || "Không thể hoàn tất đăng nhập lúc này. Vui lòng thử lại sau.");
+      }
+    } catch {
+      submittedLoginRef.current = false;
+      setError("Không thể hoàn tất đăng nhập lúc này. Vui lòng thử lại sau.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -190,5 +210,13 @@ export default function LoginPage() {
       </footer>
       <FloatingActions />
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginPageContent />
+    </Suspense>
   );
 }

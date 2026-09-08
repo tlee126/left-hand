@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { useDemoAuth, getValidCallbackUrl, validateSignupInput } from "@/hooks/use-demo-auth";
+import { useDemoAuth, getValidCallbackUrl, mapSignupError, validateSignupInput } from "@/hooks/use-demo-auth";
 import { ArrowLeft, Lock, Mail, CheckCircle2 } from "lucide-react";
 import { FloatingActions } from "@/components/site/floating-actions";
 
@@ -56,13 +56,13 @@ export default function SignupPage() {
         if (result.data?.session) {
           router.push("/ca-nhan");
         } else {
-          setSuccessMessage("Đăng ký thành công! Vui lòng kiểm tra email của bạn để xác thực tài khoản.");
+          setSuccessMessage("Đăng ký đã được tiếp nhận. Vui lòng kiểm tra email để xác thực; tài khoản sẽ chờ quản trị viên duyệt trước khi truy cập.");
         }
       } else {
         setError(result.error || "Đăng ký không thành công. Vui lòng kiểm tra lại.");
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Có lỗi xảy ra trong quá trình đăng ký.");
+      setError(mapSignupError(err));
     } finally {
       setIsSubmitting(false);
     }
@@ -285,4 +285,3 @@ export default function SignupPage() {
     </div>
   );
 }
-
