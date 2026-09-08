@@ -1,4 +1,5 @@
 import type { Session, User } from "@supabase/supabase-js";
+import { mapAuthError } from "@/lib/auth/error-mapper";
 
 export interface SignupResult {
   success: boolean;
@@ -116,8 +117,14 @@ export function validateSignupInput(params: {
  * Only accepts valid http: or https: origins, preventing "null/auth/callback" or invalid protocols.
  */
 export function getValidCallbackUrl(rawOrigin?: string): string | undefined {
-  const origin =
-    rawOrigin ?? (typeof window !== "undefined" && window.location ? window.location.origin : undefined);
+  const configuredOrigin = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+  const origin = rawOrigin ??
+    configuredOrigin ??
+    (process.env.NODE_ENV !== "production" && typeof window !== "undefined" && window.location
+      ? window.location.origin
+      : process.env.NODE_ENV === "production"
+        ? "https://lefthand.vn"
+        : undefined);
 
   if (!origin || typeof origin !== "string" || origin.trim() === "" || origin === "null") {
     return undefined;
@@ -141,71 +148,7 @@ export function getValidCallbackUrl(rawOrigin?: string): string | undefined {
  * Avoids exposing raw database or server internals to end users.
  */
 export function mapSignupError(error: unknown): string {
-  if (!error) {
-    return "Đăng ký không thành công. Vui lòng thử lại sau.";
-  }
-
-  const errObj = typeof error === "object" ? (error as Record<string, any>) : {};
-  const rawMessage =
-    typeof error === "string"
-      ? error
-      : (errObj.message || errObj.error_description || "").toString();
-  const code = (errObj.code || errObj.status || "").toString().toLowerCase();
-  const lowerMsg = rawMessage.toLowerCase();
-
-  // Already registered email
-  if (
-    lowerMsg.includes("user already registered") ||
-    lowerMsg.includes("already registered") ||
-    lowerMsg.includes("user_already_exists") ||
-    lowerMsg.includes("email already in use") ||
-    lowerMsg.includes("already exists") ||
-    code === "user_already_exists"
-  ) {
-    return "Email này đã được đăng ký tài khoản. Vui lòng đăng nhập hoặc sử dụng email khác.";
-  }
-
-  // Password requirements
-  if (
-    lowerMsg.includes("password should be at least") ||
-    lowerMsg.includes("weak_password") ||
-    lowerMsg.includes("password is too short") ||
-    code === "weak_password"
-  ) {
-    return "Mật khẩu quá ngắn hoặc không đủ độ mạnh. Vui lòng đặt mật khẩu ít nhất 8 ký tự.";
-  }
-
-  // Email format validation from server
-  if (
-    lowerMsg.includes("invalid email") ||
-    lowerMsg.includes("unable to validate email") ||
-    lowerMsg.includes("invalid_email") ||
-    code === "invalid_email"
-  ) {
-    return "Địa chỉ email không hợp lệ. Vui lòng kiểm tra lại.";
-  }
-
-  // Signups disabled
-  if (
-    lowerMsg.includes("signups not allowed") ||
-    lowerMsg.includes("signup_disabled") ||
-    code === "signup_disabled"
-  ) {
-    return "Chức năng đăng ký tạm thời bị khóa. Vui lòng liên hệ quản trị viên.";
-  }
-
-  // Rate limits
-  if (
-    lowerMsg.includes("rate limit") ||
-    lowerMsg.includes("over_email_send_rate_limit") ||
-    lowerMsg.includes("too many requests") ||
-    code === "over_email_send_rate_limit" ||
-    code === "429"
-  ) {
-    return "Bạn đã gửi quá nhiều yêu cầu đăng ký. Vui lòng đợi vài phút rồi thử lại.";
-  }
-
-  return "Đăng ký không thành công. Vui lòng thử lại sau.";
+  return mapAuthError(error, "signup").message;
 }
 
 /**
@@ -220,11 +163,11 @@ export async function performSignup(
   const emailRedirectTo = params.emailRedirectTo;
   const fullName = normalizeSignupFullName(params.fullName);
 
-  const fullNameValidation = validateSignupFullName(fullName);
-  if (!fullNameValidation.isValid) {
+  const inputValidation = validateSignupInput({ email, password, fullName });
+  if (!inputValidation.isValid) {
     return {
       success: false,
-      error: fullNameValidation.error || "Họ và tên không hợp lệ."
+      error: inputValidation.error || "Thông tin đăng ký không hợp lệ."
     };
   }
 
@@ -258,4 +201,3 @@ export async function performSignup(
     };
   }
 }
-

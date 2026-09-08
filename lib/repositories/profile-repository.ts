@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { mapProfileError } from "@/lib/auth/error-mapper";
 
 export type AccountStatus = "pending" | "approved" | "rejected" | "suspended";
 
@@ -313,14 +314,7 @@ export async function updateOwnProfile(
       .maybeSingle();
 
     if (error) {
-      const errorMsg =
-        typeof error === "object" &&
-        error &&
-        "message" in error &&
-        typeof error.message === "string"
-          ? error.message
-          : "Không thể cập nhật hồ sơ.";
-      return { success: false, error: errorMsg };
+      return { success: false, error: mapProfileError(error).message };
     }
 
     if (!data) {
@@ -346,14 +340,7 @@ export async function updateOwnProfile(
         .single();
 
       if (insertError || !inserted) {
-        const insertErrorMsg =
-          typeof insertError === "object" &&
-          insertError &&
-          "message" in insertError &&
-          typeof insertError.message === "string"
-            ? insertError.message
-            : "Không thể khởi tạo hồ sơ.";
-        return { success: false, error: insertErrorMsg };
+        return { success: false, error: mapProfileError(insertError).message };
       }
 
       const insertedRow = inserted as ProfileRow;
@@ -412,7 +399,6 @@ export async function updateOwnProfile(
       }
     };
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Lỗi hệ thống khi cập nhật hồ sơ.";
-    return { success: false, error: msg };
+    return { success: false, error: mapProfileError(err).message };
   }
 }

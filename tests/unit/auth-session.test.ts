@@ -565,8 +565,8 @@ describe("Auth Session Helpers Contract & Intent", () => {
         "app/ca-nhan/cai-dat/page.tsx must be a Server Component"
       );
       assert.ok(
-        pageCode.includes("getAuthUser"),
-        "app/ca-nhan/cai-dat/page.tsx must check getAuthUser"
+        pageCode.includes("getAccountAccess"),
+        "app/ca-nhan/cai-dat/page.tsx must check getAccountAccess"
       );
       assert.ok(
         pageCode.includes("redirect("),
