@@ -1,5 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
-import type { Database } from "@/lib/supabase/database.types";
+import type { Database, Json } from "@/lib/supabase/database.types";
 import {
   CATEGORIES,
   COLOR_THEMES,
@@ -18,7 +18,67 @@ type ProductRow = Tables["products"]["Row"];
 type MaterialRow = Tables["materials"]["Row"];
 type CourseRow = Tables["courses"]["Row"];
 type TutorRow = Tables["tutors"]["Row"];
-type SubjectInsert = Tables["subjects"]["Insert"];
+type AdminCatalogClient = Awaited<ReturnType<typeof createClient>>;
+type InputObject = { [key: string]: unknown };
+
+type SubjectMutationPayload = {
+  slug?: string;
+  name?: string;
+  category?: CatalogCategory;
+  faculty_group?: string;
+  color_theme?: CatalogColorTheme;
+};
+
+type ProductMutationPayload = {
+  slug?: string;
+  title?: string;
+  description?: string;
+  subject_id?: string;
+  category?: CatalogCategory;
+  delivery_kind?: DeliveryKind;
+  publication_status?: PublicationStatus;
+  price_vnd?: number | null;
+  old_price_vnd?: number | null;
+  is_contact_for_price?: boolean;
+  rating?: number;
+  is_hot?: boolean;
+  color_theme?: CatalogColorTheme;
+};
+
+type MaterialMutationPayload = {
+  pages?: number;
+  tags?: string[];
+  includes?: string[];
+  suitable_for?: string[];
+};
+
+type CourseMutationPayload = {
+  format?: CourseFormat;
+  sessions?: number;
+  duration?: string;
+  schedule?: string;
+  enrollment_status?: EnrollmentStatus;
+  mentor?: string;
+  tags?: string[];
+  curriculum?: string[];
+  suitable_for?: string[];
+  preparation?: string[];
+};
+
+type TutorMutationPayload = {
+  name?: string;
+  faculty?: string;
+  format?: (typeof TUTOR_FORMATS)[number];
+  availability?: string;
+  short_bio?: string;
+  strengths?: string[];
+  tags?: string[];
+  suitable_for?: string[];
+  support_methods?: string[];
+};
+
+type ChildMutationPayload = MaterialMutationPayload | CourseMutationPayload | TutorMutationPayload;
+type AdminCatalogMutationOperation = "create" | "update" | "delete";
 
 export type CatalogCategory = Database["public"]["Enums"]["category_enum"];
 export type CatalogColorTheme = Database["public"]["Enums"]["color_theme_enum"];
@@ -218,22 +278,6 @@ const PRODUCT_INPUT_KEYS = [
 
 type QueryResult = { data: unknown; error: unknown };
 
-interface CatalogQuery extends PromiseLike<QueryResult> {
-  select(columns?: string): CatalogQuery;
-  insert(payload: Record<string, unknown>): CatalogQuery;
-  update(payload: Record<string, unknown>): CatalogQuery;
-  delete(): CatalogQuery;
-  eq(column: string, value: unknown): CatalogQuery;
-  or(filters: string): CatalogQuery;
-  order(column: string, options: { ascending: boolean }): CatalogQuery;
-  range(from: number, to: number): CatalogQuery;
-  maybeSingle(): Promise<QueryResult>;
-}
-
-interface AdminCatalogClient {
-  from(table: string): CatalogQuery;
-}
-
 export function isValidUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_REGEX.test(value);
 }
@@ -242,14 +286,14 @@ export function isValidCatalogSlug(value: unknown): value is string {
   return typeof value === "string" && SLUG_REGEX.test(value);
 }
 
-function inputRecord(input: unknown): Record<string, unknown> {
+function inputRecord(input: unknown): InputObject {
   if (input === null || typeof input !== "object" || Array.isArray(input)) {
     throw new AdminCatalogInputError("Input must be an object.");
   }
-  return input as Record<string, unknown>;
+  return input as InputObject;
 }
 
-function assertAllowedKeys(record: Record<string, unknown>, allowed: readonly string[]): void {
+function assertAllowedKeys(record: InputObject, allowed: readonly string[]): void {
   for (const key of Object.keys(record)) {
     if (!allowed.includes(key)) {
       throw new AdminCatalogInputError(`Field ${key} is not permitted.`);
@@ -257,7 +301,7 @@ function assertAllowedKeys(record: Record<string, unknown>, allowed: readonly st
   }
 }
 
-function requiredString(record: Record<string, unknown>, key: string, maxLength = 500): string {
+function requiredString(record: InputObject, key: string, maxLength = 500): string {
   const value = record[key];
   if (typeof value !== "string" || value.trim().length === 0 || value.length > maxLength) {
     throw new AdminCatalogInputError(`Field ${key} must be a non-empty bounded string.`);
@@ -265,12 +309,12 @@ function requiredString(record: Record<string, unknown>, key: string, maxLength 
   return value.trim();
 }
 
-function optionalString(record: Record<string, unknown>, key: string, maxLength = 500): string | undefined {
+function optionalString(record: InputObject, key: string, maxLength = 500): string | undefined {
   if (!(key in record)) return undefined;
   return requiredString(record, key, maxLength);
 }
 
-function enumString<T extends string>(record: Record<string, unknown>, key: string, allowed: readonly T[], required: boolean): T | undefined {
+function enumString<T extends string>(record: InputObject, key: string, allowed: readonly T[], required: boolean): T | undefined {
   if (!(key in record)) {
     if (required) throw new AdminCatalogInputError(`Field ${key} is required.`);
     return undefined;
@@ -282,7 +326,7 @@ function enumString<T extends string>(record: Record<string, unknown>, key: stri
   return value as T;
 }
 
-function uuidField(record: Record<string, unknown>, key: string, required: boolean): string | undefined {
+function uuidField(record: InputObject, key: string, required: boolean): string | undefined {
   if (!(key in record)) {
     if (required) throw new AdminCatalogInputError(`Field ${key} is required.`);
     return undefined;
@@ -293,7 +337,7 @@ function uuidField(record: Record<string, unknown>, key: string, required: boole
   return record[key] as string;
 }
 
-function numberField(record: Record<string, unknown>, key: string, required: boolean, minimum?: number): number | undefined {
+function numberField(record: InputObject, key: string, required: boolean, minimum?: number): number | undefined {
   if (!(key in record)) {
     if (required) throw new AdminCatalogInputError(`Field ${key} is required.`);
     return undefined;
@@ -305,7 +349,7 @@ function numberField(record: Record<string, unknown>, key: string, required: boo
   return value;
 }
 
-function decimalField(record: Record<string, unknown>, key: string, required: boolean, minimum: number, maximum: number): number | undefined {
+function decimalField(record: InputObject, key: string, required: boolean, minimum: number, maximum: number): number | undefined {
   if (!(key in record)) {
     if (required) throw new AdminCatalogInputError(`Field ${key} is required.`);
     return undefined;
@@ -317,7 +361,7 @@ function decimalField(record: Record<string, unknown>, key: string, required: bo
   return value;
 }
 
-function booleanField(record: Record<string, unknown>, key: string, required: boolean): boolean | undefined {
+function booleanField(record: InputObject, key: string, required: boolean): boolean | undefined {
   if (!(key in record)) {
     if (required) throw new AdminCatalogInputError(`Field ${key} is required.`);
     return undefined;
@@ -328,7 +372,7 @@ function booleanField(record: Record<string, unknown>, key: string, required: bo
   return record[key] as boolean;
 }
 
-function arrayField(record: Record<string, unknown>, key: string): string[] | undefined {
+function arrayField(record: InputObject, key: string): string[] | undefined {
   if (!(key in record)) return undefined;
   const value = record[key];
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.trim().length === 0)) {
@@ -337,13 +381,13 @@ function arrayField(record: Record<string, unknown>, key: string): string[] | un
   return value.map((item) => (item as string).trim());
 }
 
-function validateSubjectInput(input: unknown, update: boolean): Record<string, unknown> {
+function validateSubjectInput(input: unknown, update: boolean): SubjectMutationPayload {
   const record = inputRecord(input);
   assertAllowedKeys(record, ["slug", "name", "category", "faculty_group", "color_theme"]);
   if (!update && Object.keys(record).length !== 5) {
     throw new AdminCatalogInputError("All subject fields are required.");
   }
-  const payload: Record<string, unknown> = {};
+  const payload: SubjectMutationPayload = {};
   if ("slug" in record) {
     const slug = requiredString(record, "slug", 150);
     if (!isValidCatalogSlug(slug)) throw new AdminCatalogInputError("Field slug has an invalid format.");
@@ -359,13 +403,13 @@ function validateSubjectInput(input: unknown, update: boolean): Record<string, u
   return payload;
 }
 
-function validateProductInput(input: unknown, update: boolean, allowEmptyUpdate = false): Record<string, unknown> {
+function validateProductInput(input: unknown, update: boolean, allowEmptyUpdate = false): ProductMutationPayload {
   const record = inputRecord(input);
   assertAllowedKeys(record, PRODUCT_INPUT_KEYS);
   if (!update && ["slug", "title", "description", "subject_id", "category", "delivery_kind", "price_vnd", "is_contact_for_price", "color_theme"].some((key) => !(key in record))) {
     throw new AdminCatalogInputError("Required product fields are missing.");
   }
-  const payload: Record<string, unknown> = {};
+  const payload: ProductMutationPayload = {};
   if ("slug" in record) {
     const slug = requiredString(record, "slug", 150);
     if (!isValidCatalogSlug(slug)) throw new AdminCatalogInputError("Field slug has an invalid format.");
@@ -419,19 +463,19 @@ function validateProductInput(input: unknown, update: boolean, allowEmptyUpdate 
   return payload;
 }
 
-function productOnlyRecord(record: Record<string, unknown>): Record<string, unknown> {
-  const product: Record<string, unknown> = {};
+function productOnlyRecord(record: InputObject): InputObject {
+  const product: InputObject = {};
   for (const key of PRODUCT_INPUT_KEYS) {
     if (key in record) product[key] = record[key];
   }
   return product;
 }
 
-function validateMaterialInput(input: unknown, update: boolean): { product: Record<string, unknown>; child: Record<string, unknown> } {
+function validateMaterialInput(input: unknown, update: boolean): { product: ProductMutationPayload; child: MaterialMutationPayload } {
   const record = inputRecord(input);
   assertAllowedKeys(record, [...PRODUCT_INPUT_KEYS, "pages", "tags", "includes", "suitable_for"]);
   const product = validateProductInput(productOnlyRecord(record), update, true);
-  const child: Record<string, unknown> = {};
+  const child: MaterialMutationPayload = {};
   if (!update && !("pages" in record)) throw new AdminCatalogInputError("Field pages is required.");
   const pages = numberField(record, "pages", !update, 1);
   if (pages !== undefined) child.pages = pages;
@@ -443,11 +487,11 @@ function validateMaterialInput(input: unknown, update: boolean): { product: Reco
   return { product, child };
 }
 
-function validateCourseInput(input: unknown, update: boolean): { product: Record<string, unknown>; child: Record<string, unknown> } {
+function validateCourseInput(input: unknown, update: boolean): { product: ProductMutationPayload; child: CourseMutationPayload } {
   const record = inputRecord(input);
   assertAllowedKeys(record, [...PRODUCT_INPUT_KEYS, "format", "sessions", "duration", "schedule", "enrollment_status", "mentor", "tags", "curriculum", "suitable_for", "preparation"]);
   const product = validateProductInput(productOnlyRecord(record), update, true);
-  const child: Record<string, unknown> = {};
+  const child: CourseMutationPayload = {};
   for (const key of ["format", "sessions", "duration", "schedule", "mentor"] as const) {
     if (!update && !(key in record)) throw new AdminCatalogInputError(`Field ${key} is required.`);
   }
@@ -469,11 +513,11 @@ function validateCourseInput(input: unknown, update: boolean): { product: Record
   return { product, child };
 }
 
-function validateTutorInput(input: unknown, update: boolean): { product: Record<string, unknown>; child: Record<string, unknown> } {
+function validateTutorInput(input: unknown, update: boolean): { product: ProductMutationPayload; child: TutorMutationPayload } {
   const record = inputRecord(input);
   assertAllowedKeys(record, [...PRODUCT_INPUT_KEYS, "name", "faculty", "format", "availability", "short_bio", "strengths", "tags", "suitable_for", "support_methods"]);
   const product = validateProductInput(productOnlyRecord(record), update, true);
-  const child: Record<string, unknown> = {};
+  const child: TutorMutationPayload = {};
   const format = enumString(record, "format", TUTOR_FORMATS, !update);
   if (format !== undefined) child.format = format;
   for (const key of ["name", "faculty", "availability", "short_bio"] as const) {
@@ -513,7 +557,7 @@ function validateListOptions(options: ListAdminCatalogOptions | undefined): { se
 
 async function adminClient(): Promise<AdminCatalogClient> {
   try {
-    return (await createClient()) as unknown as AdminCatalogClient;
+    return await createClient();
   } catch {
     throw new AdminCatalogRepositoryError("Failed to connect to the catalog database.");
   }
@@ -552,52 +596,54 @@ async function getProduct<T>(id: string, kind: ProductRow["kind"], selectColumns
   if (!isValidUuid(id)) throw new AdminCatalogInputError("Catalog ID must be a valid UUID.");
   try {
     const client = await adminClient();
-    const result = await client.from("products").select(selectColumns).eq("id", id).eq("kind", kind).maybeSingle();
-    if (result.error) repositoryFailure(message);
-    return (result.data as T | null) ?? null;
+    return await getProductWithClient<T>(client, id, kind, selectColumns, message);
   } catch (error) {
     if (error instanceof AdminCatalogInputError || error instanceof AdminCatalogRepositoryError) throw error;
     throw new AdminCatalogRepositoryError(message);
   }
 }
 
-async function insertProduct<T>(kind: ProductRow["kind"], product: Record<string, unknown>, childTable: string, child: Record<string, unknown>, childColumns: string, selectColumns: string, message: string): Promise<T> {
+async function getProductWithClient<T>(client: AdminCatalogClient, id: string, kind: ProductRow["kind"], selectColumns: string, message: string): Promise<T | null> {
+  const result = await client.from("products").select(selectColumns).eq("id", id).eq("kind", kind).maybeSingle();
+  if (result.error) repositoryFailure(message);
+  return (result.data as T | null) ?? null;
+}
+
+type JsonObject = { [key: string]: Json | undefined };
+
+function asJsonObject(value: Json | null): JsonObject | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : null;
+}
+
+function mutationProductId(value: Json | null, message: string): string {
+  const root = asJsonObject(value);
+  const product = root?.product;
+  const productObject = product === undefined ? null : asJsonObject(product);
+  const id = productObject?.id;
+  if (typeof id !== "string" || !isValidUuid(id)) repositoryFailure(message);
+  return id;
+}
+
+async function mutateProduct<T>(operation: Exclude<AdminCatalogMutationOperation, "delete">, id: string | undefined, kind: ProductRow["kind"], product: ProductMutationPayload, child: ChildMutationPayload, selectColumns: string, message: string): Promise<T> {
+  if (operation === "update" && (id === undefined || !isValidUuid(id))) {
+    throw new AdminCatalogInputError("Catalog ID must be a valid UUID.");
+  }
   try {
     const client = await adminClient();
-    const productResult = await client.from("products").insert({ ...product, kind }).select(PRODUCT_SELECT_COLUMNS).maybeSingle();
-    if (productResult.error || !productResult.data) repositoryFailure(message);
-    const productRow = productResult.data as ProductRow;
-    const childResult = await client.from(childTable).insert({ ...child, product_id: productRow.id }).select(childColumns).maybeSingle();
-    if (childResult.error || !childResult.data) repositoryFailure(message);
-    return { ...productRow, [childTable]: childResult.data } as T;
+    const result = await client.rpc("admin_catalog_mutate", {
+      p_operation: operation,
+      p_kind: kind,
+      p_product: product as Json,
+      p_child: child as Json,
+      p_product_id: id
+    });
+    if (result.error) repositoryFailure(message);
+    const productId = mutationProductId(result.data, message);
+    const row = await getProductWithClient<T>(client, productId, kind, selectColumns, message);
+    if (row === null) repositoryFailure(message);
+    return row;
   } catch (error) {
     if (error instanceof AdminCatalogRepositoryError) throw error;
-    throw new AdminCatalogRepositoryError(message);
-  }
-}
-
-async function updateProduct<T>(id: string, kind: ProductRow["kind"], product: Record<string, unknown>, childTable: string, child: Record<string, unknown>, childColumns: string, selectColumns: string, message: string): Promise<T | null> {
-  if (!isValidUuid(id)) throw new AdminCatalogInputError("Catalog ID must be a valid UUID.");
-  try {
-    const client = await adminClient();
-    let productRow: ProductRow | null = null;
-    let childRow: unknown = null;
-    if (Object.keys(product).length > 0) {
-      const result = await client.from("products").update(product).eq("id", id).eq("kind", kind).select(PRODUCT_SELECT_COLUMNS).maybeSingle();
-      if (result.error) repositoryFailure(message);
-      if (!result.data) return null;
-      productRow = result.data as ProductRow;
-    }
-    if (Object.keys(child).length > 0) {
-      const result = await client.from(childTable).update(child).eq("product_id", id).select(childColumns).maybeSingle();
-      if (result.error) repositoryFailure(message);
-      if (!result.data) return null;
-      childRow = result.data;
-    }
-    if (productRow && childRow) return { ...productRow, [childTable]: childRow } as T;
-    return await getProduct<T>(id, kind, selectColumns, message);
-  } catch (error) {
-    if (error instanceof AdminCatalogInputError || error instanceof AdminCatalogRepositoryError) throw error;
     throw new AdminCatalogRepositoryError(message);
   }
 }
@@ -606,9 +652,18 @@ async function deleteProduct(id: string, kind: ProductRow["kind"], message: stri
   if (!isValidUuid(id)) throw new AdminCatalogInputError("Catalog ID must be a valid UUID.");
   try {
     const client = await adminClient();
-    const result = await client.from("products").delete().eq("id", id).eq("kind", kind).select("id").maybeSingle();
+    const result = await client.rpc("admin_catalog_mutate", {
+      p_operation: "delete",
+      p_kind: kind,
+      p_product: {},
+      p_child: {},
+      p_product_id: id
+    });
     if (result.error) repositoryFailure(message);
-    return Boolean(result.data);
+    if (result.data === null) return false;
+    const root = asJsonObject(result.data);
+    if (root?.deleted !== true || root.id !== id) repositoryFailure(message);
+    return true;
   } catch (error) {
     if (error instanceof AdminCatalogInputError || error instanceof AdminCatalogRepositoryError) throw error;
     throw new AdminCatalogRepositoryError(message);
@@ -644,10 +699,17 @@ export async function getAdminSubjectById(id: string): Promise<AdminSubject | nu
 }
 
 export async function createAdminSubject(input: CreateAdminSubjectInput): Promise<AdminSubject> {
-  const payload = validateSubjectInput(input, false) as SubjectInsert as Record<string, unknown>;
+  const validated = validateSubjectInput(input, false);
+  const payload: Tables["subjects"]["Insert"] = {
+    slug: validated.slug!,
+    name: validated.name!,
+    category: validated.category!,
+    faculty_group: validated.faculty_group!,
+    color_theme: validated.color_theme!
+  };
   try {
     const client = await adminClient();
-    const result = await client.from("subjects").insert(payload).select(SUBJECT_SELECT_COLUMNS).maybeSingle();
+    const result: QueryResult = await client.from("subjects").insert(payload).select(SUBJECT_SELECT_COLUMNS).maybeSingle();
     if (result.error || !result.data) repositoryFailure("Failed to create admin subject.");
     return result.data as AdminSubject;
   } catch (error) {
@@ -658,7 +720,7 @@ export async function createAdminSubject(input: CreateAdminSubjectInput): Promis
 
 export async function updateAdminSubject(id: string, input: UpdateAdminSubjectInput): Promise<AdminSubject | null> {
   if (!isValidUuid(id)) throw new AdminCatalogInputError("Subject ID must be a valid UUID.");
-  const payload = validateSubjectInput(input, true);
+  const payload: Tables["subjects"]["Update"] = validateSubjectInput(input, true);
   try {
     const client = await adminClient();
     const result = await client.from("subjects").update(payload).eq("id", id).select(SUBJECT_SELECT_COLUMNS).maybeSingle();
@@ -693,12 +755,12 @@ export async function getAdminMaterialById(id: string): Promise<AdminMaterial | 
 
 export async function createAdminMaterial(input: CreateAdminMaterialInput): Promise<AdminMaterial> {
   const validated = validateMaterialInput(input, false);
-  return insertProduct<AdminMaterial>("material", validated.product, "materials", validated.child, MATERIAL_COLUMNS.join(", "), MATERIAL_SELECT_COLUMNS, "Failed to create admin material.");
+  return mutateProduct<AdminMaterial>("create", undefined, "material", validated.product, validated.child, MATERIAL_SELECT_COLUMNS, "Failed to create admin material.");
 }
 
 export async function updateAdminMaterial(id: string, input: UpdateAdminMaterialInput): Promise<AdminMaterial | null> {
   const validated = validateMaterialInput(input, true);
-  return updateProduct<AdminMaterial>(id, "material", validated.product, "materials", validated.child, MATERIAL_COLUMNS.join(", "), MATERIAL_SELECT_COLUMNS, "Failed to update admin material.");
+  return mutateProduct<AdminMaterial>("update", id, "material", validated.product, validated.child, MATERIAL_SELECT_COLUMNS, "Failed to update admin material.");
 }
 
 export async function deleteAdminMaterial(id: string): Promise<boolean> {
@@ -715,12 +777,12 @@ export async function getAdminCourseById(id: string): Promise<AdminCourse | null
 
 export async function createAdminCourse(input: CreateAdminCourseInput): Promise<AdminCourse> {
   const validated = validateCourseInput(input, false);
-  return insertProduct<AdminCourse>("course", validated.product, "courses", validated.child, COURSE_COLUMNS.join(", "), COURSE_SELECT_COLUMNS, "Failed to create admin course.");
+  return mutateProduct<AdminCourse>("create", undefined, "course", validated.product, validated.child, COURSE_SELECT_COLUMNS, "Failed to create admin course.");
 }
 
 export async function updateAdminCourse(id: string, input: UpdateAdminCourseInput): Promise<AdminCourse | null> {
   const validated = validateCourseInput(input, true);
-  return updateProduct<AdminCourse>(id, "course", validated.product, "courses", validated.child, COURSE_COLUMNS.join(", "), COURSE_SELECT_COLUMNS, "Failed to update admin course.");
+  return mutateProduct<AdminCourse>("update", id, "course", validated.product, validated.child, COURSE_SELECT_COLUMNS, "Failed to update admin course.");
 }
 
 export async function deleteAdminCourse(id: string): Promise<boolean> {
@@ -737,12 +799,12 @@ export async function getAdminTutorById(id: string): Promise<AdminTutor | null> 
 
 export async function createAdminTutor(input: CreateAdminTutorInput): Promise<AdminTutor> {
   const validated = validateTutorInput(input, false);
-  return insertProduct<AdminTutor>("tutor", validated.product, "tutors", validated.child, TUTOR_COLUMNS.join(", "), TUTOR_SELECT_COLUMNS, "Failed to create admin tutor.");
+  return mutateProduct<AdminTutor>("create", undefined, "tutor", validated.product, validated.child, TUTOR_SELECT_COLUMNS, "Failed to create admin tutor.");
 }
 
 export async function updateAdminTutor(id: string, input: UpdateAdminTutorInput): Promise<AdminTutor | null> {
   const validated = validateTutorInput(input, true);
-  return updateProduct<AdminTutor>(id, "tutor", validated.product, "tutors", validated.child, TUTOR_COLUMNS.join(", "), TUTOR_SELECT_COLUMNS, "Failed to update admin tutor.");
+  return mutateProduct<AdminTutor>("update", id, "tutor", validated.product, validated.child, TUTOR_SELECT_COLUMNS, "Failed to update admin tutor.");
 }
 
 export async function deleteAdminTutor(id: string): Promise<boolean> {

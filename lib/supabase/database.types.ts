@@ -659,7 +659,16 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      admin_catalog_mutate: {
+        Args: {
+          p_child?: Json
+          p_kind: Database["public"]["Enums"]["product_kind_enum"]
+          p_operation: string
+          p_product?: Json
+          p_product_id?: string
+        }
+        Returns: Json
+      }
     }
     Enums: {
       category_enum:

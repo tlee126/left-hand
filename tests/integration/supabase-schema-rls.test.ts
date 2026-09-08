@@ -26,6 +26,7 @@ import {
   assertMigration0016Contract,
   assertMigration0017Contract,
   assertCatalogSemanticMigrationContract,
+  assertAdminCatalogTransactionMigrationContract,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
 } from "../../scripts/verify-supabase-migrations-seed-rls";
@@ -35,6 +36,29 @@ const expectedCatalogAdminPredicate = "EXISTS ( SELECT 1 FROM public.profiles WH
 
 function normalizeSql(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function sqlString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function sqlArray(values: readonly string[]): string {
+  return `ARRAY[${values.map(sqlString).join(", ")}]`;
+}
+
+function seedItemBlock(sql: string, itemId: string): string {
+  const start = sql.indexOf(`-- ${itemId}`);
+  assert.notEqual(start, -1, `seed must contain the canonical marker for ${itemId}`);
+  const next = sql.indexOf("\n    -- ", start + itemId.length + 3);
+  return sql.slice(start, next === -1 ? sql.length : next);
+}
+
+function subjectVariable(sql: string, subjectName: string): string {
+  const subject = CANONICAL_SUBJECTS.find((candidate) => candidate.name === subjectName);
+  assert.ok(subject, `missing canonical subject ${subjectName}`);
+  const match = new RegExp(`SELECT id INTO (v_sub_[a-z0-9_]+) FROM subjects WHERE slug = '${subject.slug}'`, "i").exec(sql);
+  assert.ok(match, `seed must resolve subject ${subject.slug} into a variable`);
+  return match[1];
 }
 
 function extractPolicyClause(policy: string, clauseName: "USING" | "WITH CHECK"): string | null {
@@ -214,13 +238,14 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       "0015_learning_progress.sql",
       "0016_study_plans.sql",
       "0017_profile_on_auth_signup.sql",
-      "0018_catalog_semantic_invariants.sql"
+      "0018_catalog_semantic_invariants.sql",
+      "0019_admin_catalog_transaction_rpc.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
     });
 
-    test("the canonical history verifier rejects a content mutation in every migration 0001-0016", async () => {
+    test("the canonical history verifier rejects a content mutation in every migration 0001-0017", async () => {
       const snapshots: Record<string, string> = {};
       for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
         snapshots[filename] = await fs.readFile(path.join(migrationsDir, filename), "utf-8");
@@ -239,6 +264,10 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
           `${filename} mutation must be rejected by the verifier`
         );
       }
+      assert.throws(() => assertMigrationHistoryUnchanged({
+        ...snapshots,
+        "0017_profile_on_auth_signup.sql": snapshots["0017_profile_on_auth_signup.sql"].replace(/\n/, "\n\n")
+      }), /canonical SHA-256 mismatch|must remain unchanged/i);
     });
 
     test("0001_core_schema.sql creates all 8 application tables with primary keys and constraints", async () => {
@@ -1345,7 +1374,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       assert.doesNotThrow(() => assertMigration0017Contract(commented));
     });
 
-    test("rejects a mutation in every immutable migration 0001-0016", async () => {
+    test("rejects a mutation in every immutable migration 0001-0017", async () => {
       const snapshots: Record<string, string> = {};
       for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
         snapshots[filename] = await fs.readFile(path.join(migrationsDir, filename), "utf-8");
@@ -1374,8 +1403,12 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       sql.replace("chk_products_old_price_semantics", "removed_old_price_constraint"),
       sql.replace("uq_tutor_subjects_one_primary", "removed_primary_index"),
       sql.replace("'1:1 (Online)'", "'unsupported tutor format'"),
+      sql.replace(/WHEN 'Marketing' THEN 'marketing'::color_theme_enum/g, "WHEN 'Marketing' THEN 'economics'::color_theme_enum"),
       sql.replace("SET search_path = public", "SET search_path = public; SECURITY DEFINER"),
       `${sql}\nGRANT ALL ON TABLE public.products TO authenticated;`,
+      `${sql}\nREVOKE SELECT ON TABLE public.products FROM anon;`,
+      `${sql}\nUPDATE public.products SET title = 'outside scope';`,
+      `${sql}\nCREATE TABLE public.leaked_fixture(id integer);`,
       `${sql}\nDO $$ BEGIN EXECUTE 'SELECT 1'; END $$;`
     ];
     for (const [index, fixture] of fixtures.entries()) assert.throws(() => assertCatalogSemanticMigrationContract(fixture), /./, `unsafe 0018 fixture ${index} must be rejected`);
@@ -1388,5 +1421,127 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
     }
     assert.strictEqual((sql.match(/ON CONFLICT \(kind, slug\) DO UPDATE/g) ?? []).length, materials.length + courses.length + tutors.length);
     assert.strictEqual((sql.match(/ON CONFLICT \(product_id\) DO UPDATE/g) ?? []).length, materials.length + courses.length + tutors.length);
+  });
+
+  test("seed records deep-equal canonical product, subject, kind, delivery, and child associations", async () => {
+    const sql = await fs.readFile(path.resolve(process.cwd(), "supabase/seed.sql"), "utf8");
+    const normalizedSeed = normalizeSql(sql);
+    const assertProduct = (item: { id: string; slug: string; title: string; description: string; subject: string; category: string; price: string; oldPrice?: string; rating: number; isHot: boolean; colorTheme: string }, kind: string, deliveryKind: string, childSql: string) => {
+      const block = seedItemBlock(sql, item.id);
+      const subjectId = subjectVariable(sql, item.subject);
+      const price = parseVND(item.price.replace(/\s*\/.*$/, ""));
+      const oldPrice = item.oldPrice === undefined ? null : parseVND(item.oldPrice);
+      const productValues = `VALUES (${[
+        sqlString(item.slug), sqlString(kind), sqlString(item.title), sqlString(item.description), subjectId,
+        sqlString(item.category), sqlString(deliveryKind), sqlString("published"), String(price),
+        oldPrice === null ? "NULL" : String(oldPrice), item.rating.toFixed(2), String(item.isHot), sqlString(item.colorTheme)
+      ].join(", ")})`;
+      assert.ok(normalizeSql(block).includes(normalizeSql(productValues)), `exact product record mismatch for ${item.id}`);
+      assert.ok(normalizeSql(block).includes(normalizeSql(childSql)), `exact child association mismatch for ${item.id}`);
+      assert.ok(normalizedSeed.includes(normalizeSql(childSql)), `seed must retain exact child tuple for ${item.id}`);
+    };
+
+    for (const item of materials) {
+      assertProduct(item, "material", "digital_download", `INSERT INTO materials (product_id, pages, tags, includes, suitable_for) VALUES (v_prod_id, ${item.pages}, ${sqlArray(item.tags)}, ${sqlArray(item.includes ?? [])}, ${sqlArray(item.suitableFor ?? [])})`);
+    }
+    for (const item of courses) {
+      const deliveryKind = item.format === "video" ? "recorded_video" : "live_session";
+      assertProduct({ ...item, isHot: false }, "course", deliveryKind, `INSERT INTO courses (product_id, format, sessions, duration, schedule, enrollment_status, mentor, tags, curriculum, suitable_for, preparation) VALUES (v_prod_id, ${sqlString(item.format)}, ${item.sessions}, ${sqlString(item.duration)}, ${sqlString(item.schedule)}, ${sqlString(item.status)}, ${sqlString(item.mentor)}, ${sqlArray(item.tags)}, ${sqlArray(item.curriculum ?? [])}, ${sqlArray(item.suitableFor ?? [])}, ${sqlArray(item.preparation ?? [])})`);
+    }
+    for (const item of tutors) {
+      const primarySubject = item.subjects[0];
+      const category = CANONICAL_SUBJECTS.find((subject) => subject.name === primarySubject)?.category;
+      assert.ok(category, `missing canonical tutor category for ${item.id}`);
+      const block = seedItemBlock(sql, item.id);
+      const tutorTitles: Record<string, string> = {
+        "tut-kttc1": "Tutor Minh Thư - Kế toán tài chính 1",
+        "tut-nlkt": "Tutor Ngọc Vy - Nguyên lý kế toán",
+        "tut-micro": "Tutor Hoàng Nam - Kinh tế vi mô & vĩ mô",
+        "tut-xstk": "Tutor Tiến Dũng - Xác suất thống kê & Toán cao cấp",
+        "tut-mkt": "Tutor Quỳnh Anh - Marketing căn bản & dịch vụ",
+        "tut-qth": "Tutor Quốc Bảo - Quản trị học & nhân lực",
+        "tut-csdl": "Tutor Đức Huy - Cơ sở dữ liệu & HTTTQL",
+        "tut-lkt": "Tutor Minh Hằng - Luật kinh tế"
+      };
+      const subjectAssociations = item.subjects.map((subject, index) => `(v_prod_id, ${subjectVariable(sql, subject)}, ${index === 0 ? "true" : "false"})`).join(", ");
+      const tutorAssociations = `INSERT INTO tutor_subjects (tutor_product_id, subject_id, is_primary) VALUES ${subjectAssociations}`;
+      assertProduct({ ...item, title: tutorTitles[item.id], description: item.shortBio, subject: primarySubject, category, isHot: false }, "tutor", "one_on_one_tutoring", `INSERT INTO tutors (product_id, name, faculty, format, availability, short_bio, strengths, tags, suitable_for, support_methods) VALUES (v_prod_id, ${sqlString(item.name)}, ${sqlString(item.faculty)}, ${sqlString(item.format)}, ${sqlString(item.availability)}, ${sqlString(item.shortBio)}, ${sqlArray(item.strengths)}, ${sqlArray(item.tags)}, ${sqlArray(item.suitableFor ?? [])}, ${sqlArray(item.supportMethods ?? [])})`);
+      assert.ok(normalizeSql(block).includes(normalizeSql(tutorAssociations)), `exact tutor subject association mismatch for ${item.id}`);
+    }
+  });
+
+  test("seed contract fixtures expose duplicate association, invalid enum, and malformed Unicode as failures", async () => {
+    const sql = await fs.readFile(path.resolve(process.cwd(), "supabase/seed.sql"), "utf8");
+    const firstTutorAssociation = "INSERT INTO tutor_subjects (tutor_product_id, subject_id, is_primary) VALUES (v_prod_id, v_sub_kttc1, true), (v_prod_id, v_sub_nlkt, false);";
+    const assertNoDuplicateAssociations = (source: string): void => {
+      for (const match of source.matchAll(/INSERT INTO tutor_subjects \([^;]+?\) VALUES ([^;]+);/gi)) {
+        const seen = new Set<string>();
+        for (const tuple of match[1].matchAll(/\(v_prod_id,\s*(v_sub_[a-z0-9_]+),\s*(true|false)\)/gi)) {
+          const key = tuple[1].toLowerCase();
+          if (seen.has(key)) throw new Error(`duplicate tutor subject association ${key}`);
+          seen.add(key);
+        }
+      }
+    };
+    const assertKnownProductKinds = (source: string): void => {
+      const allowed = new Set(["material", "course", "tutor"]);
+      for (const match of source.matchAll(/VALUES \('([^']+)',\s*'([^']+)'/gi)) {
+        if (!allowed.has(match[2])) throw new Error(`invalid product kind ${match[2]}`);
+      }
+    };
+    const assertNoMojibake = (source: string): void => {
+      if (/Ã|Â|�/.test(source)) throw new Error("malformed Unicode in seed");
+    };
+    assert.doesNotThrow(() => assertNoDuplicateAssociations(sql));
+    assert.doesNotThrow(() => assertKnownProductKinds(sql));
+    assert.doesNotThrow(() => assertNoMojibake(sql));
+    assert.doesNotMatch(sql, /'published'\s*,\s*'published'/i);
+    assert.doesNotMatch(sql, /'draft'/i);
+    const duplicateFixture = sql.replace(firstTutorAssociation, firstTutorAssociation.replace(");", "), (v_prod_id, v_sub_kttc1, true);") );
+    assert.throws(() => assertNoDuplicateAssociations(duplicateFixture), /duplicate tutor subject association/);
+    assert.throws(() => assertKnownProductKinds(sql.replace("'ke-toan-tai-chinh-1', 'material'", "'ke-toan-tai-chinh-1', 'invalid_kind'")), /invalid product kind/);
+    assert.throws(() => assertNoMojibake(sql.replace("Kế toán tài chính 1", "KÃ© toán tài chính 1")), /malformed Unicode/);
+  });
+
+  describe("15. Migration 0019 Atomic Admin Catalog RPC", () => {
+    const migrationPath = path.resolve(process.cwd(), "supabase/migrations/0019_admin_catalog_transaction_rpc.sql");
+
+    test("accepts the exact transaction, kind, authorization, and public policy contract", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      assert.doesNotThrow(() => assertAdminCatalogTransactionMigrationContract(sql));
+      assert.match(sql, /CREATE OR REPLACE FUNCTION public\.admin_catalog_mutate/i);
+      assert.match(sql, /RAISE EXCEPTION 'catalog child is missing'/i);
+    });
+
+    test("rejects every hostile appended statement and privilege escalation fixture", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      const fixtures = [
+        "CREATE TABLE public.leaked_fixture(id integer);",
+        "GRANT SELECT ON TABLE public.products TO anon;",
+        "REVOKE SELECT ON TABLE public.products FROM anon;",
+        "UPDATE public.products SET title = 'outside scope';",
+        "CREATE INDEX leaked_index ON public.products(title);",
+        "DO $$ BEGIN EXECUTE 'SELECT 1'; END $$;",
+        "SET ROLE postgres;",
+        "ALTER ROLE authenticated BYPASSRLS;",
+        "GRANT EXECUTE ON FUNCTION public.admin_catalog_mutate(text, public.product_kind_enum, jsonb, jsonb, uuid) TO service_role;"
+      ];
+      for (const fixture of fixtures) assert.throws(() => assertAdminCatalogTransactionMigrationContract(`${sql}\n${fixture}`), /./, fixture);
+    });
+
+    test("locks the material/course/tutor child discriminants and immutable parent kind", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      const fixtures = [
+        sql.replace("BEFORE UPDATE OF kind ON public.products", "BEFORE UPDATE OF title ON public.products"),
+        sql.replace("IF p_kind = 'material' THEN", "IF p_kind = 'course' THEN"),
+        sql.replace("products.kind = 'material'", "products.kind = 'course'"),
+        sql.replace("products.kind = 'course'", "products.kind = 'tutor'")
+      ];
+      for (const fixture of fixtures) assert.throws(() => assertAdminCatalogTransactionMigrationContract(fixture), /./);
+      assert.match(sql, /IF p_kind = 'material' THEN[\s\S]*INSERT INTO public\.materials/i);
+      assert.match(sql, /IF p_kind = 'course' THEN[\s\S]*INSERT INTO public\.courses/i);
+      assert.match(sql, /ELSE[\s\S]*INSERT INTO public\.tutors/i);
+      assert.match(sql, /OLD\.kind IS DISTINCT FROM NEW\.kind/i);
+    });
   });
 });

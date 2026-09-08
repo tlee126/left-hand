@@ -36,7 +36,8 @@ const immutableMigrationHashes = {
   "0013_material_asset_metadata.sql": "9062310091dc76760396b901320209e78155e2890b835535847999f869c31796",
   "0014_product_entitlements.sql": "77b507859e5295bae896ac3e0ed66f4bb749a7f56ab71aeae9c0bb293b9722b2",
   "0015_learning_progress.sql": "4cd65043f20cd7badc9496e2d4d8466f5c6bc1546d6b91ac565c07d3e2a11e37",
-  "0016_study_plans.sql": "3697e891b0833ab23bef47227090470e2afd916e6caa2bdbbb73d666017d8dc9"
+  "0016_study_plans.sql": "3697e891b0833ab23bef47227090470e2afd916e6caa2bdbbb73d666017d8dc9",
+  "0017_profile_on_auth_signup.sql": "0b4dac5f5a3092704b2101bcbfaf47274e75a96f7fbfe8c304daba215b565351"
 } as const;
 
 export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
@@ -64,7 +65,7 @@ function normalizeSql(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function stripSqlCommentsAndSplitStatements(sql: string): string[] {
+export function stripSqlCommentsAndSplitStatements(sql: string): string[] {
   const statements: string[] = [];
   let current = "";
   let inSingleQuote = false;
@@ -1120,24 +1121,104 @@ export function assertCatalogSemanticMigrationContract(sql0018: string): void {
   const fail = (condition: boolean, message: string) => {
     if (!condition) throw new Error(message);
   };
-  const code = stripSqlCommentsAndSplitStatements(sql0018).join(" ; ");
-  const normalized = normalizeSql(code).toLowerCase();
-  fail(/alter table public\.products\s+add constraint chk_products_old_price_semantics/i.test(code), "0018 must constrain old_price_vnd semantics");
-  fail(/alter table public\.tutors\s+add constraint chk_tutors_format_canonical/i.test(code), "0018 must constrain tutor format to the canonical set");
-  for (const format of [
+  const statements = stripSqlCommentsAndSplitStatements(sql0018);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const code = normalized.join(" ; ");
+  const expectedFormats = [
     "1:1 & Nhóm nhỏ (Online/Offline)", "1:1 (Online/Offline quận 7)", "1:1 & Nhóm nhỏ (Online)",
     "1:1 (Online qua Google Meet)", "1:1 & Nhóm nhỏ (Offline/Online)", "1:1 (Online)", "1:1 & Nhóm nhỏ (Online/Offline Q7)"
-  ]) fail(code.includes(`'${format}'`), `0018 must include canonical tutor format ${format}`);
-  fail(/create unique index uq_tutor_subjects_one_primary\s+on public\.tutor_subjects/i.test(code), "0018 must enforce one primary tutor subject");
-  for (const name of ["validate_product_catalog_semantics", "validate_subject_catalog_semantics", "validate_material_product_kind", "validate_course_product_kind", "validate_tutor_product_kind", "validate_tutor_subject_product_kind"]) {
-    fail(normalized.includes(`create or replace function public.${name}`), `0018 must define ${name}`);
-    fail(new RegExp(`function public\\.${name}[\\s\\S]*?set search_path = public`, "i").test(code), `${name} must use a fixed search_path`);
+  ];
+  const functionNames = ["validate_product_catalog_semantics", "validate_subject_catalog_semantics", "validate_material_product_kind", "validate_course_product_kind", "validate_tutor_product_kind", "validate_tutor_subject_product_kind"];
+  const triggerSpecs = [
+    ["trg_validate_product_catalog_semantics", "products", "insert or update of subject_id, category, color_theme", "validate_product_catalog_semantics"],
+    ["trg_validate_subject_catalog_semantics", "subjects", "update of category, color_theme", "validate_subject_catalog_semantics"],
+    ["trg_validate_material_product_kind", "materials", "insert or update of product_id", "validate_material_product_kind"],
+    ["trg_validate_course_product_kind", "courses", "insert or update of product_id", "validate_course_product_kind"],
+    ["trg_validate_tutor_product_kind", "tutors", "insert or update of product_id", "validate_tutor_product_kind"],
+    ["trg_validate_tutor_subject_product_kind", "tutor_subjects", "insert or update of tutor_product_id", "validate_tutor_subject_product_kind"]
+  ] as const;
+  const triggerNames = triggerSpecs.map(([name]) => name);
+  const allowedStatements = [
+    /^alter table public\.products add constraint chk_products_old_price_semantics check \([\s\S]+\)$/i,
+    /^alter table public\.tutors add constraint chk_tutors_format_canonical check \([\s\S]+\)$/i,
+    /^create unique index uq_tutor_subjects_one_primary on public\.tutor_subjects \(tutor_product_id\) where is_primary = true$/i,
+    ...functionNames.map((name) => new RegExp(`^create or replace function public\\.${name}\\(\\) returns trigger language plpgsql set search_path = public as \\$function\\$[\\s\\S]+\\$function\\$$`, "i")),
+    ...triggerSpecs.flatMap(([name, table, event, functionName]) => [
+      new RegExp(`^drop trigger if exists ${name} on public\\.${table}$`, "i"),
+      new RegExp(`^create trigger ${name} before ${event} on public\\.${table} for each row execute function public\\.${functionName}\\(\\)$`, "i")
+    ]),
+    ...functionNames.map((name) => new RegExp(`^revoke all on function public\\.${name}\\(\\) from public$`, "i"))
+  ];
+  fail(statements.length === 27, "Migration 0018 must contain exactly its 27 allowlisted statements");
+  fail(normalized.every((statement) => allowedStatements.some((pattern) => pattern.test(statement))), `Migration 0018 contains a statement outside its exact allowlist: ${normalized.find((statement) => !allowedStatements.some((pattern) => pattern.test(statement))) || "unknown"}`);
+  fail(normalized.filter((statement) => /^alter table public\.products add constraint chk_products_old_price_semantics/i.test(statement)).length === 1, "0018 must constrain old_price_vnd semantics exactly once");
+  fail(normalized.filter((statement) => /^alter table public\.tutors add constraint chk_tutors_format_canonical/i.test(statement)).length === 1, "0018 must constrain tutor format exactly once");
+  fail(normalized.filter((statement) => /^create unique index uq_tutor_subjects_one_primary/i.test(statement)).length === 1, "0018 must enforce one primary tutor subject exactly once");
+  for (const format of expectedFormats) fail(code.includes(`'${format.toLowerCase()}'`), `0018 must include canonical tutor format ${format}`);
+  for (const [category, theme] of Object.entries({
+    "Kế toán": "accounting", "Kinh tế": "economics", "Thống kê": "statistics", Marketing: "marketing",
+    "Quản trị": "management", "Tài chính": "finance", MIS: "mis", "Luật": "law", "Ngoại ngữ": "languages"
+  })) {
+    fail(code.includes(`when '${category.toLowerCase()}' then '${theme}'::color_theme_enum`), `0018 must preserve category/theme mapping ${category} -> ${theme}`);
   }
-  for (const trigger of ["trg_validate_product_catalog_semantics", "trg_validate_subject_catalog_semantics", "trg_validate_material_product_kind", "trg_validate_course_product_kind", "trg_validate_tutor_product_kind", "trg_validate_tutor_subject_product_kind"]) {
-    fail(normalized.includes(`create trigger ${trigger}`), `0018 must create ${trigger}`);
+  for (const name of functionNames) {
+    fail(normalized.filter((statement) => statement.startsWith(`create or replace function public.${name}`)).length === 1, `0018 must define ${name} exactly once`);
+    fail(normalized.some((statement) => statement.startsWith(`create or replace function public.${name}`) && statement.includes("set search_path = public")), `${name} must use a fixed search_path`);
+  }
+  for (const trigger of triggerNames) {
+    fail(normalized.filter((statement) => statement.startsWith(`create trigger ${trigger}`)).length === 1, `0018 must create ${trigger} exactly once`);
   }
   fail(!/security\s+definer|bypassrls|set\s+role|execute\s+(?:immediate|format)|execute\s+['$]|grant\s+all/i.test(code), "0018 must not bypass RLS, use dynamic SQL, or grant ALL");
   fail(!/insert\s+into|update\s+|delete\s+from/i.test(code.replace(/create\s+trigger[\s\S]*?execute\s+function/gi, "")), "0018 helpers must not contain out-of-scope DML");
+}
+
+/** Exact statement allowlist for the Phase 2 atomic catalog RPC and kind boundary. */
+export function assertAdminCatalogTransactionMigrationContract(sql0019: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const statements = stripSqlCommentsAndSplitStatements(sql0019);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const code = normalized.join(" ; ");
+  const policyNames = [
+    ["materials", "material"], ["courses", "course"], ["course lessons", "course"],
+    ["tutors", "tutor"], ["tutor subjects", "tutor"]
+  ] as const;
+  const allowed: RegExp[] = [
+    /^create or replace function public\.admin_catalog_mutate\([\s\S]+\) returns jsonb language plpgsql set search_path = public as \$function\$[\s\S]+\$function\$$/i,
+    /^revoke all on function public\.admin_catalog_mutate\(text, public\.product_kind_enum, jsonb, jsonb, uuid\) from public$/i,
+    /^grant execute on function public\.admin_catalog_mutate\(text, public\.product_kind_enum, jsonb, jsonb, uuid\) to authenticated$/i,
+    /^create or replace function public\.validate_product_kind_immutable\(\) returns trigger language plpgsql set search_path = public as \$function\$[\s\S]+\$function\$$/i,
+    /^drop trigger if exists trg_validate_product_kind_immutable on public\.products$/i,
+    /^create trigger trg_validate_product_kind_immutable before update of kind on public\.products for each row execute function public\.validate_product_kind_immutable\(\)$/i,
+    /^revoke update \(kind\) on table public\.products from authenticated$/i,
+    /^revoke all on function public\.validate_product_kind_immutable\(\) from public$/i
+  ];
+  for (const [name, kind] of policyNames) {
+    const table = name === "course lessons" ? "course_lessons" : name.replace(" ", "_");
+    allowed.push(new RegExp(`^drop policy if exists "allow public read access on published ${name}" on public\\.${table}$`, "i"));
+    const relation = table === "course_lessons"
+      ? "exists ( select 1 from public.courses join public.products on products.id = courses.product_id where courses.product_id = course_lessons.course_id and products.kind = 'course' and products.publication_status = 'published' )"
+      : table === "tutor_subjects"
+        ? "exists ( select 1 from public.tutors join public.products on products.id = tutors.product_id where tutors.product_id = tutor_subjects.tutor_product_id and products.kind = 'tutor' and products.publication_status = 'published' )"
+        : `exists ( select 1 from public.products where products.id = ${table}.product_id and products.kind = '${kind}' and products.publication_status = 'published' )`;
+    const escapedRelation = relation.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    allowed.push(new RegExp(`^create policy "allow public read access on published ${name}" on public\\.${table} for select to anon, authenticated using \\(` + `\\s*${escapedRelation}\\s*\\)$`, "i"));
+  }
+  fail(statements.length === 18, "Migration 0019 must contain exactly its 18 allowlisted statements");
+  fail(normalized.every((statement) => allowed.some((pattern) => pattern.test(statement))), `Migration 0019 contains a statement outside its exact allowlist: ${normalized.find((statement) => !allowed.some((pattern) => pattern.test(statement))) || "unknown"}`);
+  fail(/security\s+definer|bypassrls|set\s+role|alter\s+role|execute\s+(?:immediate|format)|service_role|grant\s+all/i.test(code) === false, "Migration 0019 must not bypass RLS, use dynamic SQL, or escalate roles");
+  fail(/where id = p_product_id and kind = p_kind/i.test(code), "Atomic mutations must bind the requested product kind");
+  fail(/insert into public\.(?:materials|courses|tutors)/i.test(code) && /raise exception 'catalog child is missing'/i.test(code), "Atomic mutations must create and validate the child in the same RPC");
+  fail(/if p_kind = 'material' then[\s\S]*?insert into public\.materials/i.test(code), "Material writes must be reachable only through the material branch");
+  fail(/if p_kind = 'course' then[\s\S]*?insert into public\.courses/i.test(code), "Course writes must be reachable only through the course branch");
+  fail(/else[\s\S]*?insert into public\.tutors/i.test(code), "Tutor writes must be reachable only through the tutor branch");
+  const rpcStatement = normalized.find((statement) => statement.startsWith("create or replace function public.admin_catalog_mutate")) || "";
+  fail(!/create\s+table|alter\s+table|drop\s+table|create\s+index|grant\s+|revoke\s+/i.test(rpcStatement), "The catalog RPC must not contain privilege or schema DDL");
+  fail(!/(?:insert\s+into|update|delete\s+from)\s+public\.(?!products\b|materials\b|courses\b|tutors\b)/i.test(rpcStatement), "The catalog RPC must not mutate tables outside the catalog product/child set");
+  fail(/role = 'admin' and account_status = 'approved'/i.test(code) && /auth\.uid\(\)/i.test(code), "Atomic mutations must check the approved admin in the database");
+  fail(/old\.kind is distinct from new\.kind/i.test(code) && /before update of kind on public\.products/i.test(code), "Product kind must be immutable at the database boundary");
+  fail(/products\.kind = 'material'|products\.kind = 'course'|products\.kind = 'tutor'/i.test(code), "Child public policies must enforce parent kind");
 }
 
 export async function runAudit(): Promise<boolean> {
@@ -1173,13 +1254,14 @@ export async function runAudit(): Promise<boolean> {
       "0015_learning_progress.sql",
       "0016_study_plans.sql",
       "0017_profile_on_auth_signup.sql",
-      "0018_catalog_semantic_invariants.sql"
+      "0018_catalog_semantic_invariants.sql",
+      "0019_admin_catalog_transaction_rpc.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 18 migration files exist in strict topological order",
+      check: "All 19 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -1199,7 +1281,7 @@ export async function runAudit(): Promise<boolean> {
       immutableHistoryValid = false;
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0016 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0017 match their canonical LF-normalized SHA-256 snapshots",
         passed: false,
         details: error instanceof Error ? error.message : String(error)
       });
@@ -1207,9 +1289,9 @@ export async function runAudit(): Promise<boolean> {
     if (immutableHistoryValid) {
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0016 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0017 match their canonical LF-normalized SHA-256 snapshots",
         passed: true,
-        details: "Every applied migration through 0016 is content-locked"
+        details: "Every applied migration through 0017 is content-locked"
       });
     }
 
@@ -1585,7 +1667,20 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0018_catalog_semantic_invariants", check: "Enforces catalog semantic invariants without privilege bypasses", passed: true, details: "Category/theme, child kind, old price, tutor format, and one-primary constraints verified" });
     }
 
-    // 18. Audit supabase/seed.sql
+    // 18. Audit 0019_admin_catalog_transaction_rpc.sql
+    const sql0019 = await fs.readFile(path.join(migrationsDir, "0019_admin_catalog_transaction_rpc.sql"), "utf-8");
+    let migration0019ContractValid = true;
+    try {
+      assertAdminCatalogTransactionMigrationContract(sql0019);
+    } catch (error) {
+      migration0019ContractValid = false;
+      results.push({ category: "0019_admin_catalog_transaction_rpc", check: "Uses an exact atomic catalog RPC and closes product-kind/public-read boundaries", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0019ContractValid) {
+      results.push({ category: "0019_admin_catalog_transaction_rpc", check: "Uses an exact atomic catalog RPC and closes product-kind/public-read boundaries", passed: true, details: "Approved-admin RPC, immutable product kind, typed child writes, and published parent-kind policies verified" });
+    }
+
+    // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
     const isTxn = /^\s*(?:--[^\n]*\n\s*)*BEGIN\s*;/im.test(sqlSeed) && /COMMIT\s*;\s*$/i.test(sqlSeed.trim());
     const subjectsSeed = CANONICAL_SUBJECTS.every((s) => sqlSeed.includes(`'${s.slug}'`));

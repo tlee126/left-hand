@@ -23,6 +23,11 @@ class MockClient {
     this.calls.push({ method: "from", args: [table], table });
     return new MockQuery(this, table);
   }
+
+  rpc(name: string, args: unknown): Promise<QueryResult> {
+    this.calls.push({ method: "rpc", args: [name, args] });
+    return Promise.resolve(this.nextResponse());
+  }
 }
 
 class MockQuery implements PromiseLike<QueryResult> {
@@ -165,7 +170,7 @@ describe("Task 5.1-A: admin catalog repository", () => {
       [repository.listAdminMaterials, "material", "materials"],
       [repository.listAdminCourses, "course", "courses"],
       [repository.listAdminTutors, "tutor", "tutors"]
-    ] as const) {
+      ] as const) {
       mockClient = new MockClient([{ data: [], error: null }]);
       await list({ publication_status: "published" as never, limit: 5 });
       assert.equal(mockClient.calls.find((call) => call.method === "from")?.args[0], "products");
@@ -189,7 +194,7 @@ describe("Task 5.1-A: admin catalog repository", () => {
     ]);
   });
 
-  test("creates all four groups through runtime-mocked server queries with restricted payloads", async () => {
+  test("creates all four groups through one typed atomic RPC with restricted payloads", async () => {
     const subject = { id: SUBJECT_ID, slug: "marketing", name: "Marketing", category: CATEGORY, faculty_group: "Business", color_theme: COLOR_THEME };
     mockClient = new MockClient([{ data: subject, error: null }]);
     await repository.createAdminSubject({ slug: "marketing", name: "Marketing", category: CATEGORY, faculty_group: "Business", color_theme: COLOR_THEME });
@@ -201,37 +206,57 @@ describe("Task 5.1-A: admin catalog repository", () => {
       [repository.createAdminTutor, { ...productInput({ delivery_kind: "one_on_one_tutoring" }), format: "1:1 (Online)", name: "Tutor", faculty: "Business", availability: "Weekends", short_bio: "Bio" }, "tutors", { product_id: PRODUCT_ID, name: "Tutor", faculty: "Business", format: "1:1 (Online)", availability: "Weekends", short_bio: "Bio", strengths: [], tags: [], suitable_for: [], support_methods: [], created_at: "", updated_at: "" }, { ...MATERIAL_PRODUCT, kind: "tutor" }]
     ] as const) {
       mockClient = new MockClient([
-        { data: product, error: null },
-        { data: childRow, error: null }
+        { data: { product }, error: null },
+        { data: { ...product, [childTable]: childRow }, error: null }
       ]);
       await create(input as never);
-      const productInsert = mockClient.calls.find((call) => call.method === "insert" && call.table === "products");
-      const childInsert = mockClient.calls.find((call) => call.method === "insert" && call.table === childTable);
-      assert.equal((productInsert?.args[0] as Record<string, unknown>).kind, product.kind);
-      assert.equal((childInsert?.args[0] as Record<string, unknown>).product_id, PRODUCT_ID);
-      assert.equal("role" in (productInsert?.args[0] as Record<string, unknown>), false);
-      assert.equal("user_id" in (childInsert?.args[0] as Record<string, unknown>), false);
+      const rpc = mockClient.calls.find((call) => call.method === "rpc");
+      assert.equal(rpc?.args[0], "admin_catalog_mutate");
+      assert.equal((rpc?.args[1] as Record<string, unknown>).p_operation, "create");
+      assert.equal((rpc?.args[1] as Record<string, unknown>).p_kind, product.kind);
+      assert.equal((rpc?.args[1] as Record<string, unknown>).p_product_id, undefined);
+      assert.equal(mockClient.calls.some((call) => call.method === "insert" || call.method === "update" || call.method === "delete"), false);
     }
   });
 
   test("updates and deletes four entities with UUID filters", async () => {
-    mockClient = new MockClient([{ data: { ...MATERIAL_PRODUCT, materials: MATERIAL_ROW }, error: null }]);
+    mockClient = new MockClient([
+      { data: { product: MATERIAL_PRODUCT, child: MATERIAL_ROW }, error: null },
+      { data: { ...MATERIAL_PRODUCT, materials: MATERIAL_ROW }, error: null }
+    ]);
     await repository.updateAdminMaterial(PRODUCT_ID, { pages: 24 });
-    assert.deepEqual(mockClient.calls.filter((call) => call.method === "eq").map((call) => call.args).slice(0, 1), [["product_id", PRODUCT_ID]]);
-    assert.equal((mockClient.calls.find((call) => call.method === "update")?.args[0] as Record<string, unknown>).pages, 24);
+    const materialRpc = mockClient.calls.find((call) => call.method === "rpc");
+    assert.equal((materialRpc?.args[1] as Record<string, unknown>).p_operation, "update");
+    assert.equal((materialRpc?.args[1] as Record<string, unknown>).p_product_id, PRODUCT_ID);
+    assert.deepEqual((materialRpc?.args[1] as Record<string, unknown>).p_child, { pages: 24 });
+    assert.equal(mockClient.calls.some((call) => call.method === "insert" || call.method === "update" || call.method === "delete"), false);
 
     for (const [update, del, input] of [
       [repository.updateAdminSubject, repository.deleteAdminSubject, { name: "Updated" }],
       [repository.updateAdminCourse, repository.deleteAdminCourse, { mentor: "Updated" }],
       [repository.updateAdminTutor, repository.deleteAdminTutor, { availability: "Updated" }]
     ] as const) {
-      mockClient = new MockClient([{ data: { id: PRODUCT_ID }, error: null }]);
+      const updated = { ...MATERIAL_PRODUCT, kind: "mentor" in input ? "course" : "tutor" };
+      mockClient = new MockClient([
+        { data: { product: updated }, error: null },
+        { data: updated, error: null }
+      ]);
       await update(PRODUCT_ID, input as never);
-      assert.ok(mockClient.calls.some((call) => call.method === "eq" && call.args[0] === "id"));
-      mockClient = new MockClient([{ data: { id: PRODUCT_ID }, error: null }]);
+      if (update === repository.updateAdminSubject) {
+        assert.ok(mockClient.calls.some((call) => call.method === "update"));
+      } else {
+        assert.ok(mockClient.calls.some((call) => call.method === "rpc"));
+      }
+      mockClient = new MockClient(update === repository.updateAdminSubject
+        ? [{ data: { id: PRODUCT_ID }, error: null }]
+        : [{ data: { deleted: true, id: PRODUCT_ID }, error: null }]);
       assert.equal(await del(PRODUCT_ID), true);
-      assert.ok(mockClient.calls.some((call) => call.method === "delete"));
-      assert.ok(mockClient.calls.some((call) => call.method === "eq" && call.args[0] === "id"));
+      if (del === repository.deleteAdminSubject) {
+        assert.equal(mockClient.calls.some((call) => call.method === "delete"), true);
+      } else {
+        assert.equal(mockClient.calls.filter((call) => call.method === "rpc").length, 1);
+        assert.equal(mockClient.calls.some((call) => call.method === "delete"), false);
+      }
     }
   });
 
@@ -266,6 +291,24 @@ describe("Task 5.1-A: admin catalog repository", () => {
       assert.doesNotMatch(String(error), /SQL|PII@example\.test|42501/);
       return true;
     });
+  });
+
+  test("keeps product and child mutations atomic at the RPC boundary", async () => {
+    mockClient = new MockClient([{ data: null, error: { message: "child constraint failed", code: "23514" } }]);
+    await assert.rejects(
+      () => repository.createAdminMaterial({ ...productInput(), pages: 20 } as never),
+      (error: unknown) => error instanceof repository.AdminCatalogRepositoryError && !String(error).includes("child constraint")
+    );
+    assert.equal(mockClient.calls.filter((call) => call.method === "rpc").length, 1);
+    assert.equal(mockClient.calls.some((call) => ["insert", "update", "delete"].includes(call.method)), false);
+
+    mockClient = new MockClient([{ data: null, error: null }]);
+    assert.equal(await repository.deleteAdminMaterial(PRODUCT_ID), false);
+    assert.equal(mockClient.calls.some((call) => call.method === "from"), false);
+
+    mockClient = new MockClient([{ data: { product: { id: "not-a-uuid" } }, error: null }]);
+    await assert.rejects(() => repository.updateAdminMaterial(PRODUCT_ID, { pages: 24 } as never), repository.AdminCatalogRepositoryError);
+    assert.equal(mockClient.calls.filter((call) => call.method === "rpc").length, 1);
   });
 
   test("uses only the server client, explicit selects, and no unsafe dynamic types", async () => {
