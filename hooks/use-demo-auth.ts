@@ -270,7 +270,15 @@ export function useDemoAuth() {
       return logoutInFlightRef.current;
     }
 
-    const operation = (async (): Promise<LogoutResult> => {
+    let resolveOperation!: (result: LogoutResult) => void;
+    let rejectOperation!: (reason: Error) => void;
+    const operation = new Promise<LogoutResult>((resolve, reject) => {
+      resolveOperation = resolve;
+      rejectOperation = reject;
+    });
+    logoutInFlightRef.current = operation;
+
+    void (async () => {
       logoutInFlightRef.succeeded = false;
       setLogoutError(null);
 
@@ -293,16 +301,15 @@ export function useDemoAuth() {
 
         logoutInFlightRef.succeeded = true;
         setUser(null);
-        return { success: true };
+        resolveOperation({ success: true });
       } catch {
         setLogoutError(LOGOUT_ERROR_MESSAGE);
-        throw new Error(LOGOUT_ERROR_MESSAGE);
+        rejectOperation(new Error(LOGOUT_ERROR_MESSAGE));
       } finally {
         logoutInFlightRef.current = null;
       }
     })();
 
-    logoutInFlightRef.current = operation;
     return operation;
   };
 

@@ -541,6 +541,280 @@ describe("Phase 3 login page/hook runtime", () => {
   });
 });
 
+const headerLogoutRuntimeHarness = String.raw`
+import { readFile } from "node:fs/promises";
+import { transform } from "esbuild";
+import * as path from "node:path";
+
+const scenario = JSON.parse(process.argv[1]);
+process.env.NODE_ENV = "production";
+process.env.NEXT_PUBLIC_DEMO_MODE = "false";
+
+const state = [];
+let cursor = 0;
+const refs = [];
+let refCursor = 0;
+const routerCalls = [];
+const refreshCalls = [];
+const authCalls = [];
+const unhandledRejections = [];
+let authStateChangeCallback;
+let signOutAttempts = 0;
+const authenticatedUser = { id: "authenticated-user-1", email: "student@example.test", user_metadata: { full_name: "Student" } };
+
+process.on("unhandledRejection", (reason) => {
+  unhandledRejections.push(String(reason?.message ?? reason));
+});
+
+function useState(initialValue) {
+  const index = cursor++;
+  if (!(index in state)) state[index] = initialValue;
+  return [state[index], (value) => { state[index] = typeof value === "function" ? value(state[index]) : value; }];
+}
+function useRef(initialValue) {
+  const index = refCursor++;
+  if (!(index in refs)) refs[index] = { current: initialValue };
+  return refs[index];
+}
+function useEffect(callback) { callback(); }
+function useMemo(factory) { return factory(); }
+function useTransition() { return [false, (callback) => callback()]; }
+
+globalThis.window = {
+  scrollY: 0,
+  addEventListener() {},
+  removeEventListener() {}
+};
+globalThis.document = { getElementById: () => null };
+
+const authClient = {
+  auth: {
+    getUser: async () => ({ data: { user: authenticatedUser }, error: null }),
+    onAuthStateChange: (eventCallback) => {
+      authStateChangeCallback = eventCallback;
+      return { data: { subscription: { unsubscribe() {} } } };
+    },
+    signOut: async () => {
+      signOutAttempts += 1;
+      authCalls.push({ method: "signOut", attempt: signOutAttempts });
+      if (scenario.failureThenSuccess && signOutAttempts === 1) {
+        if (scenario.emitSignedOutOnFailure) authStateChangeCallback?.("SIGNED_OUT", null);
+        if (scenario.throwError) throw new Error(scenario.rawError || "provider stack SQL password=secret");
+        return { error: { message: scenario.rawError || "provider logout details" } };
+      }
+      if (scenario.emitSignedOutOnFailure && signOutAttempts === 1) {
+        authStateChangeCallback?.("SIGNED_OUT", null);
+      }
+      if (scenario.throwError) throw new Error(scenario.rawError || "provider stack SQL password=secret");
+      if (scenario.signOutError) return { error: { message: scenario.rawError || "provider logout details" } };
+      if (scenario.emitSignedOut) authStateChangeCallback?.("SIGNED_OUT", null);
+      return { error: null };
+    }
+  }
+};
+
+globalThis.__phase3CreateClient = () => authClient;
+globalThis.__phase3RouterCalls = routerCalls;
+globalThis.__phase3RefreshCalls = refreshCalls;
+
+const reactModule = "data:text/javascript," + encodeURIComponent("export const useState = (...args) => globalThis.__phase3UseState(...args); export const useRef = (...args) => globalThis.__phase3UseRef(...args); export const useEffect = (...args) => globalThis.__phase3UseEffect(...args); export const useMemo = (...args) => globalThis.__phase3UseMemo(...args); export const useTransition = (...args) => globalThis.__phase3UseTransition(...args);");
+const authClientModule = "data:text/javascript," + encodeURIComponent("export const createClient = () => globalThis.__phase3CreateClient();");
+const errorModule = "data:text/javascript," + encodeURIComponent("export const PUBLIC_ERROR_MESSAGES = { AUTH_UNAVAILABLE: \"Không thể hoàn tất thao tác tài khoản lúc này. Vui lòng thử lại sau.\" }; export const mapAuthError = () => ({ code: \"AUTH_UNAVAILABLE\", message: PUBLIC_ERROR_MESSAGES.AUTH_UNAVAILABLE });");
+const signupModule = "data:text/javascript," + encodeURIComponent("export const performSignup = async () => ({ success: false }); export const mapSignupError = () => \"Không thể hoàn tất đăng ký lúc này.\"; export const getValidCallbackUrl = () => undefined; export const validateSignupInput = () => ({ isValid: true }); export const validateSignupFullName = () => ({ isValid: true });");
+const imageModule = "data:text/javascript," + encodeURIComponent("export default (props) => ({ type: \"img\", props });");
+const linkModule = "data:text/javascript," + encodeURIComponent("export default (props) => ({ type: \"a\", props });");
+const motionModule = "data:text/javascript," + encodeURIComponent("const passthrough = (props) => props.children; export const AnimatePresence = passthrough; export const motion = { div: passthrough }; export const useReducedMotion = () => true;");
+const iconsModule = "data:text/javascript," + encodeURIComponent("const component = (props) => ({ type: \"component\", props }); export const Menu = component; export const X = component;");
+const siteModule = "data:text/javascript," + encodeURIComponent("export const navItems = [{ label: \"Trang chủ\", href: \"/\" }];");
+const navigationModule = "data:text/javascript," + encodeURIComponent("export const usePathname = () => \"/\"; export const useRouter = () => ({ push: (value) => globalThis.__phase3RouterCalls.push(value), refresh: () => globalThis.__phase3RefreshCalls.push(true) });");
+const jsxRuntimeModule = "data:text/javascript," + encodeURIComponent("export const jsx = (type, props) => ({ type, props: props || {} }); export const jsxs = jsx; export const Fragment = \"fragment\";");
+
+globalThis.__phase3UseState = useState;
+globalThis.__phase3UseRef = useRef;
+globalThis.__phase3UseEffect = useEffect;
+globalThis.__phase3UseMemo = useMemo;
+globalThis.__phase3UseTransition = useTransition;
+
+async function compile(filePath, replacements, loader) {
+  let source = await readFile(filePath, "utf8");
+  for (const [from, to] of replacements) source = source.replaceAll(from, to);
+  const compiled = await transform(source, { loader, format: "esm", jsx: "automatic", sourcefile: path.basename(filePath) });
+  return compiled.code.replaceAll("react/jsx-runtime", jsxRuntimeModule);
+}
+
+function inspect(value, nodes) {
+  if (value == null || typeof value === "boolean" || typeof value === "number" || typeof value === "string") return;
+  if (Array.isArray(value)) { value.forEach((item) => inspect(item, nodes)); return; }
+  if (typeof value.type === "function") { inspect(value.type(value.props), nodes); return; }
+  nodes.push(value);
+  if (value.props) inspect(value.props.children, nodes);
+}
+
+function nodeText(value) {
+  if (value == null || typeof value === "boolean" || typeof value === "number") return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(nodeText).join(" ");
+  if (typeof value.type === "function") return nodeText(value.type(value.props));
+  return nodeText(value.props?.children);
+}
+
+function render(Header) {
+  cursor = 0;
+  refCursor = 0;
+  const nodes = [];
+  inspect(Header(), nodes);
+  return {
+    nodes,
+    text: nodes.map(nodeText).join(" "),
+    buttons: nodes.filter((node) => node.type === "button"),
+    alerts: nodes.filter((node) => node.props?.role === "alert")
+  };
+}
+
+const hookCode = await compile(path.resolve(process.cwd(), "hooks/use-demo-auth.ts"), [
+  ["\"react\"", JSON.stringify(reactModule)],
+  ["\"@/lib/supabase/browser\"", JSON.stringify(authClientModule)],
+  ["\"@/lib/auth/signup\"", JSON.stringify(signupModule)],
+  ["\"@/lib/auth/error-mapper\"", JSON.stringify(errorModule)]
+], "ts");
+const hookModule = "data:text/javascript," + encodeURIComponent(hookCode);
+const headerCode = await compile(path.resolve(process.cwd(), "components/site/header.tsx"), [
+  ["\"react\"", JSON.stringify(reactModule)],
+  ["\"next/image\"", JSON.stringify(imageModule)],
+  ["\"next/link\"", JSON.stringify(linkModule)],
+  ["\"framer-motion\"", JSON.stringify(motionModule)],
+  ["\"lucide-react\"", JSON.stringify(iconsModule)],
+  ["\"next/navigation\"", JSON.stringify(navigationModule)],
+  ["\"@/data/site\"", JSON.stringify(siteModule)],
+  ["\"@/hooks/use-demo-auth\"", JSON.stringify(hookModule)],
+  ["\"@/lib/auth/error-mapper\"", JSON.stringify(errorModule)]
+], "tsx");
+const Header = (await import("data:text/javascript," + encodeURIComponent(headerCode))).Header;
+
+let output = render(Header);
+await new Promise((resolve) => setTimeout(resolve, 0));
+output = render(Header);
+if (scenario.mobile) {
+  const menuButton = output.buttons.find((button) => button.props["aria-label"] === "Mở menu");
+  menuButton.props.onClick();
+  output = render(Header);
+}
+
+const logoutButton = output.buttons.find((button) => nodeText(button).includes(scenario.mobile ? "Đăng xuất tài khoản" : "Đăng xuất"));
+  if (!logoutButton) throw new Error("logout button was not rendered");
+logoutButton.props.onClick();
+if (scenario.repeated) logoutButton.props.onClick();
+await new Promise((resolve) => setTimeout(resolve, 0));
+output = render(Header);
+
+if (scenario.failureThenSuccess) {
+  const retryButton = output.buttons.find((button) => nodeText(button).includes(scenario.mobile ? "Đăng xuất tài khoản" : "Đăng xuất"));
+  if (!retryButton) throw new Error("retry logout button was not rendered");
+  retryButton.props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  output = render(Header);
+}
+
+console.log(JSON.stringify({
+  authCalls,
+  routerCalls,
+  refreshCalls,
+  unhandledRejections,
+  userVisible: output.text.includes("Student"),
+  alertTexts: output.alerts.map((alert) => nodeText(alert)),
+  renderedText: output.text
+}));
+`;
+
+async function runHeaderLogoutScenario(scenario: Record<string, unknown>) {
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx/esm", "-e", headerLogoutRuntimeHarness, JSON.stringify(scenario)],
+    { cwd: process.cwd(), maxBuffer: 1024 * 1024 }
+  );
+  return JSON.parse(stdout.trim()) as {
+    authCalls: Array<{ method: string; attempt: number }>;
+    routerCalls: string[];
+    refreshCalls: boolean[];
+    unhandledRejections: string[];
+    userVisible: boolean;
+    alertTexts: string[];
+    renderedText: string;
+  };
+}
+
+describe("Phase 3 Header logout runtime", () => {
+  const genericLogoutError = PUBLIC_ERROR_MESSAGES.AUTH_UNAVAILABLE;
+
+  test("Header logout success clears auth UI, redirects once, and renders no alert", async () => {
+    const result = await runHeaderLogoutScenario({});
+
+    assert.deepEqual(result.authCalls, [{ method: "signOut", attempt: 1 }]);
+    assert.deepEqual(result.routerCalls, ["/"]);
+    assert.deepEqual(result.refreshCalls, [true]);
+    assert.deepEqual(result.alertTexts, []);
+    assert.equal(result.userVisible, false);
+    assert.deepEqual(result.unhandledRejections, []);
+  });
+
+  for (const failure of [
+    { name: "provider error", signOutError: true, rawError: "RAW SQL session token=secret student@example.test" },
+    { name: "thrown exception", throwError: true, rawError: "RAW provider stack SQL password=secret" }
+  ]) {
+    test(`Header ${failure.name} keeps the account UI and renders only a generic alert`, async () => {
+      const result = await runHeaderLogoutScenario({ ...failure, emitSignedOutOnFailure: true });
+
+      assert.deepEqual(result.authCalls, [{ method: "signOut", attempt: 1 }]);
+      assert.deepEqual(result.routerCalls, []);
+      assert.deepEqual(result.refreshCalls, []);
+      assert.equal(result.userVisible, true);
+      assert.ok(result.alertTexts.length >= 1);
+      assert.ok(result.alertTexts.every((text) => text === genericLogoutError));
+      assert.doesNotMatch(JSON.stringify(result), /RAW SQL|RAW provider|session token=secret|password=secret|student@example\.test/);
+      assert.deepEqual(result.unhandledRejections, []);
+    });
+  }
+
+  test("Header mobile logout failure keeps the retry button and alert visible", async () => {
+    const result = await runHeaderLogoutScenario({ mobile: true, signOutError: true, rawError: "provider token=secret" });
+
+    assert.equal(result.userVisible, true);
+    assert.ok(result.alertTexts.length >= 2);
+    assert.ok(result.alertTexts.every((text) => text === genericLogoutError));
+    assert.match(result.renderedText, /Đăng xuất tài khoản/);
+    assert.deepEqual(result.routerCalls, []);
+    assert.deepEqual(result.unhandledRejections, []);
+  });
+
+  test("Header repeated clicks share one handler operation and one redirect", async () => {
+    const result = await runHeaderLogoutScenario({ repeated: true, emitSignedOut: true });
+
+    assert.deepEqual(result.authCalls, [{ method: "signOut", attempt: 1 }]);
+    assert.deepEqual(result.routerCalls, ["/"]);
+    assert.deepEqual(result.refreshCalls, [true]);
+    assert.deepEqual(result.alertTexts, []);
+    assert.deepEqual(result.unhandledRejections, []);
+  });
+
+  test("Header retry after a failed logout clears the old alert and redirects once", async () => {
+    const result = await runHeaderLogoutScenario({
+      failureThenSuccess: true,
+      emitSignedOutOnFailure: true,
+      rawError: "RAW SQL token=secret"
+    });
+
+    assert.deepEqual(result.authCalls, [
+      { method: "signOut", attempt: 1 },
+      { method: "signOut", attempt: 2 }
+    ]);
+    assert.deepEqual(result.routerCalls, ["/"]);
+    assert.deepEqual(result.refreshCalls, [true]);
+    assert.deepEqual(result.alertTexts, []);
+    assert.equal(result.userVisible, false);
+    assert.deepEqual(result.unhandledRejections, []);
+  });
+});
+
 const profileActionHarness = String.raw`
 import { readFile } from "node:fs/promises";
 import { transform } from "esbuild";

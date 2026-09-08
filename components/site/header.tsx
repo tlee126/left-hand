@@ -4,10 +4,13 @@ import Image from "next/image";
 import Link from "next/link";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { Menu, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { navItems } from "@/data/site";
 import { useDemoAuth } from "@/hooks/use-demo-auth";
+import { PUBLIC_ERROR_MESSAGES } from "@/lib/auth/error-mapper";
+
+const LOGOUT_ERROR_MESSAGE = PUBLIC_ERROR_MESSAGES.AUTH_UNAVAILABLE;
 
 export function Header() {
   const [open, setOpen] = useState(false);
@@ -15,8 +18,10 @@ export function Header() {
   const pathname = usePathname();
   const router = useRouter();
   const shouldReduceMotion = useReducedMotion();
-  const { isLoggedIn, user, logout } = useDemoAuth();
+  const { isLoggedIn, user, logout, logoutError } = useDemoAuth();
   const [mounted, setMounted] = useState(false);
+  const [headerLogoutError, setHeaderLogoutError] = useState<string | null>(null);
+  const logoutHandlerInFlightRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -85,6 +90,41 @@ export function Header() {
     return false;
   };
 
+  const visibleLogoutError = logoutError || headerLogoutError;
+
+  const handleLogout = (closeMenu = false): Promise<void> => {
+    if (logoutHandlerInFlightRef.current) {
+      return logoutHandlerInFlightRef.current;
+    }
+
+    const operation = (async () => {
+      setHeaderLogoutError(null);
+
+      try {
+        const result = await logout();
+        if (!result.success) {
+          setHeaderLogoutError(LOGOUT_ERROR_MESSAGE);
+          return;
+        }
+
+        if (closeMenu) {
+          setOpen(false);
+        }
+        router.push("/");
+        router.refresh();
+      } catch {
+        // The auth hook preserves the user and exposes its generic error. Keep
+        // a local fallback for any compatible rejected logout implementation.
+        setHeaderLogoutError(LOGOUT_ERROR_MESSAGE);
+      } finally {
+        logoutHandlerInFlightRef.current = null;
+      }
+    })();
+
+    logoutHandlerInFlightRef.current = operation;
+    return operation;
+  };
+
   return (
     <>
       <div className="h-[98px] sm:h-[108px]" aria-hidden="true" />
@@ -138,16 +178,17 @@ export function Header() {
                   </Link>
                   <button
                     type="button"
-                    onClick={async () => {
-                      await logout();
-                      router.push("/");
-                      router.refresh();
-                    }}
+                    onClick={() => void handleLogout()}
                     className="text-xs font-bold text-[#8091b8] hover:text-red-500 transition px-2.5 py-1.5 rounded-lg hover:bg-red-50"
                   >
                     Đăng xuất
                   </button>
                 </div>
+                {visibleLogoutError ? (
+                  <p role="alert" aria-live="polite" className="max-w-[22rem] text-right text-xs font-semibold text-red-600">
+                    {visibleLogoutError}
+                  </p>
+                ) : null}
                 <Link
                   href="/#contact"
                   className="bg-gradient-to-r from-blue-600 via-violet-600 to-fuchsia-600 text-white h-[44px] shrink-0 items-center justify-center px-7 rounded-full text-sm font-extrabold shadow-[0_12px_28px_rgba(37,99,235,0.25)] transition-all duration-300 hover:-translate-y-[1px] hover:from-blue-700 hover:via-violet-700 hover:to-fuchsia-700 hover:shadow-[0_16px_32px_rgba(37,99,235,0.35)] active:scale-[0.98] inline-flex"
@@ -239,16 +280,16 @@ export function Header() {
                         </div>
                         <button
                           type="button"
-                          onClick={async () => {
-                            await logout();
-                            setOpen(false);
-                            router.push("/");
-                            router.refresh();
-                          }}
+                          onClick={() => void handleLogout(true)}
                           className="mt-4 w-full h-[40px] inline-flex items-center justify-center rounded-full bg-red-50 border border-red-100 text-red-600 text-xs font-extrabold hover:bg-red-100 transition active:scale-[0.98]"
                         >
                           Đăng xuất tài khoản
                         </button>
+                        {visibleLogoutError ? (
+                          <p role="alert" aria-live="polite" className="mt-2 rounded-xl border border-red-100 bg-red-50 p-3 text-xs font-semibold leading-relaxed text-red-600">
+                            {visibleLogoutError}
+                          </p>
+                        ) : null}
                       </div>
                     ) : (
                       <Link
