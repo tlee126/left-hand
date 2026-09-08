@@ -240,6 +240,92 @@ function normalizeMigrationStatement(statement: string): string {
   return normalizeSql(statement).replace(/"([A-Za-z_][A-Za-z0-9_$]*)"/g, "$1").toLowerCase();
 }
 
+function extractDollarQuotedFunctionBodies(statements: readonly string[]): string[] {
+  const bodies: string[] = [];
+  for (const statement of statements) {
+    const match = /\bas\s+(\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$)([\s\S]*?)\s*\1\s*$/i.exec(statement);
+    if (match) bodies.push(match[2]);
+  }
+  return bodies;
+}
+
+function maskSqlStringLiterals(sql: string): string {
+  let masked = "";
+  let quote: "single" | "double" | null = null;
+  for (let index = 0; index < sql.length; index += 1) {
+    const character = sql[index];
+    const next = sql[index + 1];
+    if (quote === "single") {
+      if (character === "'" && next === "'") {
+        masked += "  ";
+        index += 1;
+      } else if (character === "'") {
+        masked += " ";
+        quote = null;
+      } else {
+        masked += " ";
+      }
+      continue;
+    }
+    if (quote === "double") {
+      if (character === '"' && next === '"') {
+        masked += "  ";
+        index += 1;
+      } else if (character === '"') {
+        masked += " ";
+        quote = null;
+      } else {
+        masked += " ";
+      }
+      continue;
+    }
+    if (character === "'") {
+      masked += " ";
+      quote = "single";
+    } else if (character === '"') {
+      masked += " ";
+      quote = "double";
+    } else {
+      masked += character;
+    }
+  }
+  return masked;
+}
+
+function assertNestedFunctionSqlScope(
+  statements: readonly string[],
+  options: { allowDmlTables: readonly string[]; allowSelectTables: readonly string[]; allowSqlExpressionSelect?: boolean }
+): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const bodies = extractDollarQuotedFunctionBodies(statements);
+  fail(bodies.length > 0, "Migration function body could not be parsed");
+  const bodySql = bodies.map((body) => stripSqlCommentsAndSplitStatements(body).join(" ; ")).join(" ; ");
+  const executableSql = maskSqlStringLiterals(bodySql);
+  fail(!/\b(?:execute\s+(?:immediate|format)|execute\s+['$]|set\s+role|alter\s+role|service_role|bypassrls)\b/i.test(executableSql), "Nested function body contains dynamic SQL, role escalation, or privileged-role access");
+  fail(!/\b(?:grant|revoke|create|alter|drop|perform)\b/i.test(executableSql), "Nested function body contains executable SQL outside the migration contract");
+
+  const allowedDml = new Set(options.allowDmlTables);
+  const allowedSelect = new Set(options.allowSelectTables);
+  for (const match of executableSql.matchAll(/\b(insert\s+into|update|delete\s+from)\s+(?:only\s+)?(?:public\.)?([a-z_][a-z0-9_]*)/gi)) {
+    fail(allowedDml.has(match[2].toLowerCase()), `Nested function mutates an out-of-scope table: ${match[2]}`);
+  }
+  for (const match of executableSql.matchAll(/\b(?:from|join)\s+(?:only\s+)?(?:public\.)?([a-z_][a-z0-9_]*)/gi)) {
+    const prefix = executableSql.slice(Math.max(0, (match.index ?? 0) - 24), match.index ?? 0);
+    if (/\b(?:is\s+distinct|is\s+not\s+distinct)\s*$/i.test(prefix)) continue;
+    fail(allowedSelect.has(match[1].toLowerCase()) || match[1].toLowerCase() === "jsonb_object_keys", `Nested function reads an out-of-scope table: ${match[1]}`);
+  }
+
+  for (const match of executableSql.matchAll(/\bselect\b([\s\S]*?)(?=;|$)/gi)) {
+    const selectBody = match[1];
+    const hasAllowedRelation = [...selectBody.matchAll(/\b(?:from|join)\s+(?:only\s+)?(?:public\.)?([a-z_][a-z0-9_]*)/gi)]
+      .some((relation) => allowedSelect.has(relation[1].toLowerCase()));
+    const isApprovedExpression = options.allowSqlExpressionSelect === true && /\b(?:regexp_replace|lower|btrim|coalesce|concat_ws|unaccent|jsonb_array_elements_text|jsonb_object_keys)\s*\(/i.test(selectBody);
+    fail(hasAllowedRelation || isApprovedExpression, "Nested SELECT is outside the migration contract");
+  }
+}
+
 function splitTopLevelClauses(value: string): string[] {
   const clauses: string[] = [];
   let start = 0;
@@ -1170,6 +1256,7 @@ export function assertCatalogSemanticMigrationContract(sql0018: string): void {
   }
   fail(!/security\s+definer|bypassrls|set\s+role|execute\s+(?:immediate|format)|execute\s+['$]|grant\s+all/i.test(code), "0018 must not bypass RLS, use dynamic SQL, or grant ALL");
   fail(!/insert\s+into|update\s+|delete\s+from/i.test(code.replace(/create\s+trigger[\s\S]*?execute\s+function/gi, "")), "0018 helpers must not contain out-of-scope DML");
+  assertNestedFunctionSqlScope(statements, { allowDmlTables: [], allowSelectTables: ["subjects", "products"] });
 }
 
 /** Exact statement allowlist for the Phase 2 atomic catalog RPC and kind boundary. */
@@ -1219,6 +1306,86 @@ export function assertAdminCatalogTransactionMigrationContract(sql0019: string):
   fail(/role = 'admin' and account_status = 'approved'/i.test(code) && /auth\.uid\(\)/i.test(code), "Atomic mutations must check the approved admin in the database");
   fail(/old\.kind is distinct from new\.kind/i.test(code) && /before update of kind on public\.products/i.test(code), "Product kind must be immutable at the database boundary");
   fail(/products\.kind = 'material'|products\.kind = 'course'|products\.kind = 'tutor'/i.test(code), "Child public policies must enforce parent kind");
+  assertNestedFunctionSqlScope(statements, { allowDmlTables: ["products", "materials", "courses", "tutors"], allowSelectTables: ["profiles", "products", "materials", "courses", "tutors"], allowSqlExpressionSelect: true });
+}
+
+/** Exact access-boundary contract for the migration that removes direct catalog DML. */
+export function assertCatalogMutationAccessBoundaryMigrationContract(sql0020: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const statements = stripSqlCommentsAndSplitStatements(sql0020);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const allowed: RegExp[] = [
+    /^create or replace function public\.admin_catalog_mutate_atomic\([\s\S]+\) returns jsonb language plpgsql security definer set search_path = public as \$function\$[\s\S]+\$function\$$/i,
+    /^revoke all on function public\.admin_catalog_mutate\(text, public\.product_kind_enum, jsonb, jsonb, uuid\) from public, anon, authenticated$/i,
+    /^revoke all on function public\.admin_catalog_mutate_atomic\(text, public\.product_kind_enum, jsonb, jsonb, uuid\) from public, anon, authenticated$/i,
+    /^grant execute on function public\.admin_catalog_mutate_atomic\(text, public\.product_kind_enum, jsonb, jsonb, uuid\) to authenticated$/i,
+    /^revoke all privileges on table public\.(?:products|materials|courses|tutors) from authenticated$/i,
+    /^grant select on table public\.(?:products|materials|courses|tutors) to authenticated$/i,
+    /^drop policy if exists (?:products|materials|courses|tutors)_admin_(?:insert|update|delete) on public\.(?:products|materials|courses|tutors)$/i
+  ];
+  fail(statements.length === 24, "Migration 0020 must contain exactly its 24 allowlisted statements");
+  fail(normalized.every((statement) => allowed.some((pattern) => pattern.test(statement))), "Migration 0020 contains a statement outside its exact allowlist");
+  fail(normalized.filter((statement) => /^create or replace function public\.admin_catalog_mutate_atomic/i.test(statement)).length === 1, "Migration 0020 must define the atomic wrapper exactly once");
+  fail(normalized.filter((statement) => /^revoke all privileges on table public\.(?:products|materials|courses|tutors)/i.test(statement)).length === 4, "Migration 0020 must revoke direct catalog table privileges");
+  fail(normalized.filter((statement) => /^grant select on table public\.(?:products|materials|courses|tutors)/i.test(statement)).length === 4, "Migration 0020 must preserve authenticated catalog reads only");
+  fail(normalized.filter((statement) => /^drop policy if exists/i.test(statement)).length === 12, "Migration 0020 must remove all direct product/child mutation policies");
+  fail(normalized.filter((statement) => /^grant execute/i.test(statement)).length === 1, "Migration 0020 must grant exactly one mutation RPC");
+  const code = normalized.join(" ; ");
+  fail((code.match(/security definer/g) || []).length === 1, "Only the approved atomic wrapper may use SECURITY DEFINER");
+  fail(/auth\.uid\(\)/i.test(code) && /role = 'admin' and account_status = 'approved'/i.test(code), "Atomic wrapper must check the approved admin identity");
+  fail(/return public\.admin_catalog_mutate\(/i.test(code), "Atomic wrapper must delegate to the existing transaction-safe mutation body");
+  fail(!/service_role|bypassrls|set\s+role|execute\s+(?:immediate|format)|grant\s+all/i.test(code), "Migration 0020 must not escalate privileges or use dynamic SQL");
+  const expectedPolicyDrops = [
+    "drop policy if exists products_admin_insert on public.products",
+    "drop policy if exists products_admin_update on public.products",
+    "drop policy if exists products_admin_delete on public.products",
+    "drop policy if exists materials_admin_insert on public.materials",
+    "drop policy if exists materials_admin_update on public.materials",
+    "drop policy if exists materials_admin_delete on public.materials",
+    "drop policy if exists courses_admin_insert on public.courses",
+    "drop policy if exists courses_admin_update on public.courses",
+    "drop policy if exists courses_admin_delete on public.courses",
+    "drop policy if exists tutors_admin_insert on public.tutors",
+    "drop policy if exists tutors_admin_update on public.tutors",
+    "drop policy if exists tutors_admin_delete on public.tutors"
+  ];
+  fail(expectedPolicyDrops.every((statement) => normalized.includes(statement)), "Migration 0020 must drop each direct catalog mutation policy by its exact table and operation");
+  assertNestedFunctionSqlScope(statements, { allowDmlTables: [], allowSelectTables: ["profiles"] });
+}
+
+/** Exact schema/index contract for normalized server-side catalog search. */
+export function assertCatalogSearchNormalizationMigrationContract(sql0021: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const statements = stripSqlCommentsAndSplitStatements(sql0021);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const allowed = [
+    /^create extension if not exists unaccent with schema extensions$/i,
+    /^create extension if not exists pg_trgm$/i,
+    /^create or replace function public\.normalize_catalog_search\(value text\) returns text language sql immutable set search_path = public, extensions as \$function\$[\s\S]+\$function\$$/i,
+    /^alter table public\.(?:products|subjects) add column if not exists search_document text not null default ''$/i,
+    /^create or replace function public\.(?:refresh_product_search_document|refresh_subject_search_document|refresh_products_for_subject_search)\(\) returns trigger language plpgsql set search_path = public, extensions as \$function\$[\s\S]+\$function\$$/i,
+    /^drop trigger if exists (?:trg_refresh_product_search_document|trg_refresh_subject_search_document|trg_refresh_products_for_subject_search) on public\.(?:products|subjects)$/i,
+    /^create trigger trg_refresh_product_search_document before insert or update of slug, title, description, subject_id on public\.products for each row execute function public\.refresh_product_search_document\(\)$/i,
+    /^create trigger trg_refresh_subject_search_document before insert or update of slug, name on public\.subjects for each row execute function public\.refresh_subject_search_document\(\)$/i,
+    /^create trigger trg_refresh_products_for_subject_search after update of slug, name on public\.subjects for each row execute function public\.refresh_products_for_subject_search\(\)$/i,
+    /^update public\.products set search_document = public\.normalize_catalog_search\([\s\S]+\) from public\.subjects where subjects\.id = products\.subject_id$/i,
+    /^update public\.subjects set search_document = public\.normalize_catalog_search\([\s\S]+\)$/i,
+    /^create index if not exists idx_(?:products|subjects)_search_document on public\.(?:products|subjects) using gin \(search_document gin_trgm_ops\)$/i,
+    /^revoke all on function public\.(?:normalize_catalog_search\(text\)|refresh_product_search_document\(\)|refresh_subject_search_document\(\)|refresh_products_for_subject_search\(\)) from public$/i
+  ] as const;
+  fail(statements.length === 22, "Migration 0021 must contain exactly its 22 allowlisted statements");
+  fail(normalized.every((statement) => allowed.some((pattern) => pattern.test(statement))), "Migration 0021 contains a statement outside its exact allowlist");
+  fail(normalized.filter((statement) => /^create or replace function public\.normalize_catalog_search/i.test(statement)).length === 1, "Migration 0021 must define one canonical search normalizer");
+  fail(normalized.filter((statement) => /^alter table public\.(?:products|subjects) add column/i.test(statement)).length === 2, "Migration 0021 must add normalized search columns to products and subjects");
+  fail(normalized.filter((statement) => /^create index if not exists/i.test(statement)).length === 2, "Migration 0021 must index both normalized search columns");
+  const code = normalized.join(" ; ");
+  fail(/unaccent|lower|regexp_replace|btrim/i.test(code), "Migration 0021 must normalize accents, case, punctuation, and whitespace in the database");
+  fail(!/service_role|bypassrls|set\s+role|execute\s+(?:immediate|format)/i.test(code), "Migration 0021 must not escalate privileges or use dynamic SQL");
+  assertNestedFunctionSqlScope(statements, { allowDmlTables: ["products"], allowSelectTables: ["subjects"], allowSqlExpressionSelect: true });
 }
 
 export async function runAudit(): Promise<boolean> {
@@ -1255,13 +1422,15 @@ export async function runAudit(): Promise<boolean> {
       "0016_study_plans.sql",
       "0017_profile_on_auth_signup.sql",
       "0018_catalog_semantic_invariants.sql",
-      "0019_admin_catalog_transaction_rpc.sql"
+      "0019_admin_catalog_transaction_rpc.sql",
+      "0020_catalog_mutation_access_boundary.sql",
+      "0021_catalog_search_normalization.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 19 migration files exist in strict topological order",
+      check: "All 21 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -1512,7 +1681,7 @@ export async function runAudit(): Promise<boolean> {
       migration0009ContractValid = false;
     }
     const repoSource = await fs.readFile(path.join(rootDir, "lib/repositories/consultation-repository.ts"), "utf-8");
-    const repositoryDoesNotAcceptUpdater = /export\s+async\s+function\s+updateConsultationStatus\s*\(\s*id:\s*string\s*,\s*status:\s*ConsultationStatus\s*,\s*client\?:\s*any\s*\)/.test(repoSource)
+    const repositoryDoesNotAcceptUpdater = /export\s+async\s+function\s+updateConsultationStatus\s*\(\s*id:\s*string\s*,\s*status:\s*ConsultationStatus\s*,\s*client\?:\s*[^)]*\)/.test(repoSource)
       && /\.update\(\{\s*status\s*\}\)/.test(repoSource)
       && !/\.update\(\{[^}]*\b(?:userId|user_id|updatedBy|updated_by)\b/i.test(repoSource);
     results.push({
@@ -1680,6 +1849,30 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0019_admin_catalog_transaction_rpc", check: "Uses an exact atomic catalog RPC and closes product-kind/public-read boundaries", passed: true, details: "Approved-admin RPC, immutable product kind, typed child writes, and published parent-kind policies verified" });
     }
 
+    const sql0020 = await fs.readFile(path.join(migrationsDir, "0020_catalog_mutation_access_boundary.sql"), "utf-8");
+    let migration0020ContractValid = true;
+    try {
+      assertCatalogMutationAccessBoundaryMigrationContract(sql0020);
+    } catch (error) {
+      migration0020ContractValid = false;
+      results.push({ category: "0020_catalog_mutation_access_boundary", check: "Removes direct catalog DML and exposes only the approved atomic RPC", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0020ContractValid) {
+      results.push({ category: "0020_catalog_mutation_access_boundary", check: "Removes direct catalog DML and exposes only the approved atomic RPC", passed: true, details: "Direct product/child mutation privileges and policies revoked; approved-admin SECURITY DEFINER wrapper is the only mutation entrypoint" });
+    }
+
+    const sql0021 = await fs.readFile(path.join(migrationsDir, "0021_catalog_search_normalization.sql"), "utf-8");
+    let migration0021ContractValid = true;
+    try {
+      assertCatalogSearchNormalizationMigrationContract(sql0021);
+    } catch (error) {
+      migration0021ContractValid = false;
+      results.push({ category: "0021_catalog_search_normalization", check: "Maintains indexed normalized search documents for products and subjects", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0021ContractValid) {
+      results.push({ category: "0021_catalog_search_normalization", check: "Maintains indexed normalized search documents for products and subjects", passed: true, details: "Database normalizer, maintenance triggers, backfill, and trigram indexes verified" });
+    }
+
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
     const isTxn = /^\s*(?:--[^\n]*\n\s*)*BEGIN\s*;/im.test(sqlSeed) && /COMMIT\s*;\s*$/i.test(sqlSeed.trim());
@@ -1698,12 +1891,13 @@ export async function runAudit(): Promise<boolean> {
       details: `${CANONICAL_SUBJECTS.length} subjects, ${materials.length} materials, ${courses.length} courses, ${tutors.length} tutors and semantic conflict reconciliation verified`
     });
 
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const details = err instanceof Error ? err.message : "Unexpected verification error.";
     results.push({
       category: "Fatal Error",
       check: "File parsing error",
       passed: false,
-      details: err.message
+      details
     });
   }
 
@@ -1726,7 +1920,7 @@ export async function runAudit(): Promise<boolean> {
   if (!hasDb && !hasSupabase) {
     console.log("[-] Local Docker / PostgreSQL is not running in this environment.");
     console.log("[-] No remote Supabase connection credentials provided (safely preserved).");
-    console.log("[+] Static SQL contract, RLS security matrix, and seed idempotency verified 100%.");
+    console.log("[+] Static SQL contracts, RLS checks, and seed idempotency checks completed; live database behavior was not executed.");
   } else {
     console.log("[+] Live Database endpoint detected. Integration tests available.");
   }

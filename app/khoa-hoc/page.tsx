@@ -18,8 +18,8 @@ export default async function CoursesCatalogPage({
   searchParams
 }: {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
-}) {
-  const { filters, page: courses } = await loadCoursesCatalogPage((await searchParams) ?? {});
+}, loader: (filters: CatalogFilters) => Promise<CatalogPage<PublishedCourse>> = listCourses) {
+  const { filters, page: courses } = await loadCoursesCatalogPage((await searchParams) ?? {}, loader);
 
   return (
     <CatalogPageShell>

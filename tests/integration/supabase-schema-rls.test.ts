@@ -27,6 +27,8 @@ import {
   assertMigration0017Contract,
   assertCatalogSemanticMigrationContract,
   assertAdminCatalogTransactionMigrationContract,
+  assertCatalogMutationAccessBoundaryMigrationContract,
+  assertCatalogSearchNormalizationMigrationContract,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
 } from "../../scripts/verify-supabase-migrations-seed-rls";
@@ -239,7 +241,9 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       "0016_study_plans.sql",
       "0017_profile_on_auth_signup.sql",
       "0018_catalog_semantic_invariants.sql",
-      "0019_admin_catalog_transaction_rpc.sql"
+      "0019_admin_catalog_transaction_rpc.sql",
+      "0020_catalog_mutation_access_boundary.sql",
+      "0021_catalog_search_normalization.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -572,7 +576,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         // No live database credentials provided and local Docker stack is unavailable.
         // We log clear diagnosis and pass the contract checks without faking a database connection.
         t.diagnostic("LIVE DATABASE NOTICE: No live database or Docker daemon available in current local environment.");
-        t.diagnostic("Static migration, seed idempotency, constraint analysis, and RLS schema grants were verified via AST & SQL contract tests.");
+        t.diagnostic("Static migration, seed idempotency, constraint analysis, and RLS schema grants were verified via the custom SQL scanner and contract tests; no AST parser was used.");
         assert.strictEqual(hasLiveDb, false, "Live DB is inactive in this environment as expected");
       } else {
         t.diagnostic(`LIVE DATABASE ACTIVE: Connected to ${supabaseUrl || "Postgres"}`);
@@ -1409,7 +1413,8 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       `${sql}\nREVOKE SELECT ON TABLE public.products FROM anon;`,
       `${sql}\nUPDATE public.products SET title = 'outside scope';`,
       `${sql}\nCREATE TABLE public.leaked_fixture(id integer);`,
-      `${sql}\nDO $$ BEGIN EXECUTE 'SELECT 1'; END $$;`
+      `${sql}\nDO $$ BEGIN EXECUTE 'SELECT 1'; END $$;`,
+      sql.replace("IF NOT EXISTS (SELECT 1 FROM public.products WHERE id = NEW.product_id AND kind = 'material') THEN", "IF NOT EXISTS (SELECT 1 FROM public.products WHERE id = NEW.product_id AND kind = 'material') THEN\n        CREATE TABLE public.nested_leak(id integer);")
     ];
     for (const [index, fixture] of fixtures.entries()) assert.throws(() => assertCatalogSemanticMigrationContract(fixture), /./, `unsafe 0018 fixture ${index} must be rejected`);
   });
@@ -1537,11 +1542,55 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
         sql.replace("products.kind = 'material'", "products.kind = 'course'"),
         sql.replace("products.kind = 'course'", "products.kind = 'tutor'")
       ];
-      for (const fixture of fixtures) assert.throws(() => assertAdminCatalogTransactionMigrationContract(fixture), /./);
+      for (const [index, fixture] of fixtures.entries()) assert.throws(() => assertAdminCatalogTransactionMigrationContract(fixture), /./, `nested hostile RPC fixture ${index} must be rejected`);
       assert.match(sql, /IF p_kind = 'material' THEN[\s\S]*INSERT INTO public\.materials/i);
       assert.match(sql, /IF p_kind = 'course' THEN[\s\S]*INSERT INTO public\.courses/i);
       assert.match(sql, /ELSE[\s\S]*INSERT INTO public\.tutors/i);
       assert.match(sql, /OLD\.kind IS DISTINCT FROM NEW\.kind/i);
+    });
+
+    test("rejects executable DDL/DML inserted into the RPC helper body", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      const fixtures = [
+        sql.replace("IF OLD.kind IS DISTINCT FROM NEW.kind THEN", "DELETE FROM public.profiles;\n    IF OLD.kind IS DISTINCT FROM NEW.kind THEN"),
+        sql.replace("BEGIN\n    IF NOT EXISTS", "BEGIN\n    CREATE OR REPLACE FUNCTION public.phase2_helper() RETURNS void LANGUAGE plpgsql AS $$ BEGIN DELETE FROM public.profiles; END; $$;\n    IF NOT EXISTS"),
+        sql.replace("BEGIN\n    IF NOT EXISTS", "BEGIN\n    SELECT * FROM public.consultations;\n    IF NOT EXISTS"),
+        sql.replace("BEGIN\n    IF NOT EXISTS", "BEGIN\n    PERFORM 1;\n    IF NOT EXISTS")
+      ];
+      for (const fixture of fixtures) assert.throws(() => assertAdminCatalogTransactionMigrationContract(fixture), /./);
+    });
+  });
+
+  describe("16. Migration 0020 Catalog Mutation Access Boundary", () => {
+    const migrationPath = path.resolve(process.cwd(), "supabase/migrations/0020_catalog_mutation_access_boundary.sql");
+
+    test("accepts only the approved RPC boundary and rejects direct mutation privileges", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      assert.doesNotThrow(() => assertCatalogMutationAccessBoundaryMigrationContract(sql));
+      assert.match(sql, /SECURITY DEFINER/i);
+      assert.match(sql, /REVOKE ALL PRIVILEGES ON TABLE public\.products FROM authenticated/i);
+      assert.doesNotMatch(sql, /GRANT (?:INSERT|UPDATE|DELETE)/i);
+    });
+
+    test("rejects comments/fixtures that add nested privilege or DML escape paths", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      const fixtures = [
+        `${sql}\nGRANT INSERT ON TABLE public.products TO authenticated;`,
+        sql.replace("RETURN public.admin_catalog_mutate(", "DELETE FROM public.profiles;\n    RETURN public.admin_catalog_mutate(")
+      ];
+      for (const fixture of fixtures) assert.throws(() => assertCatalogMutationAccessBoundaryMigrationContract(fixture), /./);
+      assert.doesNotThrow(() => assertCatalogMutationAccessBoundaryMigrationContract(`-- comment\n  ${sql.replace(/\n/g, "\n  ")}`));
+    });
+  });
+
+  describe("17. Migration 0021 Catalog Search Normalization", () => {
+    const migrationPath = path.resolve(process.cwd(), "supabase/migrations/0021_catalog_search_normalization.sql");
+
+    test("accepts normalized indexed search schema and rejects nested executable SQL", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      assert.doesNotThrow(() => assertCatalogSearchNormalizationMigrationContract(sql));
+      const fixture = sql.replace("BEGIN\n    NEW.search_document", "BEGIN\n    DROP TABLE public.profiles;\n    NEW.search_document");
+      assert.throws(() => assertCatalogSearchNormalizationMigrationContract(fixture), /./);
     });
   });
 });

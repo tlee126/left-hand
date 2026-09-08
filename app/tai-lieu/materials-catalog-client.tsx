@@ -10,6 +10,7 @@ import { SectionHeading } from "@/components/site/section-heading";
 import { CatalogPagination } from "@/components/catalog/catalog-pagination";
 import type { CatalogFilters, CatalogPage, PublishedMaterial } from "@/lib/domain/catalog";
 import { categoryFilterOptions, type CategoryFilter } from "@/components/catalog/catalog-options";
+import { buildCatalogFilterUrl } from "@/lib/domain/catalog-url";
 
 type SortOption = "newest" | "price-asc" | "price-desc" | "rating-desc";
 
@@ -40,10 +41,7 @@ export function MaterialsCatalogClient({
   const filterContainerRef = useRef<HTMLDivElement>(null);
 
   const updateQuery = (key: string, value?: string) => {
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete("page");
-    if (value) params.set(key, value); else params.delete(key);
-    router.push(params.toString() ? `${pathname}?${params.toString()}` : pathname, { scroll: false });
+    router.push(buildCatalogFilterUrl(pathname, searchParams.toString(), [[key, value]]), { scroll: false });
   };
 
   // Auto-scroll filter chip into view

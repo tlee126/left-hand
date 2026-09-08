@@ -18,8 +18,8 @@ export default async function MaterialsCatalogPage({
   searchParams
 }: {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
-}) {
-  const { filters, page: materials } = await loadMaterialsCatalogPage((await searchParams) ?? {});
+}, loader: (filters: CatalogFilters) => Promise<CatalogPage<PublishedMaterial>> = listMaterials) {
+  const { filters, page: materials } = await loadMaterialsCatalogPage((await searchParams) ?? {}, loader);
 
   return (
     <CatalogPageShell>

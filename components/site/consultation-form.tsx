@@ -7,14 +7,38 @@ import type { ReactNode } from "react";
 import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
 import { faculties, majors, needs } from "@/data/site";
-import type { PublishedCourse, PublishedMaterial, PublishedTutor } from "@/lib/domain/catalog";
+import type { Category } from "@/lib/domain/subjects";
 import { normalizeSlug } from "@/lib/domain/subjects";
 import { validateConsultationInput, type ConsultationInput } from "@/lib/validation/consultation";
 
 export interface ConsultationCatalog {
-  materials: PublishedMaterial[];
-  courses: PublishedCourse[];
-  tutors: PublishedTutor[];
+  materials: readonly ConsultationMaterial[];
+  courses: readonly ConsultationCourse[];
+  tutors: readonly ConsultationTutor[];
+}
+
+interface ConsultationSubject {
+  readonly slug: string;
+  readonly name: string;
+}
+
+interface ConsultationMaterial {
+  readonly slug: string;
+  readonly category: Category;
+  readonly subject: ConsultationSubject;
+}
+
+interface ConsultationCourse {
+  readonly slug: string;
+  readonly category: Category;
+  readonly subject: ConsultationSubject;
+}
+
+interface ConsultationTutor {
+  readonly slug: string;
+  readonly tutor: {
+    readonly subjects: readonly ConsultationSubject[];
+  };
 }
 
 export interface ConsultationFormProps {
@@ -23,7 +47,7 @@ export interface ConsultationFormProps {
 }
 
 type CatalogInterestItem = {
-  category: PublishedMaterial["category"] | "Tutor";
+  category: Category | "Tutor";
   subject: string;
   subjectSlug: string;
   slug: string;
@@ -225,7 +249,21 @@ export interface ConsultationSubmitResult {
   success: boolean;
   status: number;
   message: string;
-  details?: Record<string, string>;
+  details?: FormErrors;
+}
+
+const FORM_ERROR_FIELDS: readonly (keyof FormValues)[] = [
+  "fullName", "phone", "faculty", "major", "interest", "need", "note"
+];
+
+function parseFormErrors(value: unknown): FormErrors | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const parsed: FormErrors = {};
+  for (const field of FORM_ERROR_FIELDS) {
+    const detail = Object.getOwnPropertyDescriptor(value, field)?.value;
+    if (typeof detail === "string" && detail.length > 0 && detail.length <= 500) parsed[field] = detail;
+  }
+  return Object.keys(parsed).length > 0 ? parsed : undefined;
 }
 
 export async function submitConsultation(
@@ -260,7 +298,7 @@ export async function submitConsultation(
     }
 
     if (response.status === 400) {
-      let data: any = null;
+      let data: unknown = null;
       try {
         data = await response.json();
       } catch {
@@ -271,7 +309,11 @@ export async function submitConsultation(
         success: false,
         status: 400,
         message: "Vui lòng kiểm tra lại các trường thông tin bắt buộc.",
-        details: data?.details && typeof data.details === "object" ? data.details : undefined
+        details: parseFormErrors(
+          data !== null && typeof data === "object" && !Array.isArray(data)
+            ? Object.getOwnPropertyDescriptor(data, "details")?.value
+            : undefined
+        )
       };
     }
 

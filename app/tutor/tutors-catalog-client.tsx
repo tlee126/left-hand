@@ -10,6 +10,7 @@ import { SectionHeading } from "@/components/site/section-heading";
 import { CatalogPagination } from "@/components/catalog/catalog-pagination";
 import type { CatalogFilters, CatalogPage, PublishedTutor } from "@/lib/domain/catalog";
 import { tutorFilterOptions, type TutorFilter } from "@/components/catalog/catalog-options";
+import { buildCatalogFilterUrl } from "@/lib/domain/catalog-url";
 
 type SortOption = "relevant" | "rating-desc" | "available-slot";
 
@@ -43,19 +44,11 @@ export function TutorsCatalogClient({
   const filterContainerRef = useRef<HTMLDivElement>(null);
 
   const updateQuery = (key: string, value?: string) => {
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete("page");
-    if (value) params.set(key, value); else params.delete(key);
-    router.push(params.toString() ? `${pathname}?${params.toString()}` : pathname, { scroll: false });
+    router.push(buildCatalogFilterUrl(pathname, searchParams.toString(), [[key, value]]), { scroll: false });
   };
 
   const updateFilters = (entries: Array<[string, string | undefined]>) => {
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete("page");
-    for (const [key, value] of entries) {
-      if (value) params.set(key, value); else params.delete(key);
-    }
-    router.push(params.toString() ? `${pathname}?${params.toString()}` : pathname, { scroll: false });
+    router.push(buildCatalogFilterUrl(pathname, searchParams.toString(), entries), { scroll: false });
   };
 
   // Auto-scroll filter chip into view

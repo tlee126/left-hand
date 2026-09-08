@@ -5,6 +5,7 @@ import { CatalogPageShell } from "@/components/catalog/catalog-page-shell";
 import { getPublishedTutorBySlug } from "@/lib/repositories/catalog-repository";
 import { coverThemes } from "@/components/catalog/theme";
 import { formatVND } from "@/lib/domain/product-types";
+import type { PublishedTutor } from "@/lib/domain/catalog";
 
 export const revalidate = 60;
 
@@ -21,9 +22,9 @@ export default async function TutorDetailPage({
   params,
 }: {
   params: Promise<{ slug: string }>;
-}) {
+}, loader: (slug: string) => Promise<PublishedTutor | null> = getPublishedTutorBySlug) {
   const { slug } = await params;
-  const item = await getPublishedTutorBySlug(slug);
+  const item = await loader(slug);
 
   if (!item) {
     notFound();

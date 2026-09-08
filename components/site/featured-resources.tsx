@@ -17,29 +17,14 @@ import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
 import { categoryFilterOptions } from "@/components/catalog/catalog-options";
 import { coverThemes } from "@/components/catalog/theme";
-import type { Category, ColorTheme } from "@/lib/domain/subjects";
+import type { Category } from "@/lib/domain/subjects";
 import { formatVND } from "@/lib/domain/product-types";
-import type { PublishedCourse, PublishedMaterial } from "@/lib/domain/catalog";
 import { normalizeCatalogSearch } from "@/lib/domain/catalog";
+import { buildFeaturedResources, type FeaturedResourceItem } from "@/lib/domain/catalog-presentations";
 
-type ResourceItem = {
-  id: string;
-  slug: string;
-  title: string;
-  subject: string;
-  category: Category;
-  type: "TÀI LIỆU" | "KHÓA HỌC";
-  description: string;
-  amountVND: number | null;
-  originalAmountVND: number | null;
-  meta: string;
-  bonus?: string;
-  rating: number;
-  isHot?: boolean;
-  colorTheme: ColorTheme;
-  tags: string[];
-  status?: PublishedCourse["course"]["enrollmentStatus"];
-};
+export { buildFeaturedResources } from "@/lib/domain/catalog-presentations";
+
+type ResourceItem = FeaturedResourceItem;
 
 type FilterKey = "Tất cả" | "Tài liệu" | "Khóa học" | Category;
 
@@ -58,115 +43,14 @@ function matchesFilter(item: ResourceItem, filter: FilterKey) {
 }
 
 export interface FeaturedResourcesProps {
-  materials: PublishedMaterial[];
-  courses: PublishedCourse[];
+  resources?: readonly ResourceItem[];
+  /** Compatibility input for non-production callers; the homepage sends resources. */
+  materials?: Parameters<typeof buildFeaturedResources>[0];
+  courses?: Parameters<typeof buildFeaturedResources>[1];
   loadError?: boolean;
 }
 
-type CatalogResource =
-  | { item: PublishedMaterial; type: "TÀI LIỆU" }
-  | { item: PublishedCourse; type: "KHÓA HỌC" };
-
-function toResource({ item, type }: CatalogResource): ResourceItem {
-  if (type === "TÀI LIỆU") {
-    return {
-      id: item.id,
-      slug: item.slug,
-      title: item.title,
-      subject: item.subject.name,
-      category: item.category,
-      type,
-      description: item.description,
-      amountVND: item.pricing.amountVND,
-      originalAmountVND: item.pricing.originalAmountVND,
-      meta: `${item.material.pages} trang`,
-      bonus: item.material.tags[0],
-      rating: item.rating,
-      isHot: item.isHot,
-      colorTheme: item.colorTheme,
-      tags: [...item.material.tags]
-    };
-  }
-
-  return {
-    id: item.id,
-    slug: item.slug,
-    title: item.title,
-    subject: item.subject.name,
-    category: item.category,
-    type,
-    description: item.description,
-    amountVND: item.pricing.amountVND,
-    originalAmountVND: item.pricing.originalAmountVND,
-    meta: `${item.course.sessions} buổi`,
-    bonus: item.course.tags[0],
-    rating: item.rating,
-    isHot: item.isHot,
-    colorTheme: item.colorTheme,
-    tags: [...item.course.tags],
-    status: item.course.enrollmentStatus
-  };
-}
-
-export function buildFeaturedResources(
-  materials: readonly PublishedMaterial[],
-  courses: readonly PublishedCourse[]
-): ResourceItem[] {
-  const categories: Category[] = [...categoryFilterOptions]
-    .map((filter) => filter.label)
-    .filter((label): label is Category => label !== "Tất cả");
-
-  const bestByCategory: Partial<Record<Category, CatalogResource>> = {};
-
-  categories.forEach((category) => {
-    const categoryMaterials = materials.filter((item) => item.category === category);
-    const categoryCourses = courses.filter((item) => item.category === category);
-    const hotMaterial = categoryMaterials.find((item) => item.isHot);
-    const openCourse = categoryCourses.find((item) => item.course.enrollmentStatus === "open");
-
-    if (hotMaterial) {
-      bestByCategory[category] = { item: hotMaterial, type: "TÀI LIỆU" };
-    } else if (openCourse) {
-      bestByCategory[category] = { item: openCourse, type: "KHÓA HỌC" };
-    } else if (categoryMaterials[0]) {
-      bestByCategory[category] = { item: categoryMaterials[0], type: "TÀI LIỆU" };
-    } else if (categoryCourses[0]) {
-      bestByCategory[category] = { item: categoryCourses[0], type: "KHÓA HỌC" };
-    }
-  });
-
-  const selectedKeys = new Set<string>();
-  const selectedItems: CatalogResource[] = [];
-
-  categories.forEach((category) => {
-    const representation = bestByCategory[category];
-    if (representation) {
-      selectedItems.push(representation);
-      selectedKeys.add(representation.item.id);
-    }
-  });
-
-  const remainingHotMaterials: CatalogResource[] = materials
-    .filter((item) => item.isHot && !selectedKeys.has(item.id))
-    .map((item) => ({ item, type: "TÀI LIỆU" }));
-  const remainingOpenCourses: CatalogResource[] = courses
-    .filter((item) => item.course.enrollmentStatus === "open" && !selectedKeys.has(item.id))
-    .map((item) => ({ item, type: "KHÓA HỌC" }));
-  const remainingOthers: CatalogResource[] = [
-    ...materials
-      .filter((item) => !selectedKeys.has(item.id))
-      .map((item) => ({ item, type: "TÀI LIỆU" as const })),
-    ...courses
-      .filter((item) => !selectedKeys.has(item.id))
-      .map((item) => ({ item, type: "KHÓA HỌC" as const }))
-  ];
-
-  return [...selectedItems, ...remainingHotMaterials, ...remainingOpenCourses, ...remainingOthers]
-    .slice(0, 12)
-    .map(toResource);
-}
-
-export function FeaturedResources({ materials, courses, loadError = false }: FeaturedResourcesProps) {
+export function FeaturedResources({ resources, materials = [], courses = [], loadError = false }: FeaturedResourcesProps) {
   const [activeFilter, setActiveFilter] = useState<FilterKey>("Tất cả");
   const [query, setQuery] = useState("");
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -176,9 +60,9 @@ export function FeaturedResources({ materials, courses, loadError = false }: Fea
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(true);
 
-  const resources = useMemo(
-    () => buildFeaturedResources(materials, courses),
-    [materials, courses]
+  const resourceData = useMemo(
+    () => resources ?? buildFeaturedResources(materials, courses),
+    [resources, materials, courses]
   );
 
   useEffect(() => {
@@ -198,7 +82,7 @@ export function FeaturedResources({ materials, courses, loadError = false }: Fea
   const filteredResources = useMemo(() => {
     const normalized = normalizeCatalogSearch(query);
 
-    return resources.filter((item) => {
+    return resourceData.filter((item) => {
       const passesFilter = matchesFilter(item, activeFilter);
       const haystack = [
         item.title,
@@ -214,7 +98,7 @@ export function FeaturedResources({ materials, courses, loadError = false }: Fea
 
       return passesFilter && passesQuery;
     });
-  }, [resources, activeFilter, query]);
+  }, [resourceData, activeFilter, query]);
 
   const checkScroll = () => {
     const container = scrollContainerRef.current;

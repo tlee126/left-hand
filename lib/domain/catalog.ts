@@ -115,11 +115,11 @@ export interface CatalogFilters {
 
 export interface CatalogPage<T> {
   readonly items: readonly T[];
-  readonly total: number;
+  readonly total: number | null;
   readonly limit: number;
   readonly offset: number;
   readonly page: number;
-  readonly hasNext: boolean;
+  readonly hasNext: boolean | null;
   readonly hasPrevious: boolean;
 }
 

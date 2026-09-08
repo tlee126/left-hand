@@ -5,6 +5,7 @@ import { CatalogPageShell } from "@/components/catalog/catalog-page-shell";
 import { getPublishedMaterialBySlug } from "@/lib/repositories/catalog-repository";
 import { coverThemes } from "@/components/catalog/theme";
 import { formatVND } from "@/lib/domain/product-types";
+import type { PublishedMaterial } from "@/lib/domain/catalog";
 
 export const revalidate = 60;
 
@@ -12,9 +13,9 @@ export default async function MaterialDetailPage({
   params,
 }: {
   params: Promise<{ slug: string }>;
-}) {
+}, loader: (slug: string) => Promise<PublishedMaterial | null> = getPublishedMaterialBySlug) {
   const { slug } = await params;
-  const item = await getPublishedMaterialBySlug(slug);
+  const item = await loader(slug);
 
   if (!item) {
     notFound();

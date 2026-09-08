@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import type { CatalogPage } from "@/lib/domain/catalog";
+import { buildCatalogPageUrl } from "@/lib/domain/catalog-url";
 
 interface CatalogPaginationProps {
   page: CatalogPage<unknown>;
@@ -10,12 +11,10 @@ interface CatalogPaginationProps {
 export function CatalogPagination({ page }: CatalogPaginationProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  if (!page.hasPrevious && !page.hasNext) return null;
+  if (!page.hasPrevious && page.hasNext === false) return null;
 
   const navigate = (nextPage: number) => {
-    const params = new URLSearchParams(searchParams.toString());
-    params.set("page", String(nextPage));
-    router.push(`?${params.toString()}`, { scroll: false });
+    router.push(buildCatalogPageUrl(searchParams.toString(), nextPage), { scroll: false });
   };
 
   return (
@@ -28,7 +27,9 @@ export function CatalogPagination({ page }: CatalogPaginationProps) {
       >
         Trang trước
       </button>
-      <span className="text-xs font-bold text-[#697598]">Trang {page.page}</span>
+      <span className="text-xs font-bold text-[#697598]">
+        Trang {page.page}{page.hasNext === null ? " · Tổng số trang chưa xác định" : ""}
+      </span>
       <button
         type="button"
         disabled={!page.hasNext}

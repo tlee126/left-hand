@@ -11,12 +11,14 @@ import { ImpactStats } from "@/components/site/impact-stats";
 import { ProcessSection } from "@/components/site/process-section";
 import { ServicesSection } from "@/components/site/services-section";
 import { TestimonialsSection } from "@/components/site/testimonials-section";
+import type { ConsultationCatalog } from "@/components/site/consultation-form";
 import {
   listPublishedCourses,
   listPublishedMaterials,
   listPublishedTutors
 } from "@/lib/repositories/catalog-repository";
 import type { PublishedCourse, PublishedMaterial, PublishedTutor } from "@/lib/domain/catalog";
+import { buildFeaturedResources } from "@/lib/domain/catalog-presentations";
 
 export const revalidate = 60;
 
@@ -30,6 +32,27 @@ export interface HomepageCatalogLoaders {
   listPublishedMaterials: () => Promise<PublishedMaterial[]>;
   listPublishedCourses: () => Promise<PublishedCourse[]>;
   listPublishedTutors: () => Promise<PublishedTutor[]>;
+}
+
+export function toConsultationCatalog(catalog: HomepageCatalog): ConsultationCatalog {
+  return {
+    materials: catalog.materials.map((item) => ({
+      slug: item.slug,
+      category: item.category,
+      subject: { slug: item.subject.slug, name: item.subject.name }
+    })),
+    courses: catalog.courses.map((item) => ({
+      slug: item.slug,
+      category: item.category,
+      subject: { slug: item.subject.slug, name: item.subject.name }
+    })),
+    tutors: catalog.tutors.map((item) => ({
+      slug: item.slug,
+      tutor: {
+        subjects: item.tutor.subjects.map((subject) => ({ slug: subject.slug, name: subject.name }))
+      }
+    }))
+  };
 }
 
 export async function loadPublishedHomepageCatalog(
@@ -58,8 +81,16 @@ export async function loadPublishedHomepageCatalog(
   }
 }
 
-export default async function HomePage() {
-  const { catalog, loadError } = await loadPublishedHomepageCatalog();
+export default async function HomePage(
+  loaders: HomepageCatalogLoaders = {
+    listPublishedMaterials,
+    listPublishedCourses,
+    listPublishedTutors
+  }
+) {
+  const { catalog, loadError } = await loadPublishedHomepageCatalog(loaders);
+  const featuredResources = buildFeaturedResources(catalog.materials, catalog.courses);
+  const consultationCatalog = toConsultationCatalog(catalog);
 
   return (
     <div className="relative min-h-screen overflow-x-hidden bg-transparent">
@@ -75,12 +106,11 @@ export default async function HomePage() {
         <ImpactStats />
         <ServicesSection />
         <FeaturedResources
-          materials={catalog.materials}
-          courses={catalog.courses}
+          resources={featuredResources}
           loadError={loadError}
         />
         <ProcessSection />
-        <ConsultationForm catalog={catalog} loadError={loadError} />
+        <ConsultationForm catalog={consultationCatalog} loadError={loadError} />
         <TestimonialsSection />
         <EcosystemSection />
       </main>

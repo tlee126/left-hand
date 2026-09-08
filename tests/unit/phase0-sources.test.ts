@@ -4,14 +4,15 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { loadPublishedHomepageCatalog } from "../../app/page";
-import { buildFeaturedResources } from "../../components/site/featured-resources";
+import { isValidElement } from "react";
+import HomePage, { loadPublishedHomepageCatalog, toConsultationCatalog, type HomepageCatalog } from "../../app/page";
+import { buildFeaturedResources, FeaturedResources } from "../../components/site/featured-resources";
+import { ConsultationForm } from "../../components/site/consultation-form";
 import {
   getInterestGroups,
-  resolveCtaMetadata,
-  type ConsultationCatalog
+  resolveCtaMetadata
 } from "../../components/site/consultation-form";
-import { materialFixture, courseFixture } from "./catalog-fixtures";
+import { materialFixture, courseFixture, tutorFixture } from "./catalog-fixtures";
 
 const execFileAsync = promisify(execFile);
 
@@ -128,7 +129,7 @@ async function runDemoAuthScenario(scenario: Record<string, unknown>) {
   };
 }
 
-const dbCatalog: ConsultationCatalog = {
+const dbCatalog: HomepageCatalog = {
   materials: [{
     ...materialFixture(),
     id: "db-material",
@@ -142,10 +143,30 @@ const dbCatalog: ConsultationCatalog = {
   tutors: []
 };
 
+function prop(value: unknown, key: string): unknown {
+  if (!isValidElement(value) || value.props === null || typeof value.props !== "object") return undefined;
+  return Object.getOwnPropertyDescriptor(value.props, key)?.value;
+}
+
+function findElement(value: unknown, type: unknown): unknown {
+  if (isValidElement(value)) {
+    if (value.type === type) return value;
+    return findElement(prop(value, "children"), type);
+  }
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      const found = findElement(child, type);
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
+}
+
 describe("Phase 0 source and runtime boundaries", () => {
   test("homepage loader passes changed repository fixtures to homepage consumers and has no static fallback", async () => {
     const changedCatalog = {
       ...dbCatalog,
+      tutors: [tutorFixture()],
       courses: [{
         ...courseFixture(),
         id: "db-course",
@@ -158,7 +179,7 @@ describe("Phase 0 source and runtime boundaries", () => {
     const loaded = await loadPublishedHomepageCatalog({
       listPublishedMaterials: async () => changedCatalog.materials,
       listPublishedCourses: async () => changedCatalog.courses,
-      listPublishedTutors: async () => []
+      listPublishedTutors: async () => changedCatalog.tutors
     });
 
     assert.strictEqual(loaded.loadError, false);
@@ -166,12 +187,22 @@ describe("Phase 0 source and runtime boundaries", () => {
     assert.strictEqual(loaded.catalog.courses[0].title, "Khóa học mới từ DB");
 
     const resources = buildFeaturedResources(loaded.catalog.materials, loaded.catalog.courses);
+    assert.deepStrictEqual(Object.keys(resources[0]).sort(), [
+      "amountVND", "bonus", "category", "colorTheme", "description", "id", "isHot", "meta", "originalAmountVND", "rating", "slug", "subject", "tags", "title", "type"
+    ].sort());
     const groups = getInterestGroups(loaded.catalog);
     assert.ok(resources.some((item) => item.title === "Tên tài liệu mới từ DB"));
     assert.ok(groups.some((group) => group.items.some((item) => item.label === "Môn DB mới")));
     const cta = resolveCtaMetadata("?interest=db-material-slug&type=material", "/", loaded.catalog);
     assert.strictEqual(cta.resolvedInterest, "Môn DB mới");
     assert.strictEqual(cta.selectedSubjectSlug, "mon-db-moi");
+
+    const consultation = toConsultationCatalog(loaded.catalog);
+    assert.deepStrictEqual(Object.keys(consultation.materials[0]).sort(), ["category", "slug", "subject"].sort());
+    assert.deepStrictEqual(Object.keys(consultation.materials[0].subject).sort(), ["name", "slug"].sort());
+    assert.deepStrictEqual(Object.keys(consultation.tutors), ["0"]);
+    assert.deepStrictEqual(Object.keys(consultation.tutors[0]).sort(), ["slug", "tutor"].sort());
+    assert.deepStrictEqual(Object.keys(consultation.tutors[0].tutor.subjects[0]).sort(), ["name", "slug"].sort());
   });
 
   test("homepage loader renders safe empty/error state instead of falling back to static catalog", async () => {
@@ -182,6 +213,30 @@ describe("Phase 0 source and runtime boundaries", () => {
     });
     assert.strictEqual(loaded.loadError, true);
     assert.deepStrictEqual(loaded.catalog, { materials: [], courses: [], tutors: [] });
+  });
+
+  test("executes the real homepage and passes only database-derived compact props, including the error state", async () => {
+    const rendered = await HomePage({
+      listPublishedMaterials: async () => dbCatalog.materials,
+      listPublishedCourses: async () => dbCatalog.courses,
+      listPublishedTutors: async () => dbCatalog.tutors
+    });
+    const featured = findElement(rendered, FeaturedResources);
+    const consultation = findElement(rendered, ConsultationForm);
+    assert.deepStrictEqual(prop(featured, "resources"), buildFeaturedResources(dbCatalog.materials, dbCatalog.courses));
+    assert.deepStrictEqual(prop(consultation, "catalog"), toConsultationCatalog(dbCatalog));
+    assert.strictEqual(prop(featured, "loadError"), false);
+
+    const failed = await HomePage({
+      listPublishedMaterials: async () => { throw new Error("raw database error"); },
+      listPublishedCourses: async () => [],
+      listPublishedTutors: async () => []
+    });
+    const failedFeatured = findElement(failed, FeaturedResources);
+    const failedConsultation = findElement(failed, ConsultationForm);
+    assert.deepStrictEqual(prop(failedFeatured, "resources"), []);
+    assert.deepStrictEqual(prop(failedConsultation, "catalog"), { materials: [], courses: [], tutors: [] });
+    assert.strictEqual(prop(failedFeatured, "loadError"), true);
   });
 
   test("production modules have no direct static catalog imports or demo password literals", async () => {

@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { test, describe, before, afterEach } from "node:test";
 import * as fs from "node:fs/promises";
+import type { AdminCatalogMutateArgs } from "../../lib/supabase/database.types";
 
 type QueryResult = { data: unknown; error: unknown };
 type Call = { method: string; args: unknown[]; table?: string };
@@ -120,7 +121,18 @@ const MATERIAL_ROW = {
   updated_at: "2026-09-05T00:00:00Z"
 };
 
-function productInput(extra: Record<string, unknown> = {}): Record<string, unknown> {
+const SUBJECT_ROW = {
+  id: SUBJECT_ID,
+  slug: "marketing",
+  name: "Marketing",
+  category: CATEGORY,
+  faculty_group: "Business",
+  color_theme: COLOR_THEME,
+  created_at: "2026-09-05T00:00:00Z",
+  updated_at: "2026-09-05T00:00:00Z"
+};
+
+function productInput(extra: object = {}) {
   return {
     slug: "marketing-foundation",
     title: "Marketing Foundation",
@@ -137,6 +149,12 @@ function productInput(extra: Record<string, unknown> = {}): Record<string, unkno
     color_theme: COLOR_THEME,
     ...extra
   };
+}
+
+function rpcArgs(call: Call | undefined): AdminCatalogMutateArgs {
+  const value = call?.args[1];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected typed RPC arguments.");
+  return value as AdminCatalogMutateArgs;
 }
 
 describe("Task 5.1-A: admin catalog repository", () => {
@@ -195,8 +213,7 @@ describe("Task 5.1-A: admin catalog repository", () => {
   });
 
   test("creates all four groups through one typed atomic RPC with restricted payloads", async () => {
-    const subject = { id: SUBJECT_ID, slug: "marketing", name: "Marketing", category: CATEGORY, faculty_group: "Business", color_theme: COLOR_THEME };
-    mockClient = new MockClient([{ data: subject, error: null }]);
+    mockClient = new MockClient([{ data: SUBJECT_ROW, error: null }]);
     await repository.createAdminSubject({ slug: "marketing", name: "Marketing", category: CATEGORY, faculty_group: "Business", color_theme: COLOR_THEME });
     assert.deepEqual(mockClient.calls.find((call) => call.method === "insert")?.args, [{ slug: "marketing", name: "Marketing", category: "Marketing", faculty_group: "Business", color_theme: "marketing" }]);
 
@@ -211,10 +228,11 @@ describe("Task 5.1-A: admin catalog repository", () => {
       ]);
       await create(input as never);
       const rpc = mockClient.calls.find((call) => call.method === "rpc");
-      assert.equal(rpc?.args[0], "admin_catalog_mutate");
-      assert.equal((rpc?.args[1] as Record<string, unknown>).p_operation, "create");
-      assert.equal((rpc?.args[1] as Record<string, unknown>).p_kind, product.kind);
-      assert.equal((rpc?.args[1] as Record<string, unknown>).p_product_id, undefined);
+      assert.equal(rpc?.args[0], "admin_catalog_mutate_atomic");
+      const args = rpcArgs(rpc);
+      assert.equal(args.p_operation, "create");
+      assert.equal(args.p_kind, product.kind);
+      assert.equal(args.p_product_id, undefined);
       assert.equal(mockClient.calls.some((call) => call.method === "insert" || call.method === "update" || call.method === "delete"), false);
     }
   });
@@ -226,9 +244,10 @@ describe("Task 5.1-A: admin catalog repository", () => {
     ]);
     await repository.updateAdminMaterial(PRODUCT_ID, { pages: 24 });
     const materialRpc = mockClient.calls.find((call) => call.method === "rpc");
-    assert.equal((materialRpc?.args[1] as Record<string, unknown>).p_operation, "update");
-    assert.equal((materialRpc?.args[1] as Record<string, unknown>).p_product_id, PRODUCT_ID);
-    assert.deepEqual((materialRpc?.args[1] as Record<string, unknown>).p_child, { pages: 24 });
+    const materialArgs = rpcArgs(materialRpc);
+    assert.equal(materialArgs.p_operation, "update");
+    assert.equal(materialArgs.p_product_id, PRODUCT_ID);
+    assert.deepEqual(materialArgs.p_child, { pages: 24 });
     assert.equal(mockClient.calls.some((call) => call.method === "insert" || call.method === "update" || call.method === "delete"), false);
 
     for (const [update, del, input] of [
@@ -237,9 +256,14 @@ describe("Task 5.1-A: admin catalog repository", () => {
       [repository.updateAdminTutor, repository.deleteAdminTutor, { availability: "Updated" }]
     ] as const) {
       const updated = { ...MATERIAL_PRODUCT, kind: "mentor" in input ? "course" : "tutor" };
+      const updatedProduct = update === repository.updateAdminSubject
+        ? SUBJECT_ROW
+        : updated.kind === "course"
+          ? { ...updated, courses: { product_id: PRODUCT_ID, format: "online", sessions: 1, duration: "1 week", schedule: "Saturday", enrollment_status: "open", mentor: "Mentor", tags: [], curriculum: [], suitable_for: [], preparation: [], created_at: "2026-09-05T00:00:00Z", updated_at: "2026-09-05T00:00:00Z" } }
+          : { ...updated, tutors: { product_id: PRODUCT_ID, name: "Tutor", faculty: "Business", format: "1:1 (Online)", availability: "Weekends", short_bio: "Bio", strengths: [], tags: [], suitable_for: [], support_methods: [], created_at: "2026-09-05T00:00:00Z", updated_at: "2026-09-05T00:00:00Z" } };
       mockClient = new MockClient([
-        { data: { product: updated }, error: null },
-        { data: updated, error: null }
+        { data: update === repository.updateAdminSubject ? SUBJECT_ROW : { product: updated }, error: null },
+        { data: updatedProduct, error: null }
       ]);
       await update(PRODUCT_ID, input as never);
       if (update === repository.updateAdminSubject) {
@@ -272,6 +296,24 @@ describe("Task 5.1-A: admin catalog repository", () => {
     for (const operation of invalidOperations) {
       mockClient = new MockClient();
       await assert.rejects(operation, repository.AdminCatalogInputError);
+      assert.equal(mockClient.calls.length, 0);
+    }
+  });
+
+  test("validates every contact-price and bounded VND combination before the RPC", async () => {
+    const invalidInputs = [
+      productInput({ price_vnd: 10000, old_price_vnd: null, is_contact_for_price: true }),
+      productInput({ price_vnd: null, old_price_vnd: 10000, is_contact_for_price: true }),
+      productInput({ price_vnd: null, old_price_vnd: null, is_contact_for_price: false }),
+      productInput({ price_vnd: 10000, old_price_vnd: 9999, is_contact_for_price: false }),
+      productInput({ price_vnd: -1, old_price_vnd: null, is_contact_for_price: false }),
+      productInput({ price_vnd: 1.5, old_price_vnd: null, is_contact_for_price: false }),
+      productInput({ price_vnd: 2_147_483_648, old_price_vnd: null, is_contact_for_price: false }),
+      productInput({ price_vnd: 10000, old_price_vnd: 2_147_483_648, is_contact_for_price: false })
+    ];
+    for (const input of invalidInputs) {
+      mockClient = new MockClient();
+      await assert.rejects(() => repository.createAdminMaterial({ ...input, pages: 20 } as never), repository.AdminCatalogInputError);
       assert.equal(mockClient.calls.length, 0);
     }
   });

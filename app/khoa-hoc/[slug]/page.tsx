@@ -5,6 +5,7 @@ import { CatalogPageShell } from "@/components/catalog/catalog-page-shell";
 import { getPublishedCourseBySlug } from "@/lib/repositories/catalog-repository";
 import { coverThemes } from "@/components/catalog/theme";
 import { formatVND } from "@/lib/domain/product-types";
+import type { PublishedCourse } from "@/lib/domain/catalog";
 
 export const revalidate = 60;
 
@@ -25,9 +26,9 @@ export default async function CourseDetailPage({
   params,
 }: {
   params: Promise<{ slug: string }>;
-}) {
+}, loader: (slug: string) => Promise<PublishedCourse | null> = getPublishedCourseBySlug) {
   const { slug } = await params;
-  const item = await getPublishedCourseBySlug(slug);
+  const item = await loader(slug);
 
   if (!item) {
     notFound();

@@ -1,5 +1,12 @@
 import { createClient } from "@/lib/supabase/server";
-import type { Database, Json } from "@/lib/supabase/database.types";
+import type {
+  AdminCatalogCreateCoursePayload,
+  AdminCatalogCreateMaterialPayload,
+  AdminCatalogCreateProductPayload,
+  AdminCatalogCreateTutorPayload,
+  AdminCatalogMutateArgs,
+  Database
+} from "@/lib/supabase/database.types";
 import {
   CATEGORIES,
   COLOR_THEMES,
@@ -8,8 +15,17 @@ import {
   COURSE_FORMATS,
   DELIVERY_KINDS,
   ENROLLMENT_STATUSES,
+  isCategory,
+  isColorTheme,
+  isCourseFormat,
+  isDeliveryKind,
+  isEnrollmentStatus,
+  isProductKind,
+  isPublicationStatus,
+  isTutorFormat,
   PUBLICATION_STATUSES,
-  TUTOR_FORMATS
+  TUTOR_FORMATS,
+  isValidVND
 } from "@/lib/domain/product-types";
 
 type Tables = Database["public"]["Tables"];
@@ -19,7 +35,9 @@ type MaterialRow = Tables["materials"]["Row"];
 type CourseRow = Tables["courses"]["Row"];
 type TutorRow = Tables["tutors"]["Row"];
 type AdminCatalogClient = Awaited<ReturnType<typeof createClient>>;
-type InputObject = { [key: string]: unknown };
+type InputObject = object;
+type SubjectProjection = Omit<SubjectRow, "search_document">;
+type ProductProjection = Omit<ProductRow, "search_document">;
 
 type SubjectMutationPayload = {
   slug?: string;
@@ -77,8 +95,11 @@ type TutorMutationPayload = {
   support_methods?: string[];
 };
 
-type ChildMutationPayload = MaterialMutationPayload | CourseMutationPayload | TutorMutationPayload;
-type AdminCatalogMutationOperation = "create" | "update" | "delete";
+type ChildMutationPayload =
+  | { kind: "material"; value: MaterialMutationPayload }
+  | { kind: "course"; value: CourseMutationPayload }
+  | { kind: "tutor"; value: TutorMutationPayload };
+type AdminCatalogMutationOperation = "create" | "update";
 
 export type CatalogCategory = Database["public"]["Enums"]["category_enum"];
 export type CatalogColorTheme = Database["public"]["Enums"]["color_theme_enum"];
@@ -87,10 +108,10 @@ export type DeliveryKind = Database["public"]["Enums"]["delivery_kind_enum"];
 export type CourseFormat = Database["public"]["Enums"]["course_format_enum"];
 export type EnrollmentStatus = Database["public"]["Enums"]["enrollment_status_enum"];
 
-export type AdminSubject = SubjectRow;
-export type AdminMaterial = ProductRow & { materials: MaterialRow };
-export type AdminCourse = ProductRow & { courses: CourseRow };
-export type AdminTutor = ProductRow & { tutors: TutorRow };
+export type AdminSubject = SubjectProjection;
+export type AdminMaterial = ProductProjection & { materials: MaterialRow };
+export type AdminCourse = ProductProjection & { courses: CourseRow };
+export type AdminTutor = ProductProjection & { tutors: TutorRow };
 
 export interface CreateAdminSubjectInput {
   slug: string;
@@ -111,7 +132,7 @@ interface ProductInput {
   delivery_kind: DeliveryKind;
   publication_status?: PublicationStatus;
   price_vnd: number | null;
-  old_price_vnd?: number | null;
+  old_price_vnd: number | null;
   is_contact_for_price: boolean;
   rating?: number;
   is_hot?: boolean;
@@ -290,7 +311,15 @@ function inputRecord(input: unknown): InputObject {
   if (input === null || typeof input !== "object" || Array.isArray(input)) {
     throw new AdminCatalogInputError("Input must be an object.");
   }
-  return input as InputObject;
+  return input;
+}
+
+function hasField(record: InputObject, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function fieldValue(record: InputObject, key: string): unknown {
+  return Object.getOwnPropertyDescriptor(record, key)?.value;
 }
 
 function assertAllowedKeys(record: InputObject, allowed: readonly string[]): void {
@@ -302,7 +331,7 @@ function assertAllowedKeys(record: InputObject, allowed: readonly string[]): voi
 }
 
 function requiredString(record: InputObject, key: string, maxLength = 500): string {
-  const value = record[key];
+  const value = fieldValue(record, key);
   if (typeof value !== "string" || value.trim().length === 0 || value.length > maxLength) {
     throw new AdminCatalogInputError(`Field ${key} must be a non-empty bounded string.`);
   }
@@ -310,39 +339,42 @@ function requiredString(record: InputObject, key: string, maxLength = 500): stri
 }
 
 function optionalString(record: InputObject, key: string, maxLength = 500): string | undefined {
-  if (!(key in record)) return undefined;
+  if (!hasField(record, key)) return undefined;
   return requiredString(record, key, maxLength);
 }
 
 function enumString<T extends string>(record: InputObject, key: string, allowed: readonly T[], required: boolean): T | undefined {
-  if (!(key in record)) {
+  if (!hasField(record, key)) {
     if (required) throw new AdminCatalogInputError(`Field ${key} is required.`);
     return undefined;
   }
-  const value = record[key];
-  if (typeof value !== "string" || !allowed.includes(value as T)) {
+  const value = fieldValue(record, key);
+  if (typeof value !== "string" || !allowed.some((candidate) => candidate === value)) {
     throw new AdminCatalogInputError(`Field ${key} has an invalid value.`);
   }
-  return value as T;
+  const matched = allowed.find((candidate) => candidate === value);
+  if (matched === undefined) throw new AdminCatalogInputError(`Field ${key} has an invalid value.`);
+  return matched;
 }
 
 function uuidField(record: InputObject, key: string, required: boolean): string | undefined {
-  if (!(key in record)) {
+  if (!hasField(record, key)) {
     if (required) throw new AdminCatalogInputError(`Field ${key} is required.`);
     return undefined;
   }
-  if (!isValidUuid(record[key])) {
+  const value = fieldValue(record, key);
+  if (!isValidUuid(value)) {
     throw new AdminCatalogInputError(`Field ${key} must be a valid UUID.`);
   }
-  return record[key] as string;
+  return value;
 }
 
 function numberField(record: InputObject, key: string, required: boolean, minimum?: number): number | undefined {
-  if (!(key in record)) {
+  if (!hasField(record, key)) {
     if (required) throw new AdminCatalogInputError(`Field ${key} is required.`);
     return undefined;
   }
-  const value = record[key];
+  const value = fieldValue(record, key);
   if (typeof value !== "number" || !Number.isSafeInteger(value) || (minimum !== undefined && value < minimum)) {
     throw new AdminCatalogInputError(`Field ${key} must be a valid bounded number.`);
   }
@@ -350,11 +382,11 @@ function numberField(record: InputObject, key: string, required: boolean, minimu
 }
 
 function decimalField(record: InputObject, key: string, required: boolean, minimum: number, maximum: number): number | undefined {
-  if (!(key in record)) {
+  if (!hasField(record, key)) {
     if (required) throw new AdminCatalogInputError(`Field ${key} is required.`);
     return undefined;
   }
-  const value = record[key];
+  const value = fieldValue(record, key);
   if (typeof value !== "number" || !Number.isFinite(value) || value < minimum || value > maximum) {
     throw new AdminCatalogInputError(`Field ${key} must be a valid bounded number.`);
   }
@@ -362,23 +394,27 @@ function decimalField(record: InputObject, key: string, required: boolean, minim
 }
 
 function booleanField(record: InputObject, key: string, required: boolean): boolean | undefined {
-  if (!(key in record)) {
+  if (!hasField(record, key)) {
     if (required) throw new AdminCatalogInputError(`Field ${key} is required.`);
     return undefined;
   }
-  if (typeof record[key] !== "boolean") {
+  const value = fieldValue(record, key);
+  if (typeof value !== "boolean") {
     throw new AdminCatalogInputError(`Field ${key} must be boolean.`);
   }
-  return record[key] as boolean;
+  return value;
 }
 
 function arrayField(record: InputObject, key: string): string[] | undefined {
-  if (!(key in record)) return undefined;
-  const value = record[key];
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.trim().length === 0)) {
+  if (!hasField(record, key)) return undefined;
+  const value = fieldValue(record, key);
+  if (!Array.isArray(value)) {
     throw new AdminCatalogInputError(`Field ${key} must be an array of non-empty strings.`);
   }
-  return value.map((item) => (item as string).trim());
+  return value.map((item) => {
+    if (typeof item !== "string" || item.trim().length === 0) throw new AdminCatalogInputError(`Field ${key} must be an array of non-empty strings.`);
+    return item.trim();
+  });
 }
 
 function validateSubjectInput(input: unknown, update: boolean): SubjectMutationPayload {
@@ -388,15 +424,15 @@ function validateSubjectInput(input: unknown, update: boolean): SubjectMutationP
     throw new AdminCatalogInputError("All subject fields are required.");
   }
   const payload: SubjectMutationPayload = {};
-  if ("slug" in record) {
+  if (hasField(record, "slug")) {
     const slug = requiredString(record, "slug", 150);
     if (!isValidCatalogSlug(slug)) throw new AdminCatalogInputError("Field slug has an invalid format.");
     payload.slug = slug;
   }
-  if ("name" in record) payload.name = requiredString(record, "name", 150);
+  if (hasField(record, "name")) payload.name = requiredString(record, "name", 150);
   const category = enumString(record, "category", CATEGORIES, false);
   if (category !== undefined) payload.category = category;
-  if ("faculty_group" in record) payload.faculty_group = requiredString(record, "faculty_group", 150);
+  if (hasField(record, "faculty_group")) payload.faculty_group = requiredString(record, "faculty_group", 150);
   const colorTheme = enumString(record, "color_theme", COLOR_THEMES, false);
   if (colorTheme !== undefined) payload.color_theme = colorTheme;
   if (update && Object.keys(payload).length === 0) throw new AdminCatalogInputError("At least one subject field is required.");
@@ -406,17 +442,17 @@ function validateSubjectInput(input: unknown, update: boolean): SubjectMutationP
 function validateProductInput(input: unknown, update: boolean, allowEmptyUpdate = false): ProductMutationPayload {
   const record = inputRecord(input);
   assertAllowedKeys(record, PRODUCT_INPUT_KEYS);
-  if (!update && ["slug", "title", "description", "subject_id", "category", "delivery_kind", "price_vnd", "is_contact_for_price", "color_theme"].some((key) => !(key in record))) {
+  if (!update && ["slug", "title", "description", "subject_id", "category", "delivery_kind", "price_vnd", "old_price_vnd", "is_contact_for_price", "color_theme"].some((key) => !hasField(record, key))) {
     throw new AdminCatalogInputError("Required product fields are missing.");
   }
   const payload: ProductMutationPayload = {};
-  if ("slug" in record) {
+  if (hasField(record, "slug")) {
     const slug = requiredString(record, "slug", 150);
     if (!isValidCatalogSlug(slug)) throw new AdminCatalogInputError("Field slug has an invalid format.");
     payload.slug = slug;
   }
-  if ("title" in record) payload.title = requiredString(record, "title", 250);
-  if ("description" in record) payload.description = requiredString(record, "description", 5000);
+  if (hasField(record, "title")) payload.title = requiredString(record, "title", 250);
+  if (hasField(record, "description")) payload.description = requiredString(record, "description", 5000);
   const subjectId = uuidField(record, "subject_id", !update);
   if (subjectId !== undefined) payload.subject_id = subjectId;
   const category = enumString(record, "category", CATEGORIES, false);
@@ -425,38 +461,46 @@ function validateProductInput(input: unknown, update: boolean, allowEmptyUpdate 
   if (deliveryKind !== undefined) payload.delivery_kind = deliveryKind;
   const publicationStatus = enumString(record, "publication_status", PUBLICATION_STATUSES, false);
   if (publicationStatus !== undefined) payload.publication_status = publicationStatus;
-  if ("price_vnd" in record) {
-    const price = record.price_vnd;
-    if (price !== null && (typeof price !== "number" || !Number.isSafeInteger(price) || price < 0)) {
+  if (hasField(record, "price_vnd")) {
+    const price = fieldValue(record, "price_vnd");
+    if (price !== null && !isValidVND(price)) {
       throw new AdminCatalogInputError("Field price_vnd must be null or a non-negative integer.");
     }
     payload.price_vnd = price;
   }
-  if ("old_price_vnd" in record) {
-    const oldPrice = record.old_price_vnd;
-    if (oldPrice !== null && (typeof oldPrice !== "number" || !Number.isSafeInteger(oldPrice) || oldPrice < 0)) {
+  if (hasField(record, "old_price_vnd")) {
+    const oldPrice = fieldValue(record, "old_price_vnd");
+    if (oldPrice !== null && !isValidVND(oldPrice)) {
       throw new AdminCatalogInputError("Field old_price_vnd must be null or a non-negative integer.");
     }
     payload.old_price_vnd = oldPrice;
   }
-  const contact = booleanField(record, "is_contact_for_price", !update);
-  if (contact !== undefined) payload.is_contact_for_price = contact;
+  const contactFlag = booleanField(record, "is_contact_for_price", !update);
+  if (contactFlag !== undefined) payload.is_contact_for_price = contactFlag;
   const rating = decimalField(record, "rating", false, 1, 5);
   if (rating !== undefined) payload.rating = rating;
   const isHot = booleanField(record, "is_hot", false);
   if (isHot !== undefined) payload.is_hot = isHot;
   const colorTheme = enumString(record, "color_theme", COLOR_THEMES, false);
   if (colorTheme !== undefined) payload.color_theme = colorTheme;
-  if ("price_vnd" in record && "is_contact_for_price" in record) {
-    if (record.is_contact_for_price === true && record.price_vnd !== null) {
+  const price = fieldValue(record, "price_vnd");
+  const oldPrice = fieldValue(record, "old_price_vnd");
+  const contact = fieldValue(record, "is_contact_for_price");
+  const hasAnyPricingField = hasField(record, "price_vnd") || hasField(record, "old_price_vnd") || hasField(record, "is_contact_for_price");
+  const hasAllPricingFields = hasField(record, "price_vnd") && hasField(record, "old_price_vnd") && hasField(record, "is_contact_for_price");
+  if (update && hasAnyPricingField && !hasAllPricingFields) {
+    throw new AdminCatalogInputError("Price, original price, and contact flag must be updated together.");
+  }
+  if (hasAllPricingFields || (!update && hasField(record, "price_vnd") && hasField(record, "is_contact_for_price"))) {
+    if (contact === true && (price !== null || oldPrice !== null)) {
       throw new AdminCatalogInputError("Contact-price products must not have a price.");
     }
-    if (record.is_contact_for_price === false && record.price_vnd === null) {
+    if (contact === false && (price === null || !isValidVND(price))) {
       throw new AdminCatalogInputError("Priced products require a price.");
     }
   }
-  if (record.old_price_vnd !== null && record.old_price_vnd !== undefined && record.price_vnd !== null && record.price_vnd !== undefined &&
-      typeof record.old_price_vnd === "number" && typeof record.price_vnd === "number" && record.old_price_vnd < record.price_vnd) {
+  if (oldPrice !== null && oldPrice !== undefined && price !== null && price !== undefined &&
+      isValidVND(oldPrice) && isValidVND(price) && oldPrice < price) {
     throw new AdminCatalogInputError("old_price_vnd must be greater than or equal to price_vnd.");
   }
   if (update && !allowEmptyUpdate && Object.keys(payload).length === 0) throw new AdminCatalogInputError("At least one product field is required.");
@@ -464,19 +508,29 @@ function validateProductInput(input: unknown, update: boolean, allowEmptyUpdate 
 }
 
 function productOnlyRecord(record: InputObject): InputObject {
-  const product: InputObject = {};
-  for (const key of PRODUCT_INPUT_KEYS) {
-    if (key in record) product[key] = record[key];
-  }
-  return product;
+  return {
+    ...(hasField(record, "slug") ? { slug: fieldValue(record, "slug") } : {}),
+    ...(hasField(record, "title") ? { title: fieldValue(record, "title") } : {}),
+    ...(hasField(record, "description") ? { description: fieldValue(record, "description") } : {}),
+    ...(hasField(record, "subject_id") ? { subject_id: fieldValue(record, "subject_id") } : {}),
+    ...(hasField(record, "category") ? { category: fieldValue(record, "category") } : {}),
+    ...(hasField(record, "delivery_kind") ? { delivery_kind: fieldValue(record, "delivery_kind") } : {}),
+    ...(hasField(record, "publication_status") ? { publication_status: fieldValue(record, "publication_status") } : {}),
+    ...(hasField(record, "price_vnd") ? { price_vnd: fieldValue(record, "price_vnd") } : {}),
+    ...(hasField(record, "old_price_vnd") ? { old_price_vnd: fieldValue(record, "old_price_vnd") } : {}),
+    ...(hasField(record, "is_contact_for_price") ? { is_contact_for_price: fieldValue(record, "is_contact_for_price") } : {}),
+    ...(hasField(record, "rating") ? { rating: fieldValue(record, "rating") } : {}),
+    ...(hasField(record, "is_hot") ? { is_hot: fieldValue(record, "is_hot") } : {}),
+    ...(hasField(record, "color_theme") ? { color_theme: fieldValue(record, "color_theme") } : {})
+  };
 }
 
-function validateMaterialInput(input: unknown, update: boolean): { product: ProductMutationPayload; child: MaterialMutationPayload } {
+function validateMaterialInput(input: unknown, update: boolean): { product: ProductMutationPayload; child: ChildMutationPayload } {
   const record = inputRecord(input);
   assertAllowedKeys(record, [...PRODUCT_INPUT_KEYS, "pages", "tags", "includes", "suitable_for"]);
   const product = validateProductInput(productOnlyRecord(record), update, true);
   const child: MaterialMutationPayload = {};
-  if (!update && !("pages" in record)) throw new AdminCatalogInputError("Field pages is required.");
+  if (!update && !hasField(record, "pages")) throw new AdminCatalogInputError("Field pages is required.");
   const pages = numberField(record, "pages", !update, 1);
   if (pages !== undefined) child.pages = pages;
   for (const key of ["tags", "includes", "suitable_for"] as const) {
@@ -484,16 +538,16 @@ function validateMaterialInput(input: unknown, update: boolean): { product: Prod
     if (values !== undefined) child[key] = values;
   }
   if (update && Object.keys(product).length === 0 && Object.keys(child).length === 0) throw new AdminCatalogInputError("At least one material field is required.");
-  return { product, child };
+  return { product, child: { kind: "material", value: child } };
 }
 
-function validateCourseInput(input: unknown, update: boolean): { product: ProductMutationPayload; child: CourseMutationPayload } {
+function validateCourseInput(input: unknown, update: boolean): { product: ProductMutationPayload; child: ChildMutationPayload } {
   const record = inputRecord(input);
   assertAllowedKeys(record, [...PRODUCT_INPUT_KEYS, "format", "sessions", "duration", "schedule", "enrollment_status", "mentor", "tags", "curriculum", "suitable_for", "preparation"]);
   const product = validateProductInput(productOnlyRecord(record), update, true);
   const child: CourseMutationPayload = {};
   for (const key of ["format", "sessions", "duration", "schedule", "mentor"] as const) {
-    if (!update && !(key in record)) throw new AdminCatalogInputError(`Field ${key} is required.`);
+    if (!update && !hasField(record, key)) throw new AdminCatalogInputError(`Field ${key} is required.`);
   }
   const format = enumString(record, "format", COURSE_FORMATS, !update);
   if (format !== undefined) child.format = format;
@@ -510,10 +564,10 @@ function validateCourseInput(input: unknown, update: boolean): { product: Produc
     if (values !== undefined) child[key] = values;
   }
   if (update && Object.keys(product).length === 0 && Object.keys(child).length === 0) throw new AdminCatalogInputError("At least one course field is required.");
-  return { product, child };
+  return { product, child: { kind: "course", value: child } };
 }
 
-function validateTutorInput(input: unknown, update: boolean): { product: ProductMutationPayload; child: TutorMutationPayload } {
+function validateTutorInput(input: unknown, update: boolean): { product: ProductMutationPayload; child: ChildMutationPayload } {
   const record = inputRecord(input);
   assertAllowedKeys(record, [...PRODUCT_INPUT_KEYS, "name", "faculty", "format", "availability", "short_bio", "strengths", "tags", "suitable_for", "support_methods"]);
   const product = validateProductInput(productOnlyRecord(record), update, true);
@@ -521,7 +575,7 @@ function validateTutorInput(input: unknown, update: boolean): { product: Product
   const format = enumString(record, "format", TUTOR_FORMATS, !update);
   if (format !== undefined) child.format = format;
   for (const key of ["name", "faculty", "availability", "short_bio"] as const) {
-    if (!update && !(key in record)) throw new AdminCatalogInputError(`Field ${key} is required.`);
+    if (!update && !hasField(record, key)) throw new AdminCatalogInputError(`Field ${key} is required.`);
     const value = optionalString(record, key, key === "short_bio" ? 5000 : 500);
     if (value !== undefined) child[key] = value;
   }
@@ -530,7 +584,7 @@ function validateTutorInput(input: unknown, update: boolean): { product: Product
     if (values !== undefined) child[key] = values;
   }
   if (update && Object.keys(product).length === 0 && Object.keys(child).length === 0) throw new AdminCatalogInputError("At least one tutor field is required.");
-  return { product, child };
+  return { product, child: { kind: "tutor", value: child } };
 }
 
 function validateListOptions(options: ListAdminCatalogOptions | undefined): { search?: string; status?: PublicationStatus; limit: number; offset: number } {
@@ -538,17 +592,20 @@ function validateListOptions(options: ListAdminCatalogOptions | undefined): { se
   const record = inputRecord(options);
   assertAllowedKeys(record, ["search", "publication_status", "limit", "offset"]);
   let search: string | undefined;
-  if ("search" in record) {
-    if (typeof record.search !== "string") throw new AdminCatalogInputError("Search must be a string.");
-    const cleaned = record.search.trim().slice(0, MAX_ADMIN_CATALOG_SEARCH_LENGTH).replace(/[,()"\\%_*]/g, " ").trim();
+  if (hasField(record, "search")) {
+    const rawSearch = fieldValue(record, "search");
+    if (typeof rawSearch !== "string") throw new AdminCatalogInputError("Search must be a string.");
+    const cleaned = rawSearch.trim().slice(0, MAX_ADMIN_CATALOG_SEARCH_LENGTH).replace(/[,()"\\%_*]/g, " ").trim();
     if (cleaned) search = cleaned;
   }
   const status = enumString(record, "publication_status", PUBLICATION_STATUSES, false);
-  const limit = record.limit === undefined ? DEFAULT_ADMIN_CATALOG_PAGE_LIMIT : record.limit;
+  const rawLimit = fieldValue(record, "limit");
+  const limit = rawLimit === undefined ? DEFAULT_ADMIN_CATALOG_PAGE_LIMIT : rawLimit;
   if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > MAX_ADMIN_CATALOG_PAGE_LIMIT) {
     throw new AdminCatalogInputError("Limit must be a bounded positive integer.");
   }
-  const offset = record.offset === undefined ? 0 : record.offset;
+  const rawOffset = fieldValue(record, "offset");
+  const offset = rawOffset === undefined ? 0 : rawOffset;
   if (typeof offset !== "number" || !Number.isInteger(offset) || offset < 0) {
     throw new AdminCatalogInputError("Offset must be a non-negative integer.");
   }
@@ -567,14 +624,132 @@ function repositoryFailure(message: string): never {
   throw new AdminCatalogRepositoryError(message);
 }
 
-function rows<T>(data: unknown): T[] {
-  return Array.isArray(data) ? (data as T[]) : [];
+function rows<T>(data: unknown, guard: (value: unknown) => value is T): T[] {
+  return Array.isArray(data) ? data.filter(guard) : [];
+}
+
+function objectValue(value: unknown, key: string): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return Object.getOwnPropertyDescriptor(value, key)?.value;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0 && item.trim() === item);
+}
+
+function isAdminPricing(value: unknown): boolean {
+  const price = objectValue(value, "price_vnd");
+  const oldPrice = objectValue(value, "old_price_vnd");
+  const contact = objectValue(value, "is_contact_for_price");
+  if (typeof contact !== "boolean") return false;
+  if (contact) return price === null && oldPrice === null;
+  return isValidVND(price) && (oldPrice === null || (isValidVND(oldPrice) && oldPrice >= price));
+}
+
+function isAdminSubject(value: unknown): value is AdminSubject {
+  return isValidUuid(objectValue(value, "id"))
+    && isValidCatalogSlug(objectValue(value, "slug"))
+    && typeof objectValue(value, "name") === "string"
+    && typeof objectValue(value, "faculty_group") === "string"
+    && isCategory(objectValue(value, "category"))
+    && isColorTheme(objectValue(value, "color_theme"))
+    && typeof objectValue(value, "created_at") === "string"
+    && typeof objectValue(value, "updated_at") === "string";
+}
+
+function isAdminProduct(value: unknown): value is ProductProjection {
+  const price = objectValue(value, "price_vnd");
+  const oldPrice = objectValue(value, "old_price_vnd");
+  return isValidUuid(objectValue(value, "id"))
+    && isValidCatalogSlug(objectValue(value, "slug"))
+    && isProductKind(objectValue(value, "kind"))
+    && typeof objectValue(value, "title") === "string"
+    && typeof objectValue(value, "description") === "string"
+    && typeof objectValue(value, "subject_id") === "string"
+    && isCategory(objectValue(value, "category"))
+    && isDeliveryKind(objectValue(value, "delivery_kind"))
+    && isPublicationStatus(objectValue(value, "publication_status"))
+    && (price === null || isValidVND(price))
+    && (oldPrice === null || isValidVND(oldPrice))
+    && isAdminPricing(value)
+    && typeof objectValue(value, "rating") === "number"
+    && Number.isFinite(objectValue(value, "rating"))
+    && Number(objectValue(value, "rating")) >= 1
+    && Number(objectValue(value, "rating")) <= 5
+    && typeof objectValue(value, "is_hot") === "boolean"
+    && isColorTheme(objectValue(value, "color_theme"))
+    && typeof objectValue(value, "created_at") === "string"
+    && typeof objectValue(value, "updated_at") === "string";
+}
+
+function isMaterialChild(value: unknown): value is MaterialRow {
+  return typeof objectValue(value, "product_id") === "string"
+    && isValidUuid(objectValue(value, "product_id"))
+    && Number.isInteger(objectValue(value, "pages"))
+    && Number(objectValue(value, "pages")) > 0
+    && isStringArray(objectValue(value, "tags"))
+    && isStringArray(objectValue(value, "includes"))
+    && isStringArray(objectValue(value, "suitable_for"))
+    && typeof objectValue(value, "created_at") === "string"
+    && typeof objectValue(value, "updated_at") === "string";
+}
+
+function isCourseChild(value: unknown): value is CourseRow {
+  return isValidUuid(objectValue(value, "product_id"))
+    && isCourseFormat(objectValue(value, "format"))
+    && Number.isInteger(objectValue(value, "sessions"))
+    && Number(objectValue(value, "sessions")) > 0
+    && typeof objectValue(value, "duration") === "string"
+    && String(objectValue(value, "duration")).trim().length > 0
+    && typeof objectValue(value, "schedule") === "string"
+    && String(objectValue(value, "schedule")).trim().length > 0
+    && isEnrollmentStatus(objectValue(value, "enrollment_status"))
+    && typeof objectValue(value, "mentor") === "string"
+    && String(objectValue(value, "mentor")).trim().length > 0
+    && isStringArray(objectValue(value, "tags"))
+    && isStringArray(objectValue(value, "curriculum"))
+    && isStringArray(objectValue(value, "suitable_for"))
+    && isStringArray(objectValue(value, "preparation"))
+    && typeof objectValue(value, "created_at") === "string"
+    && typeof objectValue(value, "updated_at") === "string";
+}
+
+function isTutorChild(value: unknown): value is TutorRow {
+  return isValidUuid(objectValue(value, "product_id"))
+    && typeof objectValue(value, "name") === "string"
+    && String(objectValue(value, "name")).trim().length > 0
+    && typeof objectValue(value, "faculty") === "string"
+    && String(objectValue(value, "faculty")).trim().length > 0
+    && isTutorFormat(objectValue(value, "format"))
+    && typeof objectValue(value, "availability") === "string"
+    && String(objectValue(value, "availability")).trim().length > 0
+    && typeof objectValue(value, "short_bio") === "string"
+    && String(objectValue(value, "short_bio")).trim().length > 0
+    && isStringArray(objectValue(value, "strengths"))
+    && isStringArray(objectValue(value, "tags"))
+    && isStringArray(objectValue(value, "suitable_for"))
+    && isStringArray(objectValue(value, "support_methods"))
+    && typeof objectValue(value, "created_at") === "string"
+    && typeof objectValue(value, "updated_at") === "string";
+}
+
+function isAdminMaterial(value: unknown): value is AdminMaterial {
+  return isAdminProduct(value) && objectValue(value, "kind") === "material" && isMaterialChild(objectValue(value, "materials")) && objectValue(objectValue(value, "materials"), "product_id") === objectValue(value, "id");
+}
+
+function isAdminCourse(value: unknown): value is AdminCourse {
+  return isAdminProduct(value) && objectValue(value, "kind") === "course" && isCourseChild(objectValue(value, "courses")) && objectValue(objectValue(value, "courses"), "product_id") === objectValue(value, "id");
+}
+
+function isAdminTutor(value: unknown): value is AdminTutor {
+  return isAdminProduct(value) && objectValue(value, "kind") === "tutor" && isTutorChild(objectValue(value, "tutors")) && objectValue(objectValue(value, "tutors"), "product_id") === objectValue(value, "id");
 }
 
 async function listProducts<T>(
   kind: ProductRow["kind"],
   selectColumns: string,
   options: ListAdminCatalogOptions | undefined,
+  guard: (value: unknown) => value is T,
   message: string
 ): Promise<T[]> {
   const validated = validateListOptions(options);
@@ -585,61 +760,100 @@ async function listProducts<T>(
     if (validated.search !== undefined) query = query.or(`slug.ilike.%${validated.search}%,title.ilike.%${validated.search}%`);
     const result = await query.order("created_at", { ascending: false }).order("id", { ascending: false }).range(validated.offset, validated.offset + validated.limit - 1);
     if (result.error) repositoryFailure(message);
-    return rows<T>(result.data);
+    return rows(result.data, guard);
   } catch (error) {
     if (error instanceof AdminCatalogRepositoryError) throw error;
     throw new AdminCatalogRepositoryError(message);
   }
 }
 
-async function getProduct<T>(id: string, kind: ProductRow["kind"], selectColumns: string, message: string): Promise<T | null> {
+async function getProduct<T>(id: string, kind: ProductRow["kind"], selectColumns: string, guard: (value: unknown) => value is T, message: string): Promise<T | null> {
   if (!isValidUuid(id)) throw new AdminCatalogInputError("Catalog ID must be a valid UUID.");
   try {
     const client = await adminClient();
-    return await getProductWithClient<T>(client, id, kind, selectColumns, message);
+    return await getProductWithClient<T>(client, id, kind, selectColumns, guard, message);
   } catch (error) {
     if (error instanceof AdminCatalogInputError || error instanceof AdminCatalogRepositoryError) throw error;
     throw new AdminCatalogRepositoryError(message);
   }
 }
 
-async function getProductWithClient<T>(client: AdminCatalogClient, id: string, kind: ProductRow["kind"], selectColumns: string, message: string): Promise<T | null> {
+async function getProductWithClient<T>(client: AdminCatalogClient, id: string, kind: ProductRow["kind"], selectColumns: string, guard: (value: unknown) => value is T, message: string): Promise<T | null> {
   const result = await client.from("products").select(selectColumns).eq("id", id).eq("kind", kind).maybeSingle();
   if (result.error) repositoryFailure(message);
-  return (result.data as T | null) ?? null;
+  return result.data === null || result.data === undefined ? null : guard(result.data) ? result.data : repositoryFailure(message);
 }
 
-type JsonObject = { [key: string]: Json | undefined };
-
-function asJsonObject(value: Json | null): JsonObject | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : null;
-}
-
-function mutationProductId(value: Json | null, message: string): string {
-  const root = asJsonObject(value);
-  const product = root?.product;
-  const productObject = product === undefined ? null : asJsonObject(product);
-  const id = productObject?.id;
+function mutationProductId(value: unknown, message: string): string {
+  const product = objectValue(value, "product");
+  const id = objectValue(product, "id");
   if (typeof id !== "string" || !isValidUuid(id)) repositoryFailure(message);
   return id;
 }
 
-async function mutateProduct<T>(operation: Exclude<AdminCatalogMutationOperation, "delete">, id: string | undefined, kind: ProductRow["kind"], product: ProductMutationPayload, child: ChildMutationPayload, selectColumns: string, message: string): Promise<T> {
+async function callAtomicRpc(client: AdminCatalogClient, operation: AdminCatalogMutationOperation, id: string | undefined, product: ProductMutationPayload, child: ChildMutationPayload): Promise<QueryResult> {
+  if (operation === "create") {
+    if (product.slug === undefined || product.title === undefined || product.description === undefined || product.subject_id === undefined || product.category === undefined || product.delivery_kind === undefined || product.price_vnd === undefined || product.old_price_vnd === undefined || product.is_contact_for_price === undefined || product.color_theme === undefined) {
+      throw new AdminCatalogInputError("Required product fields are missing.");
+    }
+    const createProduct: AdminCatalogCreateProductPayload = {
+      slug: product.slug,
+      title: product.title,
+      description: product.description,
+      subject_id: product.subject_id,
+      category: product.category,
+      delivery_kind: product.delivery_kind,
+      publication_status: product.publication_status,
+      price_vnd: product.price_vnd,
+      old_price_vnd: product.old_price_vnd,
+      is_contact_for_price: product.is_contact_for_price,
+      rating: product.rating,
+      is_hot: product.is_hot,
+      color_theme: product.color_theme
+    };
+    if (child.kind === "material") {
+      if (child.value.pages === undefined) throw new AdminCatalogInputError("Field pages is required.");
+      const createChild: AdminCatalogCreateMaterialPayload = { pages: child.value.pages, tags: child.value.tags, includes: child.value.includes, suitable_for: child.value.suitable_for };
+      const args: AdminCatalogMutateArgs = { p_operation: "create", p_kind: "material", p_product: createProduct, p_child: createChild };
+      return client.rpc("admin_catalog_mutate_atomic", args);
+    }
+    if (child.kind === "course") {
+      if (child.value.format === undefined || child.value.sessions === undefined || child.value.duration === undefined || child.value.schedule === undefined || child.value.mentor === undefined) throw new AdminCatalogInputError("Required course fields are missing.");
+      const createChild: AdminCatalogCreateCoursePayload = { format: child.value.format, sessions: child.value.sessions, duration: child.value.duration, schedule: child.value.schedule, enrollment_status: child.value.enrollment_status, mentor: child.value.mentor, tags: child.value.tags, curriculum: child.value.curriculum, suitable_for: child.value.suitable_for, preparation: child.value.preparation };
+      const args: AdminCatalogMutateArgs = { p_operation: "create", p_kind: "course", p_product: createProduct, p_child: createChild };
+      return client.rpc("admin_catalog_mutate_atomic", args);
+    }
+    if (child.value.name === undefined || child.value.faculty === undefined || child.value.format === undefined || child.value.availability === undefined || child.value.short_bio === undefined) throw new AdminCatalogInputError("Required tutor fields are missing.");
+    const createChild: AdminCatalogCreateTutorPayload = { name: child.value.name, faculty: child.value.faculty, format: child.value.format, availability: child.value.availability, short_bio: child.value.short_bio, strengths: child.value.strengths, tags: child.value.tags, suitable_for: child.value.suitable_for, support_methods: child.value.support_methods };
+    const args: AdminCatalogMutateArgs = { p_operation: "create", p_kind: "tutor", p_product: createProduct, p_child: createChild };
+    return client.rpc("admin_catalog_mutate_atomic", args);
+  }
+  if (child.kind === "material") {
+    if (id === undefined) throw new AdminCatalogInputError("Catalog ID must be a valid UUID.");
+    const args: AdminCatalogMutateArgs = { p_operation: "update", p_kind: "material", p_product: product, p_child: child.value, p_product_id: id };
+    return client.rpc("admin_catalog_mutate_atomic", args);
+  }
+  if (child.kind === "course") {
+    if (id === undefined) throw new AdminCatalogInputError("Catalog ID must be a valid UUID.");
+    const args: AdminCatalogMutateArgs = { p_operation: "update", p_kind: "course", p_product: product, p_child: child.value, p_product_id: id };
+    return client.rpc("admin_catalog_mutate_atomic", args);
+  }
+  if (id === undefined) throw new AdminCatalogInputError("Catalog ID must be a valid UUID.");
+  const args: AdminCatalogMutateArgs = { p_operation: "update", p_kind: "tutor", p_product: product, p_child: child.value, p_product_id: id };
+  return client.rpc("admin_catalog_mutate_atomic", args);
+}
+
+async function mutateProduct<T>(operation: AdminCatalogMutationOperation, id: string | undefined, kind: ProductRow["kind"], product: ProductMutationPayload, child: ChildMutationPayload, selectColumns: string, guard: (value: unknown) => value is T, message: string): Promise<T> {
   if (operation === "update" && (id === undefined || !isValidUuid(id))) {
     throw new AdminCatalogInputError("Catalog ID must be a valid UUID.");
   }
   try {
     const client = await adminClient();
-    const result = await client.rpc("admin_catalog_mutate", {
-      p_operation: operation,
-      p_kind: kind,
-      p_product: product as Json,
-      p_child: child as Json,
-      p_product_id: id
-    });
+    if (child.kind !== kind) throw new AdminCatalogRepositoryError(message);
+    const result = await callAtomicRpc(client, operation, id, product, child);
     if (result.error) repositoryFailure(message);
     const productId = mutationProductId(result.data, message);
-    const row = await getProductWithClient<T>(client, productId, kind, selectColumns, message);
+    const row = await getProductWithClient<T>(client, productId, kind, selectColumns, guard, message);
     if (row === null) repositoryFailure(message);
     return row;
   } catch (error) {
@@ -652,17 +866,17 @@ async function deleteProduct(id: string, kind: ProductRow["kind"], message: stri
   if (!isValidUuid(id)) throw new AdminCatalogInputError("Catalog ID must be a valid UUID.");
   try {
     const client = await adminClient();
-    const result = await client.rpc("admin_catalog_mutate", {
+    const args: AdminCatalogMutateArgs = {
       p_operation: "delete",
       p_kind: kind,
       p_product: {},
       p_child: {},
       p_product_id: id
-    });
+    };
+    const result = await client.rpc("admin_catalog_mutate_atomic", args);
     if (result.error) repositoryFailure(message);
     if (result.data === null) return false;
-    const root = asJsonObject(result.data);
-    if (root?.deleted !== true || root.id !== id) repositoryFailure(message);
+    if (objectValue(result.data, "deleted") !== true || objectValue(result.data, "id") !== id) repositoryFailure(message);
     return true;
   } catch (error) {
     if (error instanceof AdminCatalogInputError || error instanceof AdminCatalogRepositoryError) throw error;
@@ -678,7 +892,7 @@ export async function listAdminSubjects(options?: ListAdminCatalogOptions): Prom
     if (validated.search !== undefined) query = query.or(`slug.ilike.%${validated.search}%,name.ilike.%${validated.search}%`);
     const result = await query.order("created_at", { ascending: false }).order("id", { ascending: false }).range(validated.offset, validated.offset + validated.limit - 1);
     if (result.error) repositoryFailure("Failed to list admin subjects.");
-    return rows<AdminSubject>(result.data);
+    return rows(result.data, isAdminSubject);
   } catch (error) {
     if (error instanceof AdminCatalogRepositoryError) throw error;
     throw new AdminCatalogRepositoryError("Failed to list admin subjects.");
@@ -691,7 +905,7 @@ export async function getAdminSubjectById(id: string): Promise<AdminSubject | nu
     const client = await adminClient();
     const result = await client.from("subjects").select(SUBJECT_SELECT_COLUMNS).eq("id", id).maybeSingle();
     if (result.error) repositoryFailure("Failed to retrieve admin subject.");
-    return (result.data as AdminSubject | null) ?? null;
+    return result.data === null || result.data === undefined ? null : isAdminSubject(result.data) ? result.data : repositoryFailure("Failed to retrieve admin subject.");
   } catch (error) {
     if (error instanceof AdminCatalogInputError || error instanceof AdminCatalogRepositoryError) throw error;
     throw new AdminCatalogRepositoryError("Failed to retrieve admin subject.");
@@ -700,18 +914,22 @@ export async function getAdminSubjectById(id: string): Promise<AdminSubject | nu
 
 export async function createAdminSubject(input: CreateAdminSubjectInput): Promise<AdminSubject> {
   const validated = validateSubjectInput(input, false);
+  if (validated.slug === undefined || validated.name === undefined || validated.category === undefined || validated.faculty_group === undefined || validated.color_theme === undefined) {
+    throw new AdminCatalogInputError("All subject fields are required.");
+  }
   const payload: Tables["subjects"]["Insert"] = {
-    slug: validated.slug!,
-    name: validated.name!,
-    category: validated.category!,
-    faculty_group: validated.faculty_group!,
-    color_theme: validated.color_theme!
+    slug: validated.slug,
+    name: validated.name,
+    category: validated.category,
+    faculty_group: validated.faculty_group,
+    color_theme: validated.color_theme
   };
   try {
     const client = await adminClient();
     const result: QueryResult = await client.from("subjects").insert(payload).select(SUBJECT_SELECT_COLUMNS).maybeSingle();
     if (result.error || !result.data) repositoryFailure("Failed to create admin subject.");
-    return result.data as AdminSubject;
+    if (!isAdminSubject(result.data)) repositoryFailure("Failed to create admin subject.");
+    return result.data;
   } catch (error) {
     if (error instanceof AdminCatalogInputError || error instanceof AdminCatalogRepositoryError) throw error;
     throw new AdminCatalogRepositoryError("Failed to create admin subject.");
@@ -725,7 +943,7 @@ export async function updateAdminSubject(id: string, input: UpdateAdminSubjectIn
     const client = await adminClient();
     const result = await client.from("subjects").update(payload).eq("id", id).select(SUBJECT_SELECT_COLUMNS).maybeSingle();
     if (result.error) repositoryFailure("Failed to update admin subject.");
-    return (result.data as AdminSubject | null) ?? null;
+    return result.data === null || result.data === undefined ? null : isAdminSubject(result.data) ? result.data : repositoryFailure("Failed to update admin subject.");
   } catch (error) {
     if (error instanceof AdminCatalogInputError || error instanceof AdminCatalogRepositoryError) throw error;
     throw new AdminCatalogRepositoryError("Failed to update admin subject.");
@@ -746,21 +964,21 @@ export async function deleteAdminSubject(id: string): Promise<boolean> {
 }
 
 export async function listAdminMaterials(options?: ListAdminCatalogOptions): Promise<AdminMaterial[]> {
-  return listProducts<AdminMaterial>("material", MATERIAL_SELECT_COLUMNS, options, "Failed to list admin materials.");
+  return listProducts("material", MATERIAL_SELECT_COLUMNS, options, isAdminMaterial, "Failed to list admin materials.");
 }
 
 export async function getAdminMaterialById(id: string): Promise<AdminMaterial | null> {
-  return getProduct<AdminMaterial>(id, "material", MATERIAL_SELECT_COLUMNS, "Failed to retrieve admin material.");
+  return getProduct(id, "material", MATERIAL_SELECT_COLUMNS, isAdminMaterial, "Failed to retrieve admin material.");
 }
 
 export async function createAdminMaterial(input: CreateAdminMaterialInput): Promise<AdminMaterial> {
   const validated = validateMaterialInput(input, false);
-  return mutateProduct<AdminMaterial>("create", undefined, "material", validated.product, validated.child, MATERIAL_SELECT_COLUMNS, "Failed to create admin material.");
+  return mutateProduct("create", undefined, "material", validated.product, validated.child, MATERIAL_SELECT_COLUMNS, isAdminMaterial, "Failed to create admin material.");
 }
 
 export async function updateAdminMaterial(id: string, input: UpdateAdminMaterialInput): Promise<AdminMaterial | null> {
   const validated = validateMaterialInput(input, true);
-  return mutateProduct<AdminMaterial>("update", id, "material", validated.product, validated.child, MATERIAL_SELECT_COLUMNS, "Failed to update admin material.");
+  return mutateProduct("update", id, "material", validated.product, validated.child, MATERIAL_SELECT_COLUMNS, isAdminMaterial, "Failed to update admin material.");
 }
 
 export async function deleteAdminMaterial(id: string): Promise<boolean> {
@@ -768,21 +986,21 @@ export async function deleteAdminMaterial(id: string): Promise<boolean> {
 }
 
 export async function listAdminCourses(options?: ListAdminCatalogOptions): Promise<AdminCourse[]> {
-  return listProducts<AdminCourse>("course", COURSE_SELECT_COLUMNS, options, "Failed to list admin courses.");
+  return listProducts("course", COURSE_SELECT_COLUMNS, options, isAdminCourse, "Failed to list admin courses.");
 }
 
 export async function getAdminCourseById(id: string): Promise<AdminCourse | null> {
-  return getProduct<AdminCourse>(id, "course", COURSE_SELECT_COLUMNS, "Failed to retrieve admin course.");
+  return getProduct(id, "course", COURSE_SELECT_COLUMNS, isAdminCourse, "Failed to retrieve admin course.");
 }
 
 export async function createAdminCourse(input: CreateAdminCourseInput): Promise<AdminCourse> {
   const validated = validateCourseInput(input, false);
-  return mutateProduct<AdminCourse>("create", undefined, "course", validated.product, validated.child, COURSE_SELECT_COLUMNS, "Failed to create admin course.");
+  return mutateProduct("create", undefined, "course", validated.product, validated.child, COURSE_SELECT_COLUMNS, isAdminCourse, "Failed to create admin course.");
 }
 
 export async function updateAdminCourse(id: string, input: UpdateAdminCourseInput): Promise<AdminCourse | null> {
   const validated = validateCourseInput(input, true);
-  return mutateProduct<AdminCourse>("update", id, "course", validated.product, validated.child, COURSE_SELECT_COLUMNS, "Failed to update admin course.");
+  return mutateProduct("update", id, "course", validated.product, validated.child, COURSE_SELECT_COLUMNS, isAdminCourse, "Failed to update admin course.");
 }
 
 export async function deleteAdminCourse(id: string): Promise<boolean> {
@@ -790,21 +1008,21 @@ export async function deleteAdminCourse(id: string): Promise<boolean> {
 }
 
 export async function listAdminTutors(options?: ListAdminCatalogOptions): Promise<AdminTutor[]> {
-  return listProducts<AdminTutor>("tutor", TUTOR_SELECT_COLUMNS, options, "Failed to list admin tutors.");
+  return listProducts("tutor", TUTOR_SELECT_COLUMNS, options, isAdminTutor, "Failed to list admin tutors.");
 }
 
 export async function getAdminTutorById(id: string): Promise<AdminTutor | null> {
-  return getProduct<AdminTutor>(id, "tutor", TUTOR_SELECT_COLUMNS, "Failed to retrieve admin tutor.");
+  return getProduct(id, "tutor", TUTOR_SELECT_COLUMNS, isAdminTutor, "Failed to retrieve admin tutor.");
 }
 
 export async function createAdminTutor(input: CreateAdminTutorInput): Promise<AdminTutor> {
   const validated = validateTutorInput(input, false);
-  return mutateProduct<AdminTutor>("create", undefined, "tutor", validated.product, validated.child, TUTOR_SELECT_COLUMNS, "Failed to create admin tutor.");
+  return mutateProduct("create", undefined, "tutor", validated.product, validated.child, TUTOR_SELECT_COLUMNS, isAdminTutor, "Failed to create admin tutor.");
 }
 
 export async function updateAdminTutor(id: string, input: UpdateAdminTutorInput): Promise<AdminTutor | null> {
   const validated = validateTutorInput(input, true);
-  return mutateProduct<AdminTutor>("update", id, "tutor", validated.product, validated.child, TUTOR_SELECT_COLUMNS, "Failed to update admin tutor.");
+  return mutateProduct("update", id, "tutor", validated.product, validated.child, TUTOR_SELECT_COLUMNS, isAdminTutor, "Failed to update admin tutor.");
 }
 
 export async function deleteAdminTutor(id: string): Promise<boolean> {
