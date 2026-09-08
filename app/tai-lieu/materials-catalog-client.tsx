@@ -6,43 +6,21 @@ import { MaterialCard } from "@/components/catalog/material-card";
 import { EmptyState } from "@/components/catalog/empty-state";
 import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
-import type { MaterialItem } from "@/lib/domain/catalog";
+import type { PublishedMaterial } from "@/lib/domain/catalog";
+import { compareNullableVND } from "@/lib/domain/product-types";
+import { categoryFilterOptions, type CategoryFilter } from "@/components/catalog/catalog-options";
 
-type CategoryFilter =
-  | "Tất cả"
-  | "Kế toán"
-  | "Kinh tế"
-  | "Thống kê"
-  | "Marketing"
-  | "Quản trị"
-  | "Tài chính"
-  | "MIS"
-  | "Luật"
-  | "Ngoại ngữ";
-
-type SortOption = "newest" | "price-asc" | "rating-desc";
-
-const filterOptions: Array<{ label: CategoryFilter; icon: string }> = [
-  { label: "Tất cả", icon: "" },
-  { label: "Kế toán", icon: "💼" },
-  { label: "Kinh tế", icon: "📈" },
-  { label: "Thống kê", icon: "📊" },
-  { label: "Marketing", icon: "🎯" },
-  { label: "Quản trị", icon: "🧠" },
-  { label: "Tài chính", icon: "💵" },
-  { label: "MIS", icon: "💻" },
-  { label: "Luật", icon: "⚖️" },
-  { label: "Ngoại ngữ", icon: "🗣️" }
-];
+type SortOption = "newest" | "price-asc" | "price-desc" | "rating-desc";
 
 const sortOptions = [
   { value: "newest", label: "Mới nhất" },
   { value: "price-asc", label: "Giá thấp đến cao" },
+  { value: "price-desc", label: "Giá cao đến thấp" },
   { value: "rating-desc", label: "Đánh giá cao" }
 ];
 
 interface MaterialsCatalogClientProps {
-  initialMaterials: MaterialItem[];
+  initialMaterials: PublishedMaterial[];
 }
 
 export function MaterialsCatalogClient({
@@ -88,10 +66,10 @@ export function MaterialsCatalogClient({
       result = result.filter((item) => {
         return (
           item.title.toLowerCase().includes(normalizedQuery) ||
-          item.subject.toLowerCase().includes(normalizedQuery) ||
+          item.subject.name.toLowerCase().includes(normalizedQuery) ||
           item.category.toLowerCase().includes(normalizedQuery) ||
           item.description.toLowerCase().includes(normalizedQuery) ||
-          item.tags.some((tag) => tag.toLowerCase().includes(normalizedQuery))
+          item.material.tags.some((tag) => tag.toLowerCase().includes(normalizedQuery))
         );
       });
     }
@@ -99,9 +77,10 @@ export function MaterialsCatalogClient({
     // Sort
     result.sort((a, b) => {
       if (sortBy === "price-asc") {
-        const priceA = parseFloat(a.price.replace(/[^\d]/g, "")) || 0;
-        const priceB = parseFloat(b.price.replace(/[^\d]/g, "")) || 0;
-        return priceA - priceB;
+        return compareNullableVND(a.pricing.amountVND, b.pricing.amountVND, "asc");
+      }
+      if (sortBy === "price-desc") {
+        return compareNullableVND(a.pricing.amountVND, b.pricing.amountVND, "desc");
       }
       if (sortBy === "rating-desc") {
         return b.rating - a.rating;
@@ -136,7 +115,7 @@ export function MaterialsCatalogClient({
               ref={filterContainerRef}
               className="flex overflow-x-auto whitespace-nowrap gap-2 scrollbar-none pb-1 lg:pb-0 flex-1 min-w-0 scroll-smooth"
             >
-              {filterOptions.map((opt) => {
+              {categoryFilterOptions.map((opt) => {
                 const isActive = category === opt.label;
                 return (
                   <button

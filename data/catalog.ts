@@ -1,13 +1,31 @@
-import type {
-  CourseFormat,
-  CourseItem,
-  MaterialItem,
-  TutorFormat,
-  TutorItem
-} from "@/lib/domain/catalog";
+import type { Category, ColorTheme } from "@/lib/domain/subjects";
+import type { CourseFormat, EnrollmentStatus, TutorFormat } from "@/lib/domain/product-types";
 
-export { TUTOR_FORMATS } from "@/lib/domain/catalog";
-export type { CourseFormat, CourseItem, MaterialItem, TutorFormat, TutorItem } from "@/lib/domain/catalog";
+/** Fixture-only legacy shape. Production reads the published DTO from the repository. */
+export interface MaterialItem {
+  id: string; slug: string; title: string; subject: string; subjectSlug?: string;
+  facultyGroup: string; category: Category; type: "TÀI LIỆU"; description: string;
+  price: string; oldPrice?: string; pages: number; tags: string[]; rating: number;
+  isHot: boolean; colorTheme: ColorTheme; includes?: string[]; suitableFor?: string[];
+}
+
+export interface CourseItem {
+  id: string; slug: string; title: string; subject: string; subjectSlug?: string;
+  category: Category; format: CourseFormat; sessions: number; duration: string;
+  schedule: string; description: string; price: string; oldPrice?: string;
+  status: EnrollmentStatus; mentor: string; tags: string[]; rating: number;
+  colorTheme: ColorTheme; curriculum?: string[]; suitableFor?: string[]; preparation?: string[];
+}
+
+export interface TutorItem {
+  id: string; slug: string; name: string; subjects: string[]; subjectSlug?: string;
+  subjectSlugs?: string[]; faculty: string; strengths: string[]; format: TutorFormat;
+  price: string; availability: string; rating: number; shortBio: string; tags: string[];
+  colorTheme: ColorTheme; suitableFor?: string[]; supportMethods?: string[];
+}
+
+export { TUTOR_FORMATS } from "@/lib/domain/product-types";
+export type { CourseFormat, TutorFormat } from "@/lib/domain/product-types";
 
 export const materials: MaterialItem[] = [
   {

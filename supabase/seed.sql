@@ -71,7 +71,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('ke-toan-tai-chinh-1', 'material', 'Tóm tắt & Bài giải Kế toán tài chính 1', 'Hệ thống hóa toàn bộ định khoản tài sản cố định, hàng tồn kho, nợ phải trả kèm lời giải chi tiết cho các dạng bài thi cuối kỳ UFM.', v_sub_kttc1, 'Kế toán', 'digital_download', 'published', 29000, 59000, 4.90, true, 'accounting')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO materials (product_id, pages, tags, includes, suitable_for)
@@ -83,7 +83,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('nguyen-ly-ke-toan', 'material', 'Cẩm nang Nguyên lý kế toán từ con số 0', 'Sơ đồ chữ T trực quan, cách lập bảng cân đối kế toán nhanh và mẹo phân biệt các tài khoản dễ nhầm lẫn nhất cho sinh viên năm 1, 2.', v_sub_nlkt, 'Kế toán', 'digital_download', 'published', 25000, 50000, 4.80, false, 'accounting')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO materials (product_id, pages, tags, includes, suitable_for)
@@ -95,7 +95,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('ke-toan-quan-tri', 'material', 'Đề cương ôn thi Kế toán quản trị UFM', 'Phân tích biến động chi phí, điểm hòa vốn, lập dự toán ngân sách và các phương án ra quyết định kinh doanh ngắn hạn.', v_sub_ktqt, 'Kế toán', 'digital_download', 'published', 29000, 49000, 4.70, false, 'accounting')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO materials (product_id, pages, tags, includes, suitable_for)
@@ -107,7 +107,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('kinh-te-vi-mo', 'material', 'Sổ tay thực chiến Kinh tế vi mô UFM', 'Phương pháp vẽ đồ thị cung cầu, cách tính thặng dư tiêu dùng, thặng dư sản xuất và các mô hình thị trường cạnh tranh/độc quyền.', v_sub_ktvm, 'Kinh tế', 'digital_download', 'published', 25000, 45000, 4.90, true, 'economics')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO materials (product_id, pages, tags, includes, suitable_for)
@@ -119,7 +119,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('kinh-te-vi-mo-tong-on', 'material', 'Bí kíp trắc nghiệm & Tự luận Kinh tế vĩ mô', 'Giải thích các khái niệm GDP, lạm phát, thất nghiệp kèm phân tích mô hình IS-LM và AD-AS cực kỳ chi tiết, dễ hiểu.', v_sub_ktvmo, 'Kinh tế', 'digital_download', 'published', 29000, 59000, 4.80, false, 'economics')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO materials (product_id, pages, tags, includes, suitable_for)
@@ -131,7 +131,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('xac-suat-thong-ke', 'material', 'Phá đảo Xác suất thống kê (Kèm Casio)', 'Công thức xác suất đầy đủ, ước lượng, kiểm định giả thuyết và hướng dẫn bấm máy tính Casio để giải trắc nghiệm siêu tốc.', v_sub_xstk, 'Thống kê', 'digital_download', 'published', 25000, 50000, 5.00, true, 'statistics')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO materials (product_id, pages, tags, includes, suitable_for)
@@ -143,7 +143,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('marketing-can-ban', 'material', 'Tóm tắt cốt lõi 10 chương Marketing căn bản', 'Mindmap tóm gọn hành vi khách hàng, chiến lược 4P/7P và các ví dụ thực tế tại Việt Nam để làm bài thi tự luận điểm cao.', v_sub_mkcb, 'Marketing', 'digital_download', 'published', 20000, 40000, 4.80, false, 'marketing')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO materials (product_id, pages, tags, includes, suitable_for)
@@ -155,7 +155,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('quan-tri-hoc', 'material', 'Đề cương tóm tắt môn Quản trị học', 'Tổng hợp 4 chức năng quản trị: Hoạch định, Tổ chức, Lãnh đạo, Kiểm tra cùng ngân hàng câu hỏi tình huống thường gặp.', v_sub_qth, 'Quản trị', 'digital_download', 'published', 20000, 35000, 4.70, false, 'management')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO materials (product_id, pages, tags, includes, suitable_for)
@@ -167,7 +167,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('luat-kinh-te', 'material', 'Hệ thống hóa Luật kinh tế dễ nhớ', 'Tóm gọn Luật doanh nghiệp, Luật hợp đồng thương mại và cách phân tích tình huống tranh chấp thực tế trong đề thi.', v_sub_lkt, 'Luật', 'digital_download', 'published', 20000, 40000, 4.70, false, 'law')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO materials (product_id, pages, tags, includes, suitable_for)
@@ -179,7 +179,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('tai-chinh-tien-te', 'material', 'Ôn tập cốt lõi môn Tài chính tiền tệ', 'Kiến thức về lãi suất, cung cầu tiền tệ, ngân hàng thương mại và vai trò của ngân hàng trung ương trong việc điều hành chính sách.', v_sub_tctt, 'Tài chính', 'digital_download', 'published', 29000, 49000, 4.60, false, 'finance')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO materials (product_id, pages, tags, includes, suitable_for)
@@ -191,7 +191,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('tai-chinh-doanh-nghiep', 'material', 'Sổ tay bài tập Tài chính doanh nghiệp', 'Các công thức tính NPV, IRR, WACC, mô hình định giá tài sản vốn CAPM kèm bài giải mẫu các chương ngân sách vốn đầu tư.', v_sub_tcdn, 'Tài chính', 'digital_download', 'published', 35000, 65000, 4.90, true, 'finance')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO materials (product_id, pages, tags, includes, suitable_for)
@@ -203,7 +203,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('co-so-du-lieu', 'material', 'Sổ tay mô hình ERD & Truy vấn SQL căn bản', 'Cách vẽ sơ đồ ERD, chuẩn hóa dữ liệu 1NF, 2NF, 3NF và tổng hợp câu lệnh SQL từ SELECT đơn giản đến JOIN phức tạp.', v_sub_csdl, 'MIS', 'digital_download', 'published', 30000, 60000, 4.80, false, 'mis')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO materials (product_id, pages, tags, includes, suitable_for)
@@ -215,7 +215,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('he-thong-thong-tin-quan-ly', 'material', 'Đề cương Hệ thống thông tin quản lý UFM', 'Tóm tắt cấu trúc hạ tầng CNTT, hệ thống ERP, CRM và các phương pháp phát triển hệ thống thông tin trong doanh nghiệp.', v_sub_htttql, 'MIS', 'digital_download', 'published', 25000, 45000, 4.70, false, 'mis')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO materials (product_id, pages, tags, includes, suitable_for)
@@ -227,7 +227,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('tieng-anh-thuong-mai', 'material', 'Sổ từ vựng & Mẫu câu Tiếng Anh thương mại', 'Tổng hợp thuật ngữ chuyên ngành kinh tế, mẫu thư điện tử giao dịch và hội thoại đàm phán thương mại thông dụng.', v_sub_tatm, 'Ngoại ngữ', 'digital_download', 'published', 29000, 59000, 4.80, false, 'languages')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO materials (product_id, pages, tags, includes, suitable_for)
@@ -263,7 +263,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('lop-on-thi-cuoi-ky-marketing', 'course', 'Lớp ôn thi cuối kỳ Marketing căn bản UFM', 'Hệ thống hóa toàn bộ lý thuyết cốt lõi, hướng dẫn làm bài tự luận đạt điểm tối đa và thực chiến phân tích case study của thầy cô UFM.', v_sub_mkcb, 'Marketing', 'live_session', 'published', 129000, 250000, 4.90, false, 'marketing')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO courses (product_id, format, sessions, duration, schedule, enrollment_status, mentor, tags, curriculum, suitable_for, preparation)
@@ -275,7 +275,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('on-thi-giua-ky-kinh-te-vi-mo', 'course', 'Khóa video ôn thi giữa kỳ Kinh tế vi mô', 'Giúp bạn làm quen đồ thị cung cầu, phân tích tác động của thuế/trợ cấp và gỡ rối bài tập tối đa hóa hữu dụng cực nhanh.', v_sub_ktvm, 'Kinh tế', 'recorded_video', 'published', 99000, 199000, 4.80, false, 'economics')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO courses (product_id, format, sessions, duration, schedule, enrollment_status, mentor, tags, curriculum, suitable_for, preparation)
@@ -287,7 +287,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('lop-on-xac-suat-thong-ke', 'course', 'Lớp ôn cấp tốc Xác suất thống kê cuối kỳ', 'Đi thẳng vào phương pháp nhận diện dạng đề, công thức bấm máy Casio thần tốc và giải chi tiết bộ đề thi 3 học kỳ gần nhất.', v_sub_xstk, 'Thống kê', 'live_session', 'published', 149000, 280000, 5.00, false, 'statistics')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO courses (product_id, format, sessions, duration, schedule, enrollment_status, mentor, tags, curriculum, suitable_for, preparation)
@@ -299,7 +299,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('video-bai-giang-quan-tri-hoc', 'course', 'Trọn gói Video bài giảng Quản trị học', 'Tổng hợp trực quan 10 chương học dưới dạng video ngắn 15-20 phút, giải thích cặn kẽ các tình huống quản trị thực tế.', v_sub_qth, 'Quản trị', 'recorded_video', 'published', 89000, 150000, 4.70, false, 'management')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO courses (product_id, format, sessions, duration, schedule, enrollment_status, mentor, tags, curriculum, suitable_for, preparation)
@@ -311,7 +311,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('lop-on-ke-toan-tai-chinh-1', 'course', 'Lớp ôn cuối kỳ Kế toán tài chính 1', 'Luyện sâu các dạng bài định khoản nghiệp vụ TSCĐ, ngoại tệ, nợ phải trả và cách lập báo cáo tài chính không lo lệch số.', v_sub_kttc1, 'Kế toán', 'live_session', 'published', 169000, 300000, 4.90, false, 'accounting')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO courses (product_id, format, sessions, duration, schedule, enrollment_status, mentor, tags, curriculum, suitable_for, preparation)
@@ -323,7 +323,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('sql-can-ban-cho-co-so-du-lieu', 'course', 'Lớp thực hành SQL căn bản cho Cơ sở dữ liệu', 'Giảng dạy thực hành câu lệnh SQL trực tiếp trên máy tính. Tập trung vào viết các câu truy vấn phức tạp hỗ trợ thi thực hành UFM.', v_sub_csdl, 'MIS', 'live_session', 'published', 129000, 220000, 4.80, false, 'mis')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO courses (product_id, format, sessions, duration, schedule, enrollment_status, mentor, tags, curriculum, suitable_for, preparation)
@@ -335,7 +335,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('on-tap-luat-kinh-te', 'course', 'Lớp tổng ôn Luật kinh tế cấp tốc', 'Cách tra cứu nhanh các điều luật Doanh nghiệp & Hợp đồng, phân tích chuẩn xác tình huống tranh chấp để làm tự luận.', v_sub_lkt, 'Luật', 'live_session', 'published', 79000, 140000, 4.70, false, 'law')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO courses (product_id, format, sessions, duration, schedule, enrollment_status, mentor, tags, curriculum, suitable_for, preparation)
@@ -347,7 +347,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('tai-chinh-tien-te-cap-toc', 'course', 'Lớp ôn cấp tốc Tài chính tiền tệ UFM', 'Giải quyết các câu hỏi hóc búa về chính sách tiền tệ, công cụ kiểm soát lạm phát và các dạng bài tập tính lãi suất đơn giản.', v_sub_tctt, 'Tài chính', 'live_session', 'published', 99000, 180000, 4.60, false, 'finance')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO courses (product_id, format, sessions, duration, schedule, enrollment_status, mentor, tags, curriculum, suitable_for, preparation)
@@ -393,7 +393,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('tutor-ke-toan-tai-chinh-1', 'tutor', 'Tutor Minh Thư - Kế toán tài chính 1', 'Sinh viên năm cuối ngành Kế toán doanh nghiệp UFM. GPA môn Kế toán tài chính 1 đạt 9.2/10. Có kinh nghiệm dạy kèm cho hơn 30 bạn qua môn an toàn.', v_sub_kttc1, 'Kế toán', 'one_on_one_tutoring', 'published', 120000, NULL, 4.90, false, 'accounting')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO tutors (product_id, name, faculty, format, availability, short_bio, strengths, tags, suitable_for, support_methods)
@@ -408,7 +408,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('tutor-nguyen-ly-ke-toan', 'tutor', 'Tutor Ngọc Vy - Nguyên lý kế toán', 'Sinh viên năm 3 chuyên ngành Kiểm toán. GPA tích lũy 3.65/4. Nhiệt tình, chỉ bài tỉ mỉ, giúp học viên hiểu bản chất tài khoản thay vì học vẹt.', v_sub_nlkt, 'Kế toán', 'one_on_one_tutoring', 'published', 100000, NULL, 4.80, false, 'accounting')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO tutors (product_id, name, faculty, format, availability, short_bio, strengths, tags, suitable_for, support_methods)
@@ -423,7 +423,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('tutor-kinh-te-vi-mo', 'tutor', 'Tutor Hoàng Nam - Kinh tế vi mô & vĩ mô', 'Thành viên đội tuyển sinh viên giỏi UFM môn Kinh tế học. Điểm A+ cả hai môn Vi mô và Vĩ mô. Đã hỗ trợ nhiều bạn đạt điểm Giỏi.', v_sub_ktvm, 'Kinh tế', 'one_on_one_tutoring', 'published', 110000, NULL, 4.90, false, 'economics')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO tutors (product_id, name, faculty, format, availability, short_bio, strengths, tags, suitable_for, support_methods)
@@ -438,7 +438,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('tutor-xac-suat-thong-ke', 'tutor', 'Tutor Tiến Dũng - Xác suất thống kê & Toán cao cấp', 'Cựu SV ngành Toán kinh tế. Có kinh nghiệm 2 năm ôn thi Xác suất thống kê cho SV khối ngành kinh tế UFM. Cam kết giúp hiểu sâu công thức khó.', v_sub_xstk, 'Thống kê', 'one_on_one_tutoring', 'published', 130000, NULL, 5.00, false, 'statistics')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO tutors (product_id, name, faculty, format, availability, short_bio, strengths, tags, suitable_for, support_methods)
@@ -453,7 +453,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('tutor-marketing-can-ban', 'tutor', 'Tutor Quỳnh Anh - Marketing căn bản & dịch vụ', 'Cựu SV chuyên ngành Quản trị thương hiệu UFM. Đạt giải nghiên cứu khoa học cấp trường. Hướng dẫn tư duy marketing ứng dụng thực tế.', v_sub_mkcb, 'Marketing', 'one_on_one_tutoring', 'published', 120000, NULL, 4.80, false, 'marketing')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO tutors (product_id, name, faculty, format, availability, short_bio, strengths, tags, suitable_for, support_methods)
@@ -468,7 +468,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('tutor-quan-tri-hoc', 'tutor', 'Tutor Quốc Bảo - Quản trị học & nhân lực', 'GPA tích lũy 3.58. Nhiệt tình, có phương pháp dạy bằng mindmap trực quan, hỗ trợ giải đáp bài tập 24/7 trong suốt quá trình ôn tập.', v_sub_qth, 'Quản trị', 'one_on_one_tutoring', 'published', 100000, NULL, 4.70, false, 'management')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO tutors (product_id, name, faculty, format, availability, short_bio, strengths, tags, suitable_for, support_methods)
@@ -483,7 +483,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('tutor-co-so-du-lieu', 'tutor', 'Tutor Đức Huy - Cơ sở dữ liệu & HTTTQL', 'Sinh viên năm 4 ngành Hệ thống thông tin quản lý. Điểm thi thực hành SQL đạt điểm tuyệt đối 10/10. Có bộ slide tự soạn dễ hiểu.', v_sub_csdl, 'MIS', 'one_on_one_tutoring', 'published', 130000, NULL, 4.90, false, 'mis')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO tutors (product_id, name, faculty, format, availability, short_bio, strengths, tags, suitable_for, support_methods)
@@ -498,7 +498,7 @@ BEGIN
     INSERT INTO products (slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, rating, is_hot, color_theme)
     VALUES ('tutor-luat-kinh-te', 'tutor', 'Tutor Minh Hằng - Luật kinh tế', 'GPA tích lũy ngành Luật đạt 3.7. Kinh nghiệm làm trợ lý pháp lý bán thời gian. Hướng dẫn cách phân tích tình huống tranh chấp thương mại sát đề thi.', v_sub_lkt, 'Luật', 'one_on_one_tutoring', 'published', 110000, NULL, 4.80, false, 'law')
     ON CONFLICT (kind, slug) DO UPDATE
-    SET title = EXCLUDED.title, description = EXCLUDED.description, price_vnd = EXCLUDED.price_vnd, rating = EXCLUDED.rating, updated_at = timezone('utc'::text, now())
+    SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description, subject_id = EXCLUDED.subject_id, category = EXCLUDED.category, delivery_kind = EXCLUDED.delivery_kind, publication_status = EXCLUDED.publication_status, price_vnd = EXCLUDED.price_vnd, old_price_vnd = EXCLUDED.old_price_vnd, is_contact_for_price = EXCLUDED.is_contact_for_price, rating = EXCLUDED.rating, is_hot = EXCLUDED.is_hot, color_theme = EXCLUDED.color_theme, updated_at = timezone('utc'::text, now())
     RETURNING id INTO v_prod_id;
 
     INSERT INTO tutors (product_id, name, faculty, format, availability, short_bio, strengths, tags, suitable_for, support_methods)

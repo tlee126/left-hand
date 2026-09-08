@@ -6,34 +6,11 @@ import { TutorCard } from "@/components/catalog/tutor-card";
 import { EmptyState } from "@/components/catalog/empty-state";
 import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
-import type { TutorItem } from "@/lib/domain/catalog";
-
-type TutorFilter =
-  | "Tất cả"
-  | "Kế toán"
-  | "Kinh tế"
-  | "Thống kê"
-  | "Marketing"
-  | "Quản trị"
-  | "MIS"
-  | "Luật"
-  | "Online"
-  | "1:1";
+import type { PublishedTutor } from "@/lib/domain/catalog";
+import { normalizeSlug } from "@/lib/domain/subjects";
+import { tutorFilterOptions, type TutorFilter } from "@/components/catalog/catalog-options";
 
 type SortOption = "relevant" | "rating-desc" | "available-slot";
-
-const filterOptions: Array<{ label: TutorFilter; icon: string }> = [
-  { label: "Tất cả", icon: "" },
-  { label: "Kế toán", icon: "💼" },
-  { label: "Kinh tế", icon: "📈" },
-  { label: "Thống kê", icon: "📊" },
-  { label: "Marketing", icon: "🎯" },
-  { label: "Quản trị", icon: "🧠" },
-  { label: "MIS", icon: "💻" },
-  { label: "Luật", icon: "⚖️" },
-  { label: "Online", icon: "🌐" },
-  { label: "1:1", icon: "👤" }
-];
 
 const sortOptions = [
   { value: "relevant", label: "Phù hợp nhất" },
@@ -42,7 +19,7 @@ const sortOptions = [
 ];
 
 interface TutorsCatalogClientProps {
-  initialTutors: TutorItem[];
+  initialTutors: PublishedTutor[];
 }
 
 export function TutorsCatalogClient({
@@ -80,64 +57,13 @@ export function TutorsCatalogClient({
     // Filter by subject group or format
     if (filter !== "Tất cả") {
       result = result.filter((item) => {
-        if (filter === "Kế toán") {
-          return (
-            item.faculty === "Kế toán - Kiểm toán" ||
-            item.subjects.some(
-              (s) =>
-                s.toLowerCase().includes("kế toán") ||
-                s.toLowerCase().includes("kiểm toán")
-            )
-          );
-        }
-        if (filter === "Kinh tế") {
-          return (
-            item.faculty.toLowerCase().includes("kinh tế") ||
-            item.subjects.some((s) => s.toLowerCase().includes("kinh tế"))
-          );
-        }
-        if (filter === "Thống kê") {
-          return (
-            item.faculty.toLowerCase().includes("khoa học dữ liệu") ||
-            item.subjects.some(
-              (s) =>
-                s.toLowerCase().includes("thống kê") ||
-                s.toLowerCase().includes("toán")
-            )
-          );
-        }
-        if (filter === "Marketing") {
-          return (
-            item.faculty.toLowerCase().includes("marketing") ||
-            item.subjects.some((s) => s.toLowerCase().includes("marketing"))
-          );
-        }
-        if (filter === "Quản trị") {
-          return (
-            item.faculty.toLowerCase().includes("quản trị") ||
-            item.subjects.some((s) => s.toLowerCase().includes("quản trị"))
-          );
-        }
-        if (filter === "MIS") {
-          return item.subjects.some(
-            (s) =>
-              s.toLowerCase().includes("cơ sở dữ liệu") ||
-              s.toLowerCase().includes("hệ thống thông tin")
-          );
-        }
-        if (filter === "Luật") {
-          return (
-            item.faculty.toLowerCase().includes("luật") ||
-            item.subjects.some((s) => s.toLowerCase().includes("luật"))
-          );
-        }
         if (filter === "Online") {
-          return item.format.toLowerCase().includes("online");
+          return item.tutor.format.toLowerCase().includes("online");
         }
         if (filter === "1:1") {
-          return item.format.toLowerCase().includes("1:1");
+          return item.tutor.format.toLowerCase().includes("1:1");
         }
-        return true;
+        return item.category === filter;
       });
     }
 
@@ -146,11 +72,11 @@ export function TutorsCatalogClient({
     if (normalizedQuery) {
       result = result.filter((item) => {
         return (
-          item.name.toLowerCase().includes(normalizedQuery) ||
-          item.faculty.toLowerCase().includes(normalizedQuery) ||
-          item.shortBio.toLowerCase().includes(normalizedQuery) ||
-          item.subjects.some((s) => s.toLowerCase().includes(normalizedQuery)) ||
-          item.strengths.some((str) => str.toLowerCase().includes(normalizedQuery))
+          item.tutor.name.toLowerCase().includes(normalizedQuery) ||
+          item.tutor.faculty.toLowerCase().includes(normalizedQuery) ||
+          item.tutor.shortBio.toLowerCase().includes(normalizedQuery) ||
+          item.tutor.subjects.some((s) => normalizeSlug(s.name).includes(normalizeSlug(normalizedQuery))) ||
+          item.tutor.strengths.some((str) => str.toLowerCase().includes(normalizedQuery))
         );
       });
     }
@@ -161,8 +87,8 @@ export function TutorsCatalogClient({
         return b.rating - a.rating;
       }
       if (sortBy === "available-slot") {
-        const aHasSlot = a.availability.toLowerCase().includes("còn");
-        const bHasSlot = b.availability.toLowerCase().includes("còn");
+        const aHasSlot = a.tutor.availability.toLowerCase().includes("còn");
+        const bHasSlot = b.tutor.availability.toLowerCase().includes("còn");
         if (aHasSlot && !bHasSlot) return -1;
         if (!aHasSlot && bHasSlot) return 1;
         return b.rating - a.rating;
@@ -196,7 +122,7 @@ export function TutorsCatalogClient({
               ref={filterContainerRef}
               className="flex overflow-x-auto whitespace-nowrap gap-2 scrollbar-none pb-1 lg:pb-0 flex-1 min-w-0 scroll-smooth"
             >
-              {filterOptions.map((opt) => {
+              {tutorFilterOptions.map((opt) => {
                 const isActive = filter === opt.label;
                 return (
                   <button

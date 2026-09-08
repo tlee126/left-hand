@@ -1,367 +1,310 @@
 import { createClient } from "@/lib/supabase/server";
 import type { Database } from "@/lib/supabase/database.types";
-import type { MaterialItem, CourseItem, TutorItem, CourseFormat, TutorFormat } from "@/lib/domain/catalog";
-import type { Category, ColorTheme } from "@/lib/domain/subjects";
-import type { EnrollmentStatus } from "@/lib/domain/product-types";
-import { formatVND } from "@/lib/domain/product-types";
+import type { PublishedCourse, PublishedMaterial, PublishedTutor, SubjectIdentity } from "@/lib/domain/catalog";
+import {
+  isCategory,
+  isColorTheme,
+  isCourseFormat,
+  isDeliveryKind,
+  isEnrollmentStatus,
+  isProductKind,
+  isPublicationStatus,
+  isTutorFormat,
+  isValidVND,
+  type CourseFormat,
+  type DeliveryKind,
+  type ProductKind
+} from "@/lib/domain/product-types";
+import { CATEGORY_THEME_MAP, isValidSlug, normalizeSlug } from "@/lib/domain/subjects";
 
-export type ProductRow = Database["public"]["Tables"]["products"]["Row"];
+type Tables = Database["public"]["Tables"];
+export type ProductRow = Tables["products"]["Row"];
+type SubjectRow = Tables["subjects"]["Row"];
+type MaterialRow = Tables["materials"]["Row"];
+type CourseRow = Tables["courses"]["Row"];
+type TutorRow = Tables["tutors"]["Row"];
+export type CatalogClient = Awaited<ReturnType<typeof createClient>>;
 
 interface MaterialJoinedRow extends ProductRow {
-  materials: Database["public"]["Tables"]["materials"]["Row"] | null;
-  subjects: Database["public"]["Tables"]["subjects"]["Row"] | null;
+  materials: MaterialRow | null;
+  subjects: SubjectRow | null;
 }
 
 interface CourseJoinedRow extends ProductRow {
-  courses: Database["public"]["Tables"]["courses"]["Row"] | null;
-  subjects: Database["public"]["Tables"]["subjects"]["Row"] | null;
+  courses: CourseRow | null;
+  subjects: SubjectRow | null;
 }
 
 interface TutorSubjectJoined {
   is_primary: boolean;
-  subjects: Database["public"]["Tables"]["subjects"]["Row"] | null;
+  subjects: SubjectRow | null;
 }
 
-type TutorRow = Database["public"]["Tables"]["tutors"]["Row"];
-
-type TutorNestedDetails = TutorRow & {
-  tutor_subjects?: TutorSubjectJoined[];
-};
+type TutorNestedDetails = TutorRow & { tutor_subjects?: TutorSubjectJoined[] };
 
 interface TutorJoinedRow extends ProductRow {
   tutors: TutorNestedDetails | null;
-  subjects: Database["public"]["Tables"]["subjects"]["Row"] | null;
+  subjects: SubjectRow | null;
   tutor_subjects?: TutorSubjectJoined[];
 }
 
-/**
- * Maps a raw joined database product + material + subject record to the frontend MaterialItem interface.
- */
-export function mapRowToMaterialItem(row: MaterialJoinedRow): MaterialItem {
-  const mat = row.materials;
-  const subj = row.subjects;
+export class CatalogDataError extends Error {
+  constructor(message = "Catalog data is invalid.") {
+    super(message);
+    this.name = "CatalogDataError";
+  }
+}
+
+function invalid(message: string): never {
+  throw new CatalogDataError(message);
+}
+
+function cleanString(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.length === 0 || value.trim() !== value) {
+    return invalid(`Invalid catalog field: ${field}`);
+  }
+  return value;
+}
+
+function stringArray(value: unknown, field: string): readonly string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.length === 0 || item.trim() !== item)) {
+    return invalid(`Invalid catalog field: ${field}`);
+  }
+  return value;
+}
+
+function validateSubject(row: SubjectRow | null): SubjectIdentity {
+  if (!row) return invalid("Published product subject is missing.");
+  const id = cleanString(row.id, "subject.id");
+  const slug = cleanString(row.slug, "subject.slug");
+  const name = cleanString(row.name, "subject.name");
+  const facultyGroup = cleanString(row.faculty_group, "subject.faculty_group");
+  if (!isValidSlug(slug) || normalizeSlug(slug) !== slug) return invalid("Published product subject slug is invalid.");
+  if (!isCategory(row.category) || !isColorTheme(row.color_theme)) return invalid("Published product subject metadata is invalid.");
+  if (CATEGORY_THEME_MAP[row.category] !== row.color_theme) return invalid("Published product subject theme does not match its category.");
+  return { id, slug, name, category: row.category, facultyGroup, colorTheme: row.color_theme };
+}
+
+function validatePricing(row: ProductRow) {
+  if (typeof row.is_contact_for_price !== "boolean") return invalid("Published product pricing flag is invalid.");
+  if (row.price_vnd !== null && !isValidVND(row.price_vnd)) return invalid("Published product price is invalid.");
+  if (row.old_price_vnd !== null && !isValidVND(row.old_price_vnd)) return invalid("Published product original price is invalid.");
+  if (row.is_contact_for_price !== (row.price_vnd === null)) return invalid("Published product pricing consistency is invalid.");
+  if (row.is_contact_for_price && row.old_price_vnd !== null) return invalid("Contact-price product cannot have an original price.");
+  if (row.price_vnd !== null && row.old_price_vnd !== null && row.old_price_vnd < row.price_vnd) {
+    return invalid("Published product original price is lower than its price.");
+  }
+  return {
+    amountVND: row.price_vnd,
+    originalAmountVND: row.old_price_vnd,
+    isContactForPrice: row.is_contact_for_price
+  };
+}
+
+function validateBase(
+  row: ProductRow & { subjects: SubjectRow | null },
+  expectedKind: ProductKind,
+  expectedDelivery?: DeliveryKind
+) {
+  const id = cleanString(row.id, "product.id");
+  const slug = cleanString(row.slug, "product.slug");
+  const title = cleanString(row.title, "product.title");
+  const description = cleanString(row.description, "product.description");
+  if (!isValidSlug(slug) || normalizeSlug(slug) !== slug) return invalid("Published product slug is invalid.");
+  if (!isProductKind(row.kind) || row.kind !== expectedKind) return invalid("Published product kind is invalid.");
+  if (row.publication_status !== "published" || !isPublicationStatus(row.publication_status)) return invalid("Published product status is invalid.");
+  if (!isCategory(row.category) || !isColorTheme(row.color_theme)) return invalid("Published product category or theme is invalid.");
+  if (!isDeliveryKind(row.delivery_kind) || (expectedDelivery && row.delivery_kind !== expectedDelivery)) return invalid("Published product delivery is invalid.");
+  if (typeof row.rating !== "number" || !Number.isFinite(row.rating) || row.rating < 1 || row.rating > 5) return invalid("Published product rating is invalid.");
+  if (typeof row.is_hot !== "boolean") return invalid("Published product hot flag is invalid.");
+
+  const subject = validateSubject(row.subjects);
+  if (row.subject_id !== subject.id || row.category !== subject.category || row.color_theme !== subject.colorTheme) {
+    return invalid("Published product subject, category, or theme is inconsistent.");
+  }
+  if (CATEGORY_THEME_MAP[row.category] !== row.color_theme) return invalid("Published product theme does not match its category.");
 
   return {
-    id: row.id,
-    slug: row.slug,
-    title: row.title,
-    subject: subj?.name ?? row.title,
-    subjectSlug: subj?.slug ?? undefined,
-    facultyGroup: subj?.faculty_group ?? "UFM",
-    category: row.category as Category,
-    type: "TÀI LIỆU",
-    description: row.description,
-    price: row.is_contact_for_price || row.price_vnd === null
-      ? "Liên hệ"
-      : formatVND(row.price_vnd),
-    oldPrice: row.old_price_vnd ? formatVND(row.old_price_vnd) : undefined,
-    pages: mat?.pages ?? 0,
-    tags: mat?.tags ?? [],
-    rating: Number(row.rating),
+    id, slug, title, description, subject,
+    category: row.category,
+    deliveryKind: row.delivery_kind,
+    publicationStatus: "published" as const,
+    pricing: validatePricing(row),
+    rating: row.rating,
     isHot: row.is_hot,
-    colorTheme: row.color_theme as ColorTheme,
-    includes: mat?.includes ?? undefined,
-    suitableFor: mat?.suitable_for ?? undefined
+    colorTheme: row.color_theme
   };
 }
 
-/**
- * Maps a raw joined database product + course + subject record to the frontend CourseItem interface.
- */
-export function mapRowToCourseItem(row: CourseJoinedRow): CourseItem {
-  const crs = row.courses;
-  const subj = row.subjects;
+function validateCourseDelivery(format: CourseFormat, delivery: DeliveryKind): "live_session" | "recorded_video" {
+  const expected = format === "video" ? "recorded_video" : "live_session";
+  if (delivery !== expected) return invalid("Course format and delivery are inconsistent.");
+  return expected;
+}
 
+function mapMaterialRow(row: MaterialJoinedRow): PublishedMaterial {
+  const base = validateBase(row, "material", "digital_download");
+  const material = row.materials;
+  if (!material || !Number.isInteger(material.pages) || material.pages <= 0) return invalid("Published material metadata is invalid.");
   return {
-    id: row.id,
-    slug: row.slug,
-    title: row.title,
-    subject: subj?.name ?? row.title,
-    subjectSlug: subj?.slug ?? undefined,
-    category: row.category as Category,
-    format: (crs?.format ?? "online") as CourseFormat,
-    sessions: crs?.sessions ?? 0,
-    duration: crs?.duration ?? "",
-    schedule: crs?.schedule ?? "",
-    description: row.description,
-    price: row.is_contact_for_price || row.price_vnd === null
-      ? "Liên hệ"
-      : formatVND(row.price_vnd),
-    oldPrice: row.old_price_vnd ? formatVND(row.old_price_vnd) : undefined,
-    status: (crs?.enrollment_status ?? "open") as EnrollmentStatus,
-    mentor: crs?.mentor ?? "",
-    tags: crs?.tags ?? [],
-    rating: Number(row.rating),
-    colorTheme: row.color_theme as ColorTheme,
-    curriculum: crs?.curriculum ?? undefined,
-    suitableFor: crs?.suitable_for ?? undefined,
-    preparation: crs?.preparation ?? undefined
-  };
-}
-
-/**
- * Maps a raw joined database product + tutor + tutor_subjects record to the frontend TutorItem interface.
- */
-export function mapRowToTutorItem(row: TutorJoinedRow): TutorItem {
-  const tut = row.tutors;
-  const primarySubject = row.subjects?.name;
-
-  // Collect subjects from tutor_subjects join (nested under tutors or top-level row), sorting primary subject first
-  const tutorSubjects = tut?.tutor_subjects ?? row.tutor_subjects ?? [];
-  const subjectList: string[] = [];
-  const subjectSlugs: string[] = [];
-  if (tutorSubjects.length > 0) {
-    const sorted = [...tutorSubjects].sort(
-      (a, b) => (b.is_primary ? 1 : 0) - (a.is_primary ? 1 : 0)
-    );
-    for (const ts of sorted) {
-      if (ts.subjects?.name && !subjectList.includes(ts.subjects.name)) {
-        subjectList.push(ts.subjects.name);
-      }
-      if (ts.subjects?.slug && !subjectSlugs.includes(ts.subjects.slug)) {
-        subjectSlugs.push(ts.subjects.slug);
-      }
+    ...base,
+    kind: "material",
+    deliveryKind: "digital_download",
+    material: {
+      pages: material.pages,
+      tags: stringArray(material.tags, "material.tags"),
+      includes: stringArray(material.includes, "material.includes"),
+      suitableFor: stringArray(material.suitable_for, "material.suitable_for")
     }
-  }
-
-  // Fallback to primary product subject if no tutor_subjects rows were attached
-  if (subjectList.length === 0 && primarySubject) {
-    subjectList.push(primarySubject);
-  }
-  if (row.subjects?.slug && !subjectSlugs.includes(row.subjects.slug)) {
-    subjectSlugs.unshift(row.subjects.slug);
-  }
-
-  // Format tutor price (e.g., "120.000đ / giờ" or "Liên hệ")
-  let priceStr: string;
-  if (row.is_contact_for_price || row.price_vnd === null) {
-    priceStr = "Liên hệ";
-  } else {
-    priceStr = `${formatVND(row.price_vnd)} / giờ`;
-  }
-
-  return {
-    id: row.id,
-    slug: row.slug,
-    name: tut?.name ?? row.title,
-    subjects: subjectList,
-    subjectSlug: row.subjects?.slug ?? undefined,
-    subjectSlugs: subjectSlugs.length ? subjectSlugs : undefined,
-    faculty: tut?.faculty ?? (row.subjects?.faculty_group ?? "UFM"),
-    strengths: tut?.strengths ?? [],
-    format: (tut?.format ?? "1:1 & Online") as TutorFormat,
-    price: priceStr,
-    availability: tut?.availability ?? "",
-    rating: Number(row.rating),
-    shortBio: tut?.short_bio ?? row.description,
-    tags: tut?.tags ?? [],
-    colorTheme: row.color_theme as ColorTheme,
-    suitableFor: tut?.suitable_for ?? undefined,
-    supportMethods: tut?.support_methods ?? undefined
   };
 }
 
-/**
- * Lists all public published products from the products table,
- * ordered by created_at descending.
- */
-export async function listPublishedProducts(): Promise<ProductRow[]> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from("products")
-    .select("*")
-    .eq("publication_status", "published")
-    .order("created_at", { ascending: false });
-
-  if (error) {
-    throw new Error(`Failed to list published products: ${error.message}`);
+function mapCourseRow(row: CourseJoinedRow): PublishedCourse {
+  const course = row.courses;
+  if (!course || !isCourseFormat(course.format) || !Number.isInteger(course.sessions) || course.sessions <= 0 || !isEnrollmentStatus(course.enrollment_status)) {
+    return invalid("Published course metadata is invalid.");
   }
+  const deliveryKind = validateCourseDelivery(course.format, row.delivery_kind);
+  const base = validateBase(row, "course", deliveryKind);
+  return {
+    ...base,
+    kind: "course",
+    deliveryKind,
+    course: {
+      format: course.format,
+      sessions: course.sessions,
+      duration: cleanString(course.duration, "course.duration"),
+      schedule: cleanString(course.schedule, "course.schedule"),
+      enrollmentStatus: course.enrollment_status,
+      mentor: cleanString(course.mentor, "course.mentor"),
+      tags: stringArray(course.tags, "course.tags"),
+      curriculum: stringArray(course.curriculum, "course.curriculum"),
+      suitableFor: stringArray(course.suitable_for, "course.suitable_for"),
+      preparation: stringArray(course.preparation, "course.preparation")
+    }
+  };
+}
 
+function mapTutorRow(row: TutorJoinedRow): PublishedTutor {
+  const tutor = row.tutors;
+  if (!tutor || !isTutorFormat(tutor.format)) return invalid("Published tutor metadata is invalid.");
+  const subjectRows = tutor.tutor_subjects ?? row.tutor_subjects ?? [];
+  if (subjectRows.length === 0 || subjectRows.filter((item) => item.is_primary).length !== 1) {
+    return invalid("Published tutor must have exactly one primary subject.");
+  }
+  const subjects = subjectRows
+    .map((item) => ({ subject: validateSubject(item.subjects), isPrimary: item.is_primary }))
+    .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || a.subject.slug.localeCompare(b.subject.slug))
+    .map((item) => item.subject);
+  const primary = subjects[0];
+  if (!primary || primary.id !== row.subject_id) return invalid("Published tutor primary subject is inconsistent.");
+  const base = validateBase(row, "tutor", "one_on_one_tutoring");
+  return {
+    ...base,
+    kind: "tutor",
+    deliveryKind: "one_on_one_tutoring",
+    tutor: {
+      name: cleanString(tutor.name, "tutor.name"),
+      faculty: cleanString(tutor.faculty, "tutor.faculty"),
+      format: tutor.format,
+      availability: cleanString(tutor.availability, "tutor.availability"),
+      shortBio: cleanString(tutor.short_bio, "tutor.short_bio"),
+      strengths: stringArray(tutor.strengths, "tutor.strengths"),
+      tags: stringArray(tutor.tags, "tutor.tags"),
+      suitableFor: stringArray(tutor.suitable_for, "tutor.suitable_for"),
+      supportMethods: stringArray(tutor.support_methods, "tutor.support_methods"),
+      subjects
+    }
+  };
+}
+
+export const mapRowToPublishedMaterial = mapMaterialRow;
+export const mapRowToPublishedCourse = mapCourseRow;
+export const mapRowToPublishedTutor = mapTutorRow;
+export const mapRowToMaterialItem = mapMaterialRow;
+export const mapRowToCourseItem = mapCourseRow;
+export const mapRowToTutorItem = mapTutorRow;
+
+function canonicalLookupSlug(slug: string): string | null {
+  if (typeof slug !== "string") return null;
+  const normalized = normalizeSlug(slug);
+  return isValidSlug(normalized) ? normalized : null;
+}
+
+function mapPublishedRows<T>(data: unknown, mapper: (row: unknown) => T, message: string): T[] {
+  try {
+    if (!Array.isArray(data)) return [];
+    return data
+      .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object" && (row as Record<string, unknown>).publication_status === "published")
+      .map(mapper);
+  } catch {
+    throw new Error(message);
+  }
+}
+
+export async function listPublishedProducts(client?: CatalogClient): Promise<ProductRow[]> {
+  const supabase = client ?? await createClient();
+  const { data, error } = await supabase.from("products").select("*").eq("publication_status", "published").order("created_at", { ascending: false });
+  if (error) throw new Error("Failed to list published products.");
   return (data ?? []).filter((row) => row.publication_status === "published");
 }
 
-/**
- * Retrieves a single published product by its slug.
- * Returns the product record or null if not found.
- */
-export async function getPublishedProductBySlug(
-  slug: string
-): Promise<ProductRow | null> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from("products")
-    .select("*")
-    .eq("publication_status", "published")
-    .eq("slug", slug)
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(
-      `Failed to get published product by slug "${slug}": ${error.message}`
-    );
-  }
-
-  return data;
+export async function getPublishedProductBySlug(slug: string, client?: CatalogClient): Promise<ProductRow | null> {
+  const canonicalSlug = canonicalLookupSlug(slug);
+  if (!canonicalSlug) return null;
+  const supabase = client ?? await createClient();
+  const { data, error } = await supabase.from("products").select("*").eq("publication_status", "published").eq("slug", canonicalSlug).maybeSingle();
+  if (error) throw new Error("Failed to get published product by slug.");
+  return data?.publication_status === "published" ? data : null;
 }
 
-/**
- * Lists all published materials joined with their material details and subject metadata.
- */
-export async function listPublishedMaterials(): Promise<MaterialItem[]> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from("products")
-    .select("*, materials!inner(*), subjects(*)")
-    .eq("publication_status", "published")
-    .eq("kind", "material")
-    .order("created_at", { ascending: false });
-
-  if (error) {
-    throw new Error(`Failed to list published materials: ${error.message}`);
-  }
-
-  return ((data as unknown as MaterialJoinedRow[]) ?? [])
-    .filter((row) => row.publication_status === "published")
-    .map(mapRowToMaterialItem);
+export async function listPublishedMaterials(client?: CatalogClient): Promise<PublishedMaterial[]> {
+  const supabase = client ?? await createClient();
+  const { data, error } = await supabase.from("products").select("*, materials!inner(*), subjects(*)").eq("publication_status", "published").eq("kind", "material").order("created_at", { ascending: false });
+  if (error) throw new Error("Failed to list published materials.");
+  return mapPublishedRows(data, (row) => mapMaterialRow(row as MaterialJoinedRow), "Failed to list published materials.");
 }
 
-/**
- * Retrieves a single published material by its slug.
- * Returns the mapped MaterialItem or null if not found.
- */
-export async function getPublishedMaterialBySlug(
-  slug: string
-): Promise<MaterialItem | null> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from("products")
-    .select("*, materials!inner(*), subjects(*)")
-    .eq("publication_status", "published")
-    .eq("kind", "material")
-    .eq("slug", slug)
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(
-      `Failed to get published material by slug "${slug}": ${error.message}`
-    );
-  }
-
-  if (!data || data.publication_status !== "published") {
-    return null;
-  }
-
-  return mapRowToMaterialItem(data as unknown as MaterialJoinedRow);
+export async function getPublishedMaterialBySlug(slug: string, client?: CatalogClient): Promise<PublishedMaterial | null> {
+  const canonicalSlug = canonicalLookupSlug(slug);
+  if (!canonicalSlug) return null;
+  const supabase = client ?? await createClient();
+  const { data, error } = await supabase.from("products").select("*, materials!inner(*), subjects(*)").eq("publication_status", "published").eq("kind", "material").eq("slug", canonicalSlug).maybeSingle();
+  if (error) throw new Error("Failed to get published material by slug.");
+  if (!data || data.publication_status !== "published") return null;
+  try { return mapMaterialRow(data as unknown as MaterialJoinedRow); } catch { throw new Error("Failed to get published material."); }
 }
 
-/**
- * Lists all published courses joined with their course details and subject metadata.
- */
-export async function listPublishedCourses(): Promise<CourseItem[]> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from("products")
-    .select("*, courses!inner(*), subjects(*)")
-    .eq("publication_status", "published")
-    .eq("kind", "course")
-    .order("created_at", { ascending: false });
-
-  if (error) {
-    throw new Error(`Failed to list published courses: ${error.message}`);
-  }
-
-  return ((data as unknown as CourseJoinedRow[]) ?? [])
-    .filter((row) => row.publication_status === "published")
-    .map(mapRowToCourseItem);
+export async function listPublishedCourses(client?: CatalogClient): Promise<PublishedCourse[]> {
+  const supabase = client ?? await createClient();
+  const { data, error } = await supabase.from("products").select("*, courses!inner(*), subjects(*)").eq("publication_status", "published").eq("kind", "course").order("created_at", { ascending: false });
+  if (error) throw new Error("Failed to list published courses.");
+  return mapPublishedRows(data, (row) => mapCourseRow(row as CourseJoinedRow), "Failed to list published courses.");
 }
 
-/**
- * Retrieves a single published course by its slug.
- * Returns the mapped CourseItem or null if not found.
- */
-export async function getPublishedCourseBySlug(
-  slug: string
-): Promise<CourseItem | null> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from("products")
-    .select("*, courses!inner(*), subjects(*)")
-    .eq("publication_status", "published")
-    .eq("kind", "course")
-    .eq("slug", slug)
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(
-      `Failed to get published course by slug "${slug}": ${error.message}`
-    );
-  }
-
-  if (!data || data.publication_status !== "published") {
-    return null;
-  }
-
-  return mapRowToCourseItem(data as unknown as CourseJoinedRow);
+export async function getPublishedCourseBySlug(slug: string, client?: CatalogClient): Promise<PublishedCourse | null> {
+  const canonicalSlug = canonicalLookupSlug(slug);
+  if (!canonicalSlug) return null;
+  const supabase = client ?? await createClient();
+  const { data, error } = await supabase.from("products").select("*, courses!inner(*), subjects(*)").eq("publication_status", "published").eq("kind", "course").eq("slug", canonicalSlug).maybeSingle();
+  if (error) throw new Error("Failed to get published course by slug.");
+  if (!data || data.publication_status !== "published") return null;
+  try { return mapCourseRow(data as unknown as CourseJoinedRow); } catch { throw new Error("Failed to get published course."); }
 }
 
-/**
- * Lists all published tutors joined with their tutor details, tutor_subjects, and subject metadata.
- */
-export async function listPublishedTutors(): Promise<TutorItem[]> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from("products")
-    .select(
-      "*, tutors!inner(*, tutor_subjects(is_primary, subjects(*))), subjects(*)"
-    )
-    .eq("publication_status", "published")
-    .eq("kind", "tutor")
-    .order("created_at", { ascending: false });
-
-  if (error) {
-    throw new Error(`Failed to list published tutors: ${error.message}`);
-  }
-
-  return ((data as unknown as TutorJoinedRow[]) ?? [])
-    .filter((row) => row.publication_status === "published")
-    .map(mapRowToTutorItem);
+export async function listPublishedTutors(client?: CatalogClient): Promise<PublishedTutor[]> {
+  const supabase = client ?? await createClient();
+  const { data, error } = await supabase.from("products").select("*, tutors!inner(*, tutor_subjects(is_primary, subjects(*))), subjects(*)").eq("publication_status", "published").eq("kind", "tutor").order("created_at", { ascending: false });
+  if (error) throw new Error("Failed to list published tutors.");
+  return mapPublishedRows(data, (row) => mapTutorRow(row as TutorJoinedRow), "Failed to list published tutors.");
 }
 
-/**
- * Retrieves a single published tutor by its slug.
- * Returns the mapped TutorItem or null if not found.
- */
-export async function getPublishedTutorBySlug(
-  slug: string
-): Promise<TutorItem | null> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from("products")
-    .select(
-      "*, tutors!inner(*, tutor_subjects(is_primary, subjects(*))), subjects(*)"
-    )
-    .eq("publication_status", "published")
-    .eq("kind", "tutor")
-    .eq("slug", slug)
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(
-      `Failed to get published tutor by slug "${slug}": ${error.message}`
-    );
-  }
-
-  if (!data || data.publication_status !== "published") {
-    return null;
-  }
-
-  return mapRowToTutorItem(data as unknown as TutorJoinedRow);
+export async function getPublishedTutorBySlug(slug: string, client?: CatalogClient): Promise<PublishedTutor | null> {
+  const canonicalSlug = canonicalLookupSlug(slug);
+  if (!canonicalSlug) return null;
+  const supabase = client ?? await createClient();
+  const { data, error } = await supabase.from("products").select("*, tutors!inner(*, tutor_subjects(is_primary, subjects(*))), subjects(*)").eq("publication_status", "published").eq("kind", "tutor").eq("slug", canonicalSlug).maybeSingle();
+  if (error) throw new Error("Failed to get published tutor by slug.");
+  if (!data || data.publication_status !== "published") return null;
+  try { return mapTutorRow(data as unknown as TutorJoinedRow); } catch { throw new Error("Failed to get published tutor."); }
 }

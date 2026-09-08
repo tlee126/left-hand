@@ -27,43 +27,22 @@ import {
   type UpdateAdminSubjectInput,
   type UpdateAdminTutorInput
 } from "@/lib/repositories/admin-catalog-repository";
+import {
+  CATEGORIES,
+  COLOR_THEMES
+} from "@/lib/domain/subjects";
+import {
+  COURSE_FORMATS,
+  DELIVERY_KINDS,
+  ENROLLMENT_STATUSES,
+  PUBLICATION_STATUSES,
+  TUTOR_FORMATS
+} from "@/lib/domain/product-types";
 
 const ADMIN_CATALOG_PATH = "/quan-tri/catalog";
 const LOGIN_PATH = "/dang-nhap?next=/quan-tri";
 const ERROR_REDIRECT = `${ADMIN_CATALOG_PATH}?error=1`;
 const SUCCESS_REDIRECT = `${ADMIN_CATALOG_PATH}?success=1`;
-
-const CATEGORIES = [
-  "Kế toán",
-  "Kinh tế",
-  "Thống kê",
-  "Marketing",
-  "Quản trị",
-  "Tài chính",
-  "MIS",
-  "Luật",
-  "Ngoại ngữ"
-] as const;
-const COLOR_THEMES = [
-  "accounting",
-  "economics",
-  "statistics",
-  "marketing",
-  "management",
-  "finance",
-  "law",
-  "mis",
-  "languages"
-] as const;
-const DELIVERY_KINDS = [
-  "digital_download",
-  "live_session",
-  "recorded_video",
-  "one_on_one_tutoring"
-] as const;
-const PUBLICATION_STATUSES = ["draft", "published", "archived"] as const;
-const COURSE_FORMATS = ["online", "offline", "video", "zoom"] as const;
-const ENROLLMENT_STATUSES = ["open", "coming-soon", "full"] as const;
 
 const SUBJECT_FIELDS = [
   "slug",
@@ -402,7 +381,12 @@ function validateTutorInput(input: unknown, update: boolean): CreateAdminTutorIn
   );
   const product = validateProductInput(productRecord, update);
   const payload: Record<string, unknown> = { ...product };
-  for (const key of ["name", "faculty", "format", "availability", "short_bio"] as const) {
+  const format = optionalString(record, "format", 500);
+  if (format !== undefined) {
+    if (!TUTOR_FORMATS.includes(format as (typeof TUTOR_FORMATS)[number])) throw new InvalidCatalogActionInput();
+    payload.format = format;
+  }
+  for (const key of ["name", "faculty", "availability", "short_bio"] as const) {
     if (!update && !(key in record)) throw new InvalidCatalogActionInput();
     const value = optionalString(record, key, key === "short_bio" ? 5000 : 500);
     if (value !== undefined) payload[key] = value;

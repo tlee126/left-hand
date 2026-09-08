@@ -1,6 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { getAccountAccess } from "@/lib/auth/session";
-import { Constants } from "@/lib/supabase/database.types";
+import { CATEGORIES, COLOR_THEMES } from "@/lib/domain/subjects";
+import { COURSE_FORMATS, DELIVERY_KINDS, ENROLLMENT_STATUSES, PUBLICATION_STATUSES, TUTOR_FORMATS } from "@/lib/domain/product-types";
 import {
   listAdminSubjects, listAdminMaterials, listAdminCourses, listAdminTutors,
   isValidUuid, type AdminSubject,
@@ -16,7 +17,15 @@ import {
 
 type Kind = "subject" | "material" | "course" | "tutor";
 type Field = { name: string; label: string; type?: "number" | "array" | "textarea" | "boolean"; options?: readonly string[]; required?: boolean; maxLength?: number; min?: number; max?: number; step?: number; initial?: string | number };
-const enums = Constants.public.Enums;
+const enums = {
+  category_enum: CATEGORIES,
+  color_theme_enum: COLOR_THEMES,
+  delivery_kind_enum: DELIVERY_KINDS,
+  publication_status_enum: PUBLICATION_STATUSES,
+  course_format_enum: COURSE_FORMATS,
+  enrollment_status_enum: ENROLLMENT_STATUSES,
+  tutor_format_enum: TUTOR_FORMATS
+} as const;
 const common: Field[] = [
   { name: "slug", label: "Đường dẫn (slug)", required: true, maxLength: 150 },
   { name: "category", label: "Nhóm ngành", options: enums.category_enum, required: true },
@@ -50,7 +59,8 @@ const fields: Record<Kind, Field[]> = {
     { name: "enrollment_status", label: "Trạng thái tuyển sinh", options: enums.enrollment_status_enum, required: true },
     array("tags", "Nhãn"), array("curriculum", "Nội dung khóa học"), array("suitable_for", "Đối tượng phù hợp"), array("preparation", "Chuẩn bị")],
   tutor: [...product,
-    ...[["name", "Tên gia sư"], ["faculty", "Khoa"], ["format", "Hình thức hỗ trợ"], ["availability", "Thời gian nhận hỗ trợ"]].map(([name, label]) => ({ name, label, required: true, maxLength: 500 })),
+    ...[["name", "Tên gia sư"], ["faculty", "Khoa"], ["availability", "Thời gian nhận hỗ trợ"]].map(([name, label]) => ({ name, label, required: true, maxLength: 500 })),
+    { name: "format", label: "Hình thức hỗ trợ", options: enums.tutor_format_enum, required: true },
     { name: "short_bio", label: "Giới thiệu", type: "textarea", required: true, maxLength: 5000 },
     array("strengths", "Thế mạnh"), array("tags", "Nhãn"), array("suitable_for", "Đối tượng phù hợp"), array("support_methods", "Phương thức hỗ trợ")]
 };

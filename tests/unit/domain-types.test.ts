@@ -19,7 +19,11 @@ import {
   PRODUCT_KINDS,
   DELIVERY_KINDS,
   PUBLICATION_STATUSES,
-  ENROLLMENT_STATUSES
+  ENROLLMENT_STATUSES,
+  compareNullableVND,
+  COURSE_FORMATS,
+  TUTOR_FORMATS,
+  isTutorFormat
 } from "../../lib/domain/product-types";
 import { materials, courses, tutors } from "../../data/catalog";
 
@@ -152,6 +156,16 @@ describe("Domain Models: VND Currency Pricing & Product Kinds", () => {
     assert.throws(() => parseVND(Number.MAX_SAFE_INTEGER + 1000), /exceeds safe integer limit/);
   });
 
+  test("parseVND rejects malformed grouping instead of stripping punctuation", () => {
+    for (const input of ["1.234,56", "1,23,456", "12.34", "1.234.56", "1,234.567", "12,34", "1 234", "29.000đx"]) {
+      assert.throws(() => parseVND(input), `Malformed VND must be rejected: ${input}`);
+    }
+    assert.deepStrictEqual(
+      [parseVND("123456"), parseVND("123.456"), parseVND("123,456"), parseVND(" 123.456đ ")],
+      [123456, 123456, 123456, 123456]
+    );
+  });
+
   test("formatVND formats integers to standard Vietnamese VND display strings", () => {
     assert.strictEqual(formatVND(29000), "29.000đ");
     assert.strictEqual(formatVND(199000), "199.000đ");
@@ -195,6 +209,17 @@ describe("Domain Models: VND Currency Pricing & Product Kinds", () => {
       "coming-soon",
       "full"
     ]);
+    assert.deepStrictEqual([...COURSE_FORMATS], ["online", "offline", "video", "zoom"]);
+    assert.strictEqual(TUTOR_FORMATS.length, 7);
+    for (const format of TUTOR_FORMATS) assert.strictEqual(isTutorFormat(format), true);
+    assert.strictEqual(isTutorFormat("1:1 & Online"), false);
+  });
+
+  test("nullable VND sorting keeps contact prices last in both directions", () => {
+    const values = [null, 0, 29000, 120000];
+    assert.deepStrictEqual([...values].sort((a, b) => compareNullableVND(a, b, "asc")), [0, 29000, 120000, null]);
+    assert.deepStrictEqual([...values].sort((a, b) => compareNullableVND(a, b, "desc")), [120000, 29000, 0, null]);
+    assert.strictEqual(compareNullableVND(0, 0, "asc"), 0);
   });
 });
 

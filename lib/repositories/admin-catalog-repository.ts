@@ -1,5 +1,16 @@
 import { createClient } from "@/lib/supabase/server";
 import type { Database } from "@/lib/supabase/database.types";
+import {
+  CATEGORIES,
+  COLOR_THEMES,
+} from "@/lib/domain/subjects";
+import {
+  COURSE_FORMATS,
+  DELIVERY_KINDS,
+  ENROLLMENT_STATUSES,
+  PUBLICATION_STATUSES,
+  TUTOR_FORMATS
+} from "@/lib/domain/product-types";
 
 type Tables = Database["public"]["Tables"];
 type SubjectRow = Tables["subjects"]["Row"];
@@ -70,7 +81,7 @@ export interface CreateAdminCourseInput extends ProductInput {
 export interface CreateAdminTutorInput extends ProductInput {
   name: string;
   faculty: string;
-  format: string;
+  format: (typeof TUTOR_FORMATS)[number];
   availability: string;
   short_bio: string;
   strengths?: string[];
@@ -189,15 +200,6 @@ export class AdminCatalogRepositoryError extends Error {
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SLUG_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const PUBLICATION_STATUSES = ["draft", "published", "archived"] as const;
-const DELIVERY_KINDS = [
-  "digital_download",
-  "live_session",
-  "recorded_video",
-  "one_on_one_tutoring"
-] as const;
-const COURSE_FORMATS = ["online", "offline", "video", "zoom"] as const;
-const ENROLLMENT_STATUSES = ["open", "coming-soon", "full"] as const;
 const PRODUCT_INPUT_KEYS = [
   "slug",
   "title",
@@ -348,9 +350,11 @@ function validateSubjectInput(input: unknown, update: boolean): Record<string, u
     payload.slug = slug;
   }
   if ("name" in record) payload.name = requiredString(record, "name", 150);
-  if ("category" in record) payload.category = requiredString(record, "category", 100);
+  const category = enumString(record, "category", CATEGORIES, false);
+  if (category !== undefined) payload.category = category;
   if ("faculty_group" in record) payload.faculty_group = requiredString(record, "faculty_group", 150);
-  if ("color_theme" in record) payload.color_theme = requiredString(record, "color_theme", 50);
+  const colorTheme = enumString(record, "color_theme", COLOR_THEMES, false);
+  if (colorTheme !== undefined) payload.color_theme = colorTheme;
   if (update && Object.keys(payload).length === 0) throw new AdminCatalogInputError("At least one subject field is required.");
   return payload;
 }
@@ -371,7 +375,8 @@ function validateProductInput(input: unknown, update: boolean, allowEmptyUpdate 
   if ("description" in record) payload.description = requiredString(record, "description", 5000);
   const subjectId = uuidField(record, "subject_id", !update);
   if (subjectId !== undefined) payload.subject_id = subjectId;
-  if ("category" in record) payload.category = requiredString(record, "category", 100);
+  const category = enumString(record, "category", CATEGORIES, false);
+  if (category !== undefined) payload.category = category;
   const deliveryKind = enumString(record, "delivery_kind", DELIVERY_KINDS, !update);
   if (deliveryKind !== undefined) payload.delivery_kind = deliveryKind;
   const publicationStatus = enumString(record, "publication_status", PUBLICATION_STATUSES, false);
@@ -396,7 +401,8 @@ function validateProductInput(input: unknown, update: boolean, allowEmptyUpdate 
   if (rating !== undefined) payload.rating = rating;
   const isHot = booleanField(record, "is_hot", false);
   if (isHot !== undefined) payload.is_hot = isHot;
-  if ("color_theme" in record) payload.color_theme = requiredString(record, "color_theme", 50);
+  const colorTheme = enumString(record, "color_theme", COLOR_THEMES, false);
+  if (colorTheme !== undefined) payload.color_theme = colorTheme;
   if ("price_vnd" in record && "is_contact_for_price" in record) {
     if (record.is_contact_for_price === true && record.price_vnd !== null) {
       throw new AdminCatalogInputError("Contact-price products must not have a price.");
@@ -404,6 +410,10 @@ function validateProductInput(input: unknown, update: boolean, allowEmptyUpdate 
     if (record.is_contact_for_price === false && record.price_vnd === null) {
       throw new AdminCatalogInputError("Priced products require a price.");
     }
+  }
+  if (record.old_price_vnd !== null && record.old_price_vnd !== undefined && record.price_vnd !== null && record.price_vnd !== undefined &&
+      typeof record.old_price_vnd === "number" && typeof record.price_vnd === "number" && record.old_price_vnd < record.price_vnd) {
+    throw new AdminCatalogInputError("old_price_vnd must be greater than or equal to price_vnd.");
   }
   if (update && !allowEmptyUpdate && Object.keys(payload).length === 0) throw new AdminCatalogInputError("At least one product field is required.");
   return payload;
@@ -464,7 +474,9 @@ function validateTutorInput(input: unknown, update: boolean): { product: Record<
   assertAllowedKeys(record, [...PRODUCT_INPUT_KEYS, "name", "faculty", "format", "availability", "short_bio", "strengths", "tags", "suitable_for", "support_methods"]);
   const product = validateProductInput(productOnlyRecord(record), update, true);
   const child: Record<string, unknown> = {};
-  for (const key of ["name", "faculty", "format", "availability", "short_bio"] as const) {
+  const format = enumString(record, "format", TUTOR_FORMATS, !update);
+  if (format !== undefined) child.format = format;
+  for (const key of ["name", "faculty", "availability", "short_bio"] as const) {
     if (!update && !(key in record)) throw new AdminCatalogInputError(`Field ${key} is required.`);
     const value = optionalString(record, key, key === "short_bio" ? 5000 : 500);
     if (value !== undefined) child[key] = value;

@@ -1115,6 +1115,31 @@ export function assertMigration0017Contract(
   }
 }
 
+/** Exact security and semantic contract for the Phase 1 catalog invariant migration. */
+export function assertCatalogSemanticMigrationContract(sql0018: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const code = stripSqlCommentsAndSplitStatements(sql0018).join(" ; ");
+  const normalized = normalizeSql(code).toLowerCase();
+  fail(/alter table public\.products\s+add constraint chk_products_old_price_semantics/i.test(code), "0018 must constrain old_price_vnd semantics");
+  fail(/alter table public\.tutors\s+add constraint chk_tutors_format_canonical/i.test(code), "0018 must constrain tutor format to the canonical set");
+  for (const format of [
+    "1:1 & Nhóm nhỏ (Online/Offline)", "1:1 (Online/Offline quận 7)", "1:1 & Nhóm nhỏ (Online)",
+    "1:1 (Online qua Google Meet)", "1:1 & Nhóm nhỏ (Offline/Online)", "1:1 (Online)", "1:1 & Nhóm nhỏ (Online/Offline Q7)"
+  ]) fail(code.includes(`'${format}'`), `0018 must include canonical tutor format ${format}`);
+  fail(/create unique index uq_tutor_subjects_one_primary\s+on public\.tutor_subjects/i.test(code), "0018 must enforce one primary tutor subject");
+  for (const name of ["validate_product_catalog_semantics", "validate_subject_catalog_semantics", "validate_material_product_kind", "validate_course_product_kind", "validate_tutor_product_kind", "validate_tutor_subject_product_kind"]) {
+    fail(normalized.includes(`create or replace function public.${name}`), `0018 must define ${name}`);
+    fail(new RegExp(`function public\\.${name}[\\s\\S]*?set search_path = public`, "i").test(code), `${name} must use a fixed search_path`);
+  }
+  for (const trigger of ["trg_validate_product_catalog_semantics", "trg_validate_subject_catalog_semantics", "trg_validate_material_product_kind", "trg_validate_course_product_kind", "trg_validate_tutor_product_kind", "trg_validate_tutor_subject_product_kind"]) {
+    fail(normalized.includes(`create trigger ${trigger}`), `0018 must create ${trigger}`);
+  }
+  fail(!/security\s+definer|bypassrls|set\s+role|execute\s+(?:immediate|format)|execute\s+['$]|grant\s+all/i.test(code), "0018 must not bypass RLS, use dynamic SQL, or grant ALL");
+  fail(!/insert\s+into|update\s+|delete\s+from/i.test(code.replace(/create\s+trigger[\s\S]*?execute\s+function/gi, "")), "0018 helpers must not contain out-of-scope DML");
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -1147,13 +1172,14 @@ export async function runAudit(): Promise<boolean> {
       "0014_product_entitlements.sql",
       "0015_learning_progress.sql",
       "0016_study_plans.sql",
-      "0017_profile_on_auth_signup.sql"
+      "0017_profile_on_auth_signup.sql",
+      "0018_catalog_semantic_invariants.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 17 migration files exist in strict topological order",
+      check: "All 18 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -1547,7 +1573,19 @@ export async function runAudit(): Promise<boolean> {
       details: "AFTER INSERT auth.users trigger; fixed search_path SECURITY DEFINER; explicit profile insert; idempotent fallback name"
     });
 
-    // 17. Audit supabase/seed.sql
+    const sql0018 = await fs.readFile(path.join(migrationsDir, "0018_catalog_semantic_invariants.sql"), "utf-8");
+    let migration0018ContractValid = true;
+    try {
+      assertCatalogSemanticMigrationContract(sql0018);
+    } catch (error) {
+      migration0018ContractValid = false;
+      results.push({ category: "0018_catalog_semantic_invariants", check: "Enforces catalog semantic invariants without privilege bypasses", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0018ContractValid) {
+      results.push({ category: "0018_catalog_semantic_invariants", check: "Enforces catalog semantic invariants without privilege bypasses", passed: true, details: "Category/theme, child kind, old price, tutor format, and one-primary constraints verified" });
+    }
+
+    // 18. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
     const isTxn = /^\s*(?:--[^\n]*\n\s*)*BEGIN\s*;/im.test(sqlSeed) && /COMMIT\s*;\s*$/i.test(sqlSeed.trim());
     const subjectsSeed = CANONICAL_SUBJECTS.every((s) => sqlSeed.includes(`'${s.slug}'`));
@@ -1555,11 +1593,14 @@ export async function runAudit(): Promise<boolean> {
     const coursesSeed = courses.every((c) => sqlSeed.includes(`'${c.slug}'`));
     const tutorsSeed = tutors.every((t) => sqlSeed.includes(`'${t.slug}'`));
 
+    const semanticSeedFields = ["kind = EXCLUDED.kind", "subject_id = EXCLUDED.subject_id", "category = EXCLUDED.category", "delivery_kind = EXCLUDED.delivery_kind", "publication_status = EXCLUDED.publication_status", "is_contact_for_price = EXCLUDED.is_contact_for_price", "color_theme = EXCLUDED.color_theme"];
+    const productConflictUpdates = (sqlSeed.match(/ON CONFLICT \(kind, slug\) DO UPDATE[\s\S]*?(?=RETURNING|;)/gi) ?? []).length;
+    const seedReconcilesSemanticFields = productConflictUpdates === materials.length + courses.length + tutors.length && semanticSeedFields.every((field) => sqlSeed.includes(field));
     results.push({
       category: "seed.sql",
       check: "Seed script is idempotent (ON CONFLICT DO UPDATE on all products/children) and transactional",
-      passed: isTxn && subjectsSeed && materialsSeed && coursesSeed && tutorsSeed,
-      details: `17 subjects, ${materials.length} materials, ${courses.length} courses, ${tutors.length} tutors verified`
+      passed: isTxn && subjectsSeed && materialsSeed && coursesSeed && tutorsSeed && seedReconcilesSemanticFields,
+      details: `${CANONICAL_SUBJECTS.length} subjects, ${materials.length} materials, ${courses.length} courses, ${tutors.length} tutors and semantic conflict reconciliation verified`
     });
 
   } catch (err: any) {

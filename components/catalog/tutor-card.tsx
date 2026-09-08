@@ -4,10 +4,11 @@ import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
 import { Check, Star, Users } from "lucide-react";
 import { coverThemes } from "./theme";
-import type { TutorItem } from "@/lib/domain/catalog";
+import type { PublishedTutor } from "@/lib/domain/catalog";
+import { formatVND } from "@/lib/domain/product-types";
 
 interface TutorCardProps {
-  item: TutorItem;
+  item: PublishedTutor;
 }
 
 // Function to extract initials (e.g. "Tutor Minh Thư" -> "MT", "Tutor Hoàng Nam" -> "HN")
@@ -22,9 +23,9 @@ function getInitials(name: string): string {
 
 export function TutorCard({ item }: TutorCardProps) {
   const shouldReduceMotion = useReducedMotion();
-  const theme = coverThemes[item.colorTheme] || coverThemes.finance;
-  const initials = getInitials(item.name);
-  const primarySubject = item.subjects[0] || "Chọn môn";
+  const theme = coverThemes[item.colorTheme];
+  const initials = getInitials(item.tutor.name);
+  const primarySubject = item.tutor.subjects[0]?.name || "Chọn môn";
 
   return (
     <motion.article
@@ -49,10 +50,10 @@ export function TutorCard({ item }: TutorCardProps) {
 
         <div className="min-w-0">
           <h3 className="text-base font-extrabold text-[#132a67] transition-colors group-hover:text-accent">
-            {item.name}
+            {item.tutor.name}
           </h3>
           <p className="mt-0.5 truncate text-xs font-semibold text-[#8091b8]">
-            Khoa: {item.faculty}
+            Khoa: {item.tutor.faculty}
           </p>
           <div className="mt-1 flex items-center gap-1">
             <span className="flex items-center gap-0.5 text-xs font-extrabold text-amber-500">
@@ -60,14 +61,14 @@ export function TutorCard({ item }: TutorCardProps) {
               {item.rating.toFixed(1)}
             </span>
             <span className="text-[10px] text-slate-300">•</span>
-            <span className="text-xs font-bold text-accent">{item.format}</span>
+            <span className="text-xs font-bold text-accent">{item.tutor.format}</span>
           </div>
         </div>
       </div>
 
       {/* Bio Description */}
       <p className="relative z-10 mt-4 line-clamp-3 text-xs leading-5 text-[#5f6d8f]">
-        {item.shortBio}
+        {item.tutor.shortBio}
       </p>
 
       {/* Subjects Taught */}
@@ -76,12 +77,12 @@ export function TutorCard({ item }: TutorCardProps) {
           Học phần hỗ trợ
         </h4>
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {item.subjects.map((subj) => (
+          {item.tutor.subjects.map((subj) => (
             <span
-              key={subj}
+              key={subj.id}
               className="rounded-lg bg-blue-50/70 border border-blue-100/50 px-2.5 py-1 text-xs font-semibold text-accent"
             >
-              {subj}
+              {subj.name}
             </span>
           ))}
         </div>
@@ -89,7 +90,7 @@ export function TutorCard({ item }: TutorCardProps) {
 
       {/* Strengths */}
       <div className="relative z-10 mt-4 space-y-1.5">
-        {item.strengths.map((str, idx) => (
+        {item.tutor.strengths.map((str, idx) => (
           <div key={idx} className="flex items-start gap-1.5 text-xs text-[#617092]">
             <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" strokeWidth={3} />
             <span>{str}</span>
@@ -102,11 +103,13 @@ export function TutorCard({ item }: TutorCardProps) {
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-4 text-xs font-semibold">
           <div>
             <span className="block text-[10px] uppercase tracking-wider text-[#8a97b4]">Chi phí học</span>
-            <strong className="text-sm font-black text-[#243152]">{item.price}</strong>
+            <strong className="text-sm font-black text-[#243152]">
+              {formatVND(item.pricing.amountVND)}{item.pricing.amountVND !== null ? " / giờ" : ""}
+            </strong>
           </div>
           <div className="text-right">
             <span className="block text-[10px] uppercase tracking-wider text-[#8a97b4]">Lịch trống</span>
-            <span className="text-accent font-bold text-[11px]">{item.availability}</span>
+          <span className="text-accent font-bold text-[11px]">{item.tutor.availability}</span>
           </div>
         </div>
 

@@ -13,6 +13,8 @@ const timeline = [], calls = [], mutations = [], forms = [], controls = [], head
 const id = "11111111-1111-1111-1111-111111111111";
 const access = scenario.access ?? { status: "approved", profile: { role: "admin" } };
 const modules = Object.fromEntries(["auth", "repo", "actions", "nav", "jsx", "link", "cache"].map(key => [key, "data:text/javascript,catalog-ui-" + key]));
+const domainSubjectsModule = "data:text/javascript," + encodeURIComponent("export const CATEGORIES = ['Kế toán','Kinh tế','Thống kê','Marketing','Quản trị','Tài chính','MIS','Luật','Ngoại ngữ']; export const COLOR_THEMES = ['accounting','economics','statistics','marketing','management','finance','law','mis','languages'];");
+const domainProductTypesModule = "data:text/javascript," + encodeURIComponent("export const DELIVERY_KINDS = ['digital_download','live_session','recorded_video','one_on_one_tutoring']; export const PUBLICATION_STATUSES = ['draft','published','archived']; export const COURSE_FORMATS = ['online','offline','video','zoom']; export const ENROLLMENT_STATUSES = ['open','coming-soon','full']; export const TUTOR_FORMATS = ['1:1 & Nhóm nhỏ (Online/Offline)','1:1 (Online/Offline quận 7)','1:1 & Nhóm nhỏ (Online)','1:1 (Online qua Google Meet)','1:1 & Nhóm nhỏ (Offline/Online)','1:1 (Online)','1:1 & Nhóm nhỏ (Online/Offline Q7)'];");
 mock.module(modules.auth, { namedExports: { getAccountAccess: async () => { timeline.push("guard"); return access; } } });
 mock.module(modules.nav, { namedExports: {
  redirect: (url) => { timeline.push("redirect"); throw Error("REDIRECT:" + url); },
@@ -25,7 +27,7 @@ const row = { id: scenario.invalidId ? "bad-id" : id, slug: "marketing", name: "
  phone: "0901234567", note: "PRIVATE_NOTE", updated_by: "PRIVATE_ACTOR", secret: "PRIVATE_SECRET",
  materials: {pages: 20, tags: ["Một", "Hai"], includes: ["PDF"], suitable_for: []},
  courses: {format: "online", sessions: 4, duration: "4 tuần", schedule: "Thứ bảy", mentor: "Người hướng dẫn", enrollment_status: "coming-soon", tags: [], curriculum: ["Cơ bản"], suitable_for: [], preparation: []},
- tutors: {name: "Gia sư mẫu", faculty: "Kinh doanh", format: "1:1", availability: "Cuối tuần", short_bio: "Giới thiệu mẫu", strengths: [], tags: [], suitable_for: [], support_methods: ["Trao đổi"]}
+ tutors: {name: "Gia sư mẫu", faculty: "Kinh doanh", format: "1:1 (Online)", availability: "Cuối tuần", short_bio: "Giới thiệu mẫu", strengths: [], tags: [], suitable_for: [], support_methods: ["Trao đổi"]}
 };
 mock.module(modules.repo, { namedExports: {
  isValidCatalogSlug: value => typeof value === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value),
@@ -46,13 +48,13 @@ async function load(file) {
  let source = await readFile(file, "utf8");
  if(scenario.realActions) {
   let actions = await readFile("app/quan-tri/catalog/actions.ts", "utf8");
-  for(const [from, to] of [["@/lib/auth/session", "auth"], ["@/lib/repositories/admin-catalog-repository", "repo"], ["next/navigation", "nav"], ["next/cache", "cache"]]) actions = actions.replaceAll(from, modules[to]);
+  for(const [from, to] of [["@/lib/auth/session", "auth"], ["@/lib/repositories/admin-catalog-repository", "repo"], ["@/lib/domain/subjects", domainSubjectsModule], ["@/lib/domain/product-types", domainProductTypesModule], ["next/navigation", "nav"], ["next/cache", "cache"]]) actions = actions.replaceAll(from, to.startsWith("data:") ? to : modules[to]);
   const compiled = await transform(actions, {loader: "ts", format: "esm"});
   source = source.replaceAll("./actions", "data:text/javascript," + encodeURIComponent(compiled.code));
  }
  const database = await transform(await readFile("lib/supabase/database.types.ts", "utf8"), {loader: "ts", format: "esm"});
  source = source.replaceAll("@/lib/supabase/database.types", "data:text/javascript," + encodeURIComponent(database.code));
- for (const [from, to] of [["@/lib/auth/session", "auth"], ["@/lib/repositories/admin-catalog-repository", "repo"], ["./actions", "actions"], ["next/navigation", "nav"], ["next/link", "link"]]) source = source.replaceAll(from, modules[to]);
+ for (const [from, to] of [["@/lib/auth/session", "auth"], ["@/lib/repositories/admin-catalog-repository", "repo"], ["@/lib/domain/subjects", domainSubjectsModule], ["@/lib/domain/product-types", domainProductTypesModule], ["./actions", "actions"], ["next/navigation", "nav"], ["next/link", "link"]]) source = source.replaceAll(from, to.startsWith("data:") ? to : modules[to]);
  const result = await transform(source, {loader: "tsx", format: "esm", jsx: "automatic"});
  return (await import("data:text/javascript," + encodeURIComponent(result.code.replaceAll("react/jsx-runtime", modules.jsx)))).default;
 }
@@ -169,7 +171,7 @@ test("all editable contracts, required fields, and canonical enum options appear
   for(const control of result.controls.filter(c=>c.name===name)) assert.deepEqual(control.options, options);
  }
  assert.deepEqual(result.forms[6].controls.find(c=>c.name==="format")!.options, e.course_format_enum);
- assert.deepEqual(result.forms[9].controls.find(c=>c.name==="format")!.options, []);
+ assert.deepEqual(result.forms[9].controls.find(c=>c.name==="format")!.options, ["1:1 & Nhóm nhỏ (Online/Offline)", "1:1 (Online/Offline quận 7)", "1:1 & Nhóm nhỏ (Online)", "1:1 (Online qua Google Meet)", "1:1 & Nhóm nhỏ (Offline/Online)", "1:1 (Online)", "1:1 & Nhóm nhỏ (Online/Offline Q7)"]);
 });
 test("real subject action accepts every canonical category submitted by the rendered edit form", async () => {
  const rejected: string[] = [];

@@ -7,13 +7,14 @@ import type { ReactNode } from "react";
 import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
 import { faculties, majors, needs } from "@/data/site";
-import type { CourseItem, MaterialItem, TutorItem } from "@/lib/domain/catalog";
+import type { PublishedCourse, PublishedMaterial, PublishedTutor } from "@/lib/domain/catalog";
+import { normalizeSlug } from "@/lib/domain/subjects";
 import { validateConsultationInput, type ConsultationInput } from "@/lib/validation/consultation";
 
 export interface ConsultationCatalog {
-  materials: MaterialItem[];
-  courses: CourseItem[];
-  tutors: TutorItem[];
+  materials: PublishedMaterial[];
+  courses: PublishedCourse[];
+  tutors: PublishedTutor[];
 }
 
 export interface ConsultationFormProps {
@@ -22,10 +23,9 @@ export interface ConsultationFormProps {
 }
 
 type CatalogInterestItem = {
-  category: string;
+  category: PublishedMaterial["category"] | "Tutor";
   subject: string;
-  subjectSlug?: string;
-  subjectSlugs?: string[];
+  subjectSlug: string;
   slug: string;
   kind: "material" | "course" | "tutor";
 };
@@ -39,23 +39,23 @@ function getCatalogInterestItems(catalog: ConsultationCatalog): CatalogInterestI
   return [
     ...catalog.materials.map((item) => ({
       category: item.category,
-      subject: item.subject,
-      subjectSlug: item.subjectSlug,
+      subject: item.subject.name,
+      subjectSlug: item.subject.slug,
       slug: item.slug,
       kind: "material" as const
     })),
     ...catalog.courses.map((item) => ({
       category: item.category,
-      subject: item.subject,
-      subjectSlug: item.subjectSlug,
+      subject: item.subject.name,
+      subjectSlug: item.subject.slug,
       slug: item.slug,
       kind: "course" as const
     })),
     ...catalog.tutors.flatMap((item) =>
-      item.subjects.map((subject, index) => ({
-        category: "Tutor",
-        subject,
-        subjectSlug: item.subjectSlugs?.[index] ?? item.subjectSlug,
+      item.tutor.subjects.map((subject) => ({
+        category: "Tutor" as const,
+        subject: subject.name,
+        subjectSlug: subject.slug,
         slug: item.slug,
         kind: "tutor" as const
       }))
@@ -81,13 +81,12 @@ export function getInterestGroups(catalog: ConsultationCatalog): ConsultationInt
 }
 
 function findSubjectSlugInCatalog(interest: string, catalog: ConsultationCatalog): string | null {
-  const normalizedInterest = interest.trim().toLowerCase();
+  const normalizedInterest = normalizeSlug(interest);
   const match = getCatalogInterestItems(catalog).find((item) =>
-    item.subject.toLowerCase() === normalizedInterest ||
-    item.subjectSlug?.toLowerCase() === normalizedInterest ||
-    item.subjectSlugs?.some((slug) => slug.toLowerCase() === normalizedInterest)
+    normalizeSlug(item.subject) === normalizedInterest ||
+    item.subjectSlug === normalizedInterest
   );
-  return match?.subjectSlug ?? match?.subjectSlugs?.[0] ?? null;
+  return match?.subjectSlug ?? null;
 }
 
 export type FormValues = {
@@ -158,22 +157,21 @@ export function resolveCtaMetadata(
 
   const typeMatches = (kind: CatalogInterestItem["kind"]) =>
     !typeParam || typeParam === kind;
+  const normalizedInterestParam = normalizeSlug(interestParam);
   const selected = getCatalogInterestItems(catalog).find(
-    (item) => item.slug === interestParam && typeMatches(item.kind)
+    (item) => item.slug === normalizedInterestParam && typeMatches(item.kind)
   );
 
   if (selected) {
     selectedProductSlug = selected.slug;
     resolvedInterest = selected.subject;
-    selectedSubjectSlug = selected.subjectSlug ?? selected.subjectSlugs?.[0] ?? null;
+    selectedSubjectSlug = selected.subjectSlug;
   } else {
     const subjectItem = getCatalogInterestItems(catalog).find(
-      (item) =>
-        item.subjectSlug === interestParam ||
-        item.subjectSlugs?.includes(interestParam)
+      (item) => item.subjectSlug === normalizedInterestParam
     );
     if (subjectItem) {
-      selectedSubjectSlug = interestParam;
+      selectedSubjectSlug = subjectItem.subjectSlug;
       resolvedInterest = subjectItem.subject;
     }
   }

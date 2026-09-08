@@ -4,6 +4,7 @@ import { ArrowLeft, Check, Home, Star, Target, Users } from "lucide-react";
 import { CatalogPageShell } from "@/components/catalog/catalog-page-shell";
 import { getPublishedTutorBySlug } from "@/lib/repositories/catalog-repository";
 import { coverThemes } from "@/components/catalog/theme";
+import { formatVND } from "@/lib/domain/product-types";
 
 export const revalidate = 60;
 
@@ -28,8 +29,8 @@ export default async function TutorDetailPage({
     notFound();
   }
 
-  const theme = coverThemes[item.colorTheme] || coverThemes.finance;
-  const initials = getInitials(item.name);
+  const theme = coverThemes[item.colorTheme];
+  const initials = getInitials(item.tutor.name);
 
   return (
     <CatalogPageShell>
@@ -70,10 +71,10 @@ export default async function TutorDetailPage({
                   TUTOR ĐỒNG HÀNH
                 </span>
                 <h1 className="text-2xl font-black text-[#132a67] sm:text-3xl">
-                  {item.name}
+                  {item.tutor.name}
                 </h1>
                 <p className="mt-1 text-sm font-semibold text-[#617092]">
-                  Khoa: {item.faculty} | Hình thức: <strong>{item.format}</strong>
+                  Khoa: {item.tutor.faculty} | Hình thức: <strong>{item.tutor.format}</strong>
                 </p>
               </div>
             </div>
@@ -81,19 +82,19 @@ export default async function TutorDetailPage({
             {/* Short Bio */}
             <div className="space-y-3">
               <h2 className="text-lg font-extrabold text-[#132a67]">Giới thiệu bản thân</h2>
-              <p className="text-[15px] leading-7 text-[#5f6d8f]">{item.shortBio}</p>
+              <p className="text-[15px] leading-7 text-[#5f6d8f]">{item.tutor.shortBio}</p>
             </div>
 
             {/* Support Subjects */}
             <div className="rounded-2xl border border-slate-100 bg-slate-50/50 p-5 sm:p-6">
               <h3 className="text-base font-extrabold text-[#132a67] mb-3">Học phần hỗ trợ</h3>
               <div className="flex flex-wrap gap-2">
-                {item.subjects.map((subject) => (
+                {item.tutor.subjects.map((subject) => (
                   <span
-                    key={subject}
+                    key={subject.id}
                     className="rounded-xl bg-blue-50 border border-blue-100 px-3.5 py-1.5 text-sm font-extrabold text-accent"
                   >
-                    {subject}
+                    {subject.name}
                   </span>
                 ))}
               </div>
@@ -103,7 +104,7 @@ export default async function TutorDetailPage({
             <div className="rounded-2xl border border-slate-100 bg-slate-50/50 p-5 sm:p-6">
               <h3 className="text-base font-extrabold text-[#132a67] mb-4">Điểm mạnh nổi bật</h3>
               <div className="grid gap-3 sm:grid-cols-2">
-                {item.strengths.map((str, idx) => (
+                {item.tutor.strengths.map((str, idx) => (
                   <div key={idx} className="flex items-start gap-2.5 text-[14px] leading-6 text-[#5f6d8f]">
                     <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" strokeWidth={3} />
                     <span>{str}</span>
@@ -113,14 +114,14 @@ export default async function TutorDetailPage({
             </div>
 
             {/* Suitable For */}
-            {item.suitableFor && item.suitableFor.length > 0 && (
+            {item.tutor.suitableFor.length > 0 && (
               <div className="rounded-2xl border border-slate-100 bg-slate-50/50 p-5 sm:p-6">
                 <h3 className="flex items-center gap-2 text-base font-extrabold text-[#132a67] mb-4">
                   <Target className="h-5 w-5 text-accent" />
                   Tutor này phù hợp nếu bạn...
                 </h3>
                 <ul className="space-y-3">
-                  {item.suitableFor.map((suit, idx) => (
+                  {item.tutor.suitableFor.map((suit, idx) => (
                     <li key={idx} className="flex gap-2.5 text-[14px] leading-6 text-[#5f6d8f]">
                       <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
                       <span>{suit}</span>
@@ -131,14 +132,14 @@ export default async function TutorDetailPage({
             )}
 
             {/* Support Methods */}
-            {item.supportMethods && item.supportMethods.length > 0 && (
+            {item.tutor.supportMethods.length > 0 && (
               <div className="rounded-2xl border border-slate-100 bg-slate-50/50 p-5 sm:p-6">
                 <h3 className="flex items-center gap-2 text-base font-extrabold text-[#132a67] mb-4">
                   <Users className="h-5 w-5 text-accent" />
                   Hình thức hỗ trợ học thuật
                 </h3>
                 <ul className="space-y-3">
-                  {item.supportMethods.map((method, idx) => (
+                  {item.tutor.supportMethods.map((method, idx) => (
                     <li key={idx} className="flex gap-2.5 text-[14px] leading-6 text-[#5f6d8f]">
                       <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" strokeWidth={3} />
                       <span>{method}</span>
@@ -157,13 +158,13 @@ export default async function TutorDetailPage({
 
               <span className="text-[10px] font-bold uppercase tracking-wider text-[#8a97b4]">Chi phí gia sư</span>
               <div className="mt-1 flex items-baseline gap-1.5">
-                <span className="text-3xl font-black text-[#243152]">{item.price}</span>
+                <span className="text-3xl font-black text-[#243152]">{formatVND(item.pricing.amountVND)}</span>
               </div>
 
               <div className="mt-4 border-t border-b border-slate-100 py-3.5 space-y-2 text-xs text-[#617092] font-semibold">
                 <div className="flex justify-between">
                   <span>Trạng thái slot:</span>
-                  <span className="text-accent font-extrabold">{item.availability}</span>
+                    <span className="text-accent font-extrabold">{item.tutor.availability}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Đánh giá từ SV:</span>

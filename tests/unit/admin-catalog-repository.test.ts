@@ -198,7 +198,7 @@ describe("Task 5.1-A: admin catalog repository", () => {
     for (const [create, input, childTable, childRow, product] of [
       [repository.createAdminMaterial, { ...productInput(), pages: 20, tags: ["tag"] }, "materials", MATERIAL_ROW, MATERIAL_PRODUCT],
       [repository.createAdminCourse, { ...productInput({ delivery_kind: "live_session" }), format: "online", sessions: 4, duration: "4 weeks", schedule: "Sat", mentor: "Mentor" }, "courses", { product_id: PRODUCT_ID, format: "online", sessions: 4, duration: "4 weeks", schedule: "Sat", enrollment_status: "open", mentor: "Mentor", tags: [], curriculum: [], suitable_for: [], preparation: [], created_at: "", updated_at: "" }, { ...MATERIAL_PRODUCT, kind: "course" }],
-      [repository.createAdminTutor, { ...productInput({ delivery_kind: "one_on_one_tutoring" }), format: "1:1", name: "Tutor", faculty: "Business", availability: "Weekends", short_bio: "Bio" }, "tutors", { product_id: PRODUCT_ID, name: "Tutor", faculty: "Business", format: "1:1", availability: "Weekends", short_bio: "Bio", strengths: [], tags: [], suitable_for: [], support_methods: [], created_at: "", updated_at: "" }, { ...MATERIAL_PRODUCT, kind: "tutor" }]
+      [repository.createAdminTutor, { ...productInput({ delivery_kind: "one_on_one_tutoring" }), format: "1:1 (Online)", name: "Tutor", faculty: "Business", availability: "Weekends", short_bio: "Bio" }, "tutors", { product_id: PRODUCT_ID, name: "Tutor", faculty: "Business", format: "1:1 (Online)", availability: "Weekends", short_bio: "Bio", strengths: [], tags: [], suitable_for: [], support_methods: [], created_at: "", updated_at: "" }, { ...MATERIAL_PRODUCT, kind: "tutor" }]
     ] as const) {
       mockClient = new MockClient([
         { data: product, error: null },

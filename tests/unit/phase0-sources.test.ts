@@ -11,6 +11,7 @@ import {
   resolveCtaMetadata,
   type ConsultationCatalog
 } from "../../components/site/consultation-form";
+import { materialFixture, courseFixture } from "./catalog-fixtures";
 
 const execFileAsync = promisify(execFile);
 
@@ -129,21 +130,13 @@ async function runDemoAuthScenario(scenario: Record<string, unknown>) {
 
 const dbCatalog: ConsultationCatalog = {
   materials: [{
+    ...materialFixture(),
     id: "db-material",
     slug: "db-material-slug",
     title: "Tên tài liệu mới từ DB",
-    subject: "Môn DB mới",
-    subjectSlug: "mon-db-moi",
-    facultyGroup: "UFM",
-    category: "Kế toán",
-    type: "TÀI LIỆU",
+    subject: { ...materialFixture().subject, id: "db-subject", slug: "mon-db-moi", name: "Môn DB mới" },
     description: "DB material",
-    price: "10.000đ",
-    pages: 10,
-    tags: ["DB"],
-    rating: 4.5,
-    isHot: true,
-    colorTheme: "accounting"
+    material: { ...materialFixture().material, pages: 10, tags: ["DB"] }
   }],
   courses: [],
   tutors: []
@@ -154,23 +147,12 @@ describe("Phase 0 source and runtime boundaries", () => {
     const changedCatalog = {
       ...dbCatalog,
       courses: [{
+        ...courseFixture(),
         id: "db-course",
         slug: "db-course-slug",
         title: "Khóa học mới từ DB",
-        subject: "Môn DB mới",
-        subjectSlug: "mon-db-moi",
-        category: "Marketing" as const,
-        format: "online" as const,
-        sessions: 2,
-        duration: "2 giờ",
-        schedule: "Linh hoạt",
         description: "DB course",
-        price: "20.000đ",
-        status: "open" as const,
-        mentor: "DB mentor",
-        tags: ["DB"],
-        rating: 4.5,
-        colorTheme: "marketing" as const
+        course: { ...courseFixture().course, sessions: 2, duration: "2 giờ", schedule: "Linh hoạt", mentor: "DB mentor", tags: ["DB"] }
       }]
     };
     const loaded = await loadPublishedHomepageCatalog({
@@ -221,6 +203,7 @@ describe("Phase 0 source and runtime boundaries", () => {
       "npm run build",
       "0001",
       "0017",
+      "0018",
       "Order/cart",
       "Checkout, payment và webhook",
       "Tutor booking/room",

@@ -25,6 +25,7 @@ import {
   assertMigration0015Contract,
   assertMigration0016Contract,
   assertMigration0017Contract,
+  assertCatalogSemanticMigrationContract,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
 } from "../../scripts/verify-supabase-migrations-seed-rls";
@@ -212,7 +213,8 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         "0014_product_entitlements.sql",
       "0015_learning_progress.sql",
       "0016_study_plans.sql",
-      "0017_profile_on_auth_signup.sql"
+      "0017_profile_on_auth_signup.sql",
+      "0018_catalog_semantic_invariants.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -1355,5 +1357,36 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         }), /canonical SHA-256 mismatch|must remain unchanged/i);
       }
     });
+  });
+});
+
+describe("14. Migration 0018 Catalog Semantic Invariants", () => {
+  const migrationPath = path.resolve(process.cwd(), "supabase/migrations/0018_catalog_semantic_invariants.sql");
+
+  test("accepts the exact semantic invariant and security contract", async () => {
+    const sql = await fs.readFile(migrationPath, "utf8");
+    assert.doesNotThrow(() => assertCatalogSemanticMigrationContract(sql));
+  });
+
+  test("rejects unsafe or incomplete invariant fixtures", async () => {
+    const sql = await fs.readFile(migrationPath, "utf8");
+    const fixtures = [
+      sql.replace("chk_products_old_price_semantics", "removed_old_price_constraint"),
+      sql.replace("uq_tutor_subjects_one_primary", "removed_primary_index"),
+      sql.replace("'1:1 (Online)'", "'unsupported tutor format'"),
+      sql.replace("SET search_path = public", "SET search_path = public; SECURITY DEFINER"),
+      `${sql}\nGRANT ALL ON TABLE public.products TO authenticated;`,
+      `${sql}\nDO $$ BEGIN EXECUTE 'SELECT 1'; END $$;`
+    ];
+    for (const [index, fixture] of fixtures.entries()) assert.throws(() => assertCatalogSemanticMigrationContract(fixture), /./, `unsafe 0018 fixture ${index} must be rejected`);
+  });
+
+  test("seed reconciles every product semantic field on conflict", async () => {
+    const sql = await fs.readFile(path.resolve(process.cwd(), "supabase/seed.sql"), "utf8");
+    for (const field of ["kind", "title", "description", "subject_id", "category", "delivery_kind", "publication_status", "price_vnd", "old_price_vnd", "is_contact_for_price", "rating", "is_hot", "color_theme"]) {
+      assert.match(sql, new RegExp(`${field}\\s*=\\s*EXCLUDED\\.${field}`));
+    }
+    assert.strictEqual((sql.match(/ON CONFLICT \(kind, slug\) DO UPDATE/g) ?? []).length, materials.length + courses.length + tutors.length);
+    assert.strictEqual((sql.match(/ON CONFLICT \(product_id\) DO UPDATE/g) ?? []).length, materials.length + courses.length + tutors.length);
   });
 });

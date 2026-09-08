@@ -1,81 +1,88 @@
-import type { Category, ColorTheme } from "./subjects";
-import type { EnrollmentStatus } from "./product-types";
+import type { Category, ColorTheme, Subject } from "./subjects";
+import type {
+  CourseFormat,
+  DeliveryKind,
+  EnrollmentStatus,
+  ProductKind,
+  ProductPricing,
+  PublicationStatus,
+  TutorFormat
+} from "./product-types";
 
-export type CourseFormat = "online" | "offline" | "video" | "zoom";
+export type { CourseFormat, TutorFormat } from "./product-types";
+export { COURSE_FORMATS, TUTOR_FORMATS } from "./product-types";
 
-export const TUTOR_FORMATS = [
-  "1:1 & Nhóm nhỏ (Online/Offline)",
-  "1:1 (Online/Offline quận 7)",
-  "1:1 & Nhóm nhỏ (Online)",
-  "1:1 (Online qua Google Meet)",
-  "1:1 & Nhóm nhỏ (Offline/Online)",
-  "1:1 (Online)",
-  "1:1 & Nhóm nhỏ (Online/Offline Q7)"
-] as const;
+/** Complete subject identity attached to every published product. */
+export type SubjectIdentity = Subject;
 
-export type TutorFormat = (typeof TUTOR_FORMATS)[number];
-
-export interface MaterialItem {
-  id: string;
-  slug: string;
-  title: string;
-  subject: string;
-  subjectSlug?: string;
-  facultyGroup: string;
-  category: Category;
-  type: "TÀI LIỆU";
-  description: string;
-  price: string;
-  oldPrice?: string;
-  pages: number;
-  tags: string[];
-  rating: number;
-  isHot: boolean;
-  colorTheme: ColorTheme;
-  includes?: string[];
-  suitableFor?: string[];
+export interface PublishedProductBase {
+  readonly id: string;
+  readonly slug: string;
+  readonly kind: ProductKind;
+  readonly title: string;
+  readonly description: string;
+  readonly subject: SubjectIdentity;
+  readonly category: Category;
+  readonly deliveryKind: DeliveryKind;
+  readonly publicationStatus: Extract<PublicationStatus, "published">;
+  readonly pricing: ProductPricing;
+  readonly rating: number;
+  readonly isHot: boolean;
+  readonly colorTheme: ColorTheme;
 }
 
-export interface CourseItem {
-  id: string;
-  slug: string;
-  title: string;
-  subject: string;
-  subjectSlug?: string;
-  category: Category;
-  format: CourseFormat;
-  sessions: number;
-  duration: string;
-  schedule: string;
-  description: string;
-  price: string;
-  oldPrice?: string;
-  status: EnrollmentStatus;
-  mentor: string;
-  tags: string[];
-  rating: number;
-  colorTheme: ColorTheme;
-  curriculum?: string[];
-  suitableFor?: string[];
-  preparation?: string[];
+export interface MaterialMetadata {
+  readonly pages: number;
+  readonly tags: readonly string[];
+  readonly includes: readonly string[];
+  readonly suitableFor: readonly string[];
 }
 
-export interface TutorItem {
-  id: string;
-  slug: string;
-  name: string;
-  subjects: string[];
-  subjectSlug?: string;
-  subjectSlugs?: string[];
-  faculty: string;
-  strengths: string[];
-  format: TutorFormat;
-  price: string;
-  availability: string;
-  rating: number;
-  shortBio: string;
-  tags: string[];
-  colorTheme: ColorTheme;
-  suitableFor?: string[];
-  supportMethods?: string[];
+export interface CourseMetadata {
+  readonly format: CourseFormat;
+  readonly sessions: number;
+  readonly duration: string;
+  readonly schedule: string;
+  readonly enrollmentStatus: EnrollmentStatus;
+  readonly mentor: string;
+  readonly tags: readonly string[];
+  readonly curriculum: readonly string[];
+  readonly suitableFor: readonly string[];
+  readonly preparation: readonly string[];
 }
+
+export interface TutorMetadata {
+  readonly name: string;
+  readonly faculty: string;
+  readonly format: TutorFormat;
+  readonly availability: string;
+  readonly shortBio: string;
+  readonly strengths: readonly string[];
+  readonly tags: readonly string[];
+  readonly suitableFor: readonly string[];
+  readonly supportMethods: readonly string[];
+  readonly subjects: readonly SubjectIdentity[];
+}
+
+export interface PublishedMaterial extends PublishedProductBase {
+  readonly kind: "material";
+  readonly deliveryKind: "digital_download";
+  readonly material: MaterialMetadata;
+}
+
+export interface PublishedCourse extends PublishedProductBase {
+  readonly kind: "course";
+  readonly deliveryKind: "live_session" | "recorded_video";
+  readonly course: CourseMetadata;
+}
+
+export interface PublishedTutor extends PublishedProductBase {
+  readonly kind: "tutor";
+  readonly deliveryKind: "one_on_one_tutoring";
+  readonly tutor: TutorMetadata;
+}
+
+export type PublishedCatalogProduct =
+  | PublishedMaterial
+  | PublishedCourse
+  | PublishedTutor;

@@ -15,102 +15,39 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
-import type {
-  ResourceCategory,
-  ResourceColorTheme
-} from "@/data/site";
-import type { CourseItem, MaterialItem } from "@/lib/domain/catalog";
+import { categoryFilterOptions } from "@/components/catalog/catalog-options";
+import { coverThemes } from "@/components/catalog/theme";
+import type { Category, ColorTheme } from "@/lib/domain/subjects";
+import { formatVND } from "@/lib/domain/product-types";
+import type { PublishedCourse, PublishedMaterial } from "@/lib/domain/catalog";
 
 type ResourceItem = {
   id: string;
   slug: string;
   title: string;
   subject: string;
-  category: ResourceCategory;
+  category: Category;
   type: "TÀI LIỆU" | "KHÓA HỌC";
   description: string;
-  price: string;
-  oldPrice?: string;
+  amountVND: number | null;
+  originalAmountVND: number | null;
   meta: string;
   bonus?: string;
   rating: number;
   isHot?: boolean;
-  colorTheme: ResourceColorTheme;
+  colorTheme: ColorTheme;
   tags: string[];
-  status?: "open" | "coming-soon" | "full";
+  status?: PublishedCourse["course"]["enrollmentStatus"];
 };
 
-type FilterKey = "Tất cả" | "Tài liệu" | "Khóa học" | ResourceCategory;
+type FilterKey = "Tất cả" | "Tài liệu" | "Khóa học" | Category;
 
 const filters: Array<{ label: FilterKey; icon: string }> = [
   { label: "Tất cả", icon: "" },
   { label: "Tài liệu", icon: "📚" },
   { label: "Khóa học", icon: "🎥" },
-  { label: "Kế toán", icon: "💼" },
-  { label: "Kinh tế", icon: "📈" },
-  { label: "Thống kê", icon: "📊" },
-  { label: "Marketing", icon: "🎯" },
-  { label: "Quản trị", icon: "🧠" },
-  { label: "Tài chính", icon: "💵" },
-  { label: "MIS", icon: "💻" },
-  { label: "Luật", icon: "⚖️" },
-  { label: "Ngoại ngữ", icon: "🗣️" }
+  ...categoryFilterOptions.filter((filter) => filter.label !== "Tất cả")
 ];
-
-const coverThemes: Record<
-  ResourceColorTheme,
-  {
-    background: string;
-    badge: string;
-    rating: string;
-  }
-> = {
-  accounting: {
-    background: "from-[#2948f2] via-[#3556de] to-[#3c35b8]",
-    badge: "bg-white/18 text-white",
-    rating: "bg-[#2430ab]/45 text-[#ffe66e]"
-  },
-  economics: {
-    background: "from-[#8745ff] via-[#c02bd1] to-[#e00071]",
-    badge: "bg-white/18 text-white",
-    rating: "bg-[#8c127d]/45 text-[#ffe66e]"
-  },
-  statistics: {
-    background: "from-[#0d8caf] via-[#0a7d92] to-[#0e736d]",
-    badge: "bg-white/18 text-white",
-    rating: "bg-[#065e70]/40 text-[#ffe66e]"
-  },
-  marketing: {
-    background: "from-[#ff2065] via-[#ea005d] to-[#c4006f]",
-    badge: "bg-white/18 text-white",
-    rating: "bg-[#a0005f]/45 text-[#ffe66e]"
-  },
-  management: {
-    background: "from-[#ffab1f] via-[#ff9500] to-[#ea6400]",
-    badge: "bg-white/18 text-white",
-    rating: "bg-[#bf5a00]/38 text-[#ffe66e]"
-  },
-  finance: {
-    background: "from-[#0284c7] via-[#0369a1] to-[#075985]",
-    badge: "bg-white/18 text-white",
-    rating: "bg-[#0c4a6e]/45 text-[#ffe66e]"
-  },
-  law: {
-    background: "from-[#b45309] via-[#92400e] to-[#78350f]",
-    badge: "bg-white/18 text-white",
-    rating: "bg-[#7c2d12]/45 text-[#ffe66e]"
-  },
-  mis: {
-    background: "from-[#0d9488] via-[#0f766e] to-[#115e59]",
-    badge: "bg-white/18 text-white",
-    rating: "bg-[#134e4a]/45 text-[#ffe66e]"
-  },
-  languages: {
-    background: "from-[#9333ea] via-[#7e22ce] to-[#6b21a8]",
-    badge: "bg-white/18 text-white",
-    rating: "bg-[#581c87]/45 text-[#ffe66e]"
-  }
-};
 
 function matchesFilter(item: ResourceItem, filter: FilterKey) {
   if (filter === "Tất cả") return true;
@@ -120,14 +57,14 @@ function matchesFilter(item: ResourceItem, filter: FilterKey) {
 }
 
 export interface FeaturedResourcesProps {
-  materials: MaterialItem[];
-  courses: CourseItem[];
+  materials: PublishedMaterial[];
+  courses: PublishedCourse[];
   loadError?: boolean;
 }
 
 type CatalogResource =
-  | { item: MaterialItem; type: "TÀI LIỆU" }
-  | { item: CourseItem; type: "KHÓA HỌC" };
+  | { item: PublishedMaterial; type: "TÀI LIỆU" }
+  | { item: PublishedCourse; type: "KHÓA HỌC" };
 
 function toResource({ item, type }: CatalogResource): ResourceItem {
   if (type === "TÀI LIỆU") {
@@ -135,18 +72,18 @@ function toResource({ item, type }: CatalogResource): ResourceItem {
       id: item.id,
       slug: item.slug,
       title: item.title,
-      subject: item.subject,
-      category: item.category as ResourceCategory,
+      subject: item.subject.name,
+      category: item.category,
       type,
       description: item.description,
-      price: item.price,
-      oldPrice: item.oldPrice,
-      meta: `${item.pages} trang`,
-      bonus: item.tags[0],
+      amountVND: item.pricing.amountVND,
+      originalAmountVND: item.pricing.originalAmountVND,
+      meta: `${item.material.pages} trang`,
+      bonus: item.material.tags[0],
       rating: item.rating,
       isHot: item.isHot,
-      colorTheme: item.colorTheme as ResourceColorTheme,
-      tags: item.tags
+      colorTheme: item.colorTheme,
+      tags: [...item.material.tags]
     };
   }
 
@@ -154,45 +91,37 @@ function toResource({ item, type }: CatalogResource): ResourceItem {
     id: item.id,
     slug: item.slug,
     title: item.title,
-    subject: item.subject,
-    category: item.category as ResourceCategory,
+    subject: item.subject.name,
+    category: item.category,
     type,
     description: item.description,
-    price: item.price,
-    oldPrice: item.oldPrice,
-    meta: `${item.sessions} buổi`,
-    bonus: item.tags[0],
+    amountVND: item.pricing.amountVND,
+    originalAmountVND: item.pricing.originalAmountVND,
+    meta: `${item.course.sessions} buổi`,
+    bonus: item.course.tags[0],
     rating: item.rating,
-    isHot: item.status === "open",
-    colorTheme: item.colorTheme as ResourceColorTheme,
-    tags: item.tags,
-    status: item.status
+    isHot: item.isHot,
+    colorTheme: item.colorTheme,
+    tags: [...item.course.tags],
+    status: item.course.enrollmentStatus
   };
 }
 
 export function buildFeaturedResources(
-  materials: readonly MaterialItem[],
-  courses: readonly CourseItem[]
+  materials: readonly PublishedMaterial[],
+  courses: readonly PublishedCourse[]
 ): ResourceItem[] {
-  const categories: ResourceCategory[] = [
-    "Kế toán",
-    "Kinh tế",
-    "Thống kê",
-    "Marketing",
-    "Quản trị",
-    "Tài chính",
-    "MIS",
-    "Luật",
-    "Ngoại ngữ"
-  ];
+  const categories: Category[] = [...categoryFilterOptions]
+    .map((filter) => filter.label)
+    .filter((label): label is Category => label !== "Tất cả");
 
-  const bestByCategory: Partial<Record<ResourceCategory, CatalogResource>> = {};
+  const bestByCategory: Partial<Record<Category, CatalogResource>> = {};
 
   categories.forEach((category) => {
     const categoryMaterials = materials.filter((item) => item.category === category);
     const categoryCourses = courses.filter((item) => item.category === category);
     const hotMaterial = categoryMaterials.find((item) => item.isHot);
-    const openCourse = categoryCourses.find((item) => item.status === "open");
+    const openCourse = categoryCourses.find((item) => item.course.enrollmentStatus === "open");
 
     if (hotMaterial) {
       bestByCategory[category] = { item: hotMaterial, type: "TÀI LIỆU" };
@@ -220,7 +149,7 @@ export function buildFeaturedResources(
     .filter((item) => item.isHot && !selectedKeys.has(item.id))
     .map((item) => ({ item, type: "TÀI LIỆU" }));
   const remainingOpenCourses: CatalogResource[] = courses
-    .filter((item) => item.status === "open" && !selectedKeys.has(item.id))
+    .filter((item) => item.course.enrollmentStatus === "open" && !selectedKeys.has(item.id))
     .map((item) => ({ item, type: "KHÓA HỌC" }));
   const remainingOthers: CatalogResource[] = [
     ...materials
@@ -504,11 +433,11 @@ export function FeaturedResources({ materials, courses, loadError = false }: Fea
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
                           <strong className="text-[1.05rem] font-black text-[#243152]">
-                            {item.price}
+                            {formatVND(item.amountVND)}
                           </strong>
-                          {item.oldPrice ? (
+                          {item.originalAmountVND !== null ? (
                             <span className="text-sm font-semibold text-[#9ca7bf] line-through">
-                              {item.oldPrice}
+                              {formatVND(item.originalAmountVND)}
                             </span>
                           ) : null}
                         </div>

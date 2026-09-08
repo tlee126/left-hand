@@ -11,24 +11,9 @@ import {
   type FormValues
 } from "../../components/site/consultation-form";
 import { validateConsultationInput } from "../../lib/validation/consultation";
-import { materials, courses, tutors } from "../../data/catalog";
-import { findSubjectByName } from "../../lib/domain/subjects";
+import { publishedCatalogFixture } from "./catalog-fixtures";
 
-const consultationCatalog = {
-  materials: materials.map((item) => ({
-    ...item,
-    subjectSlug: findSubjectByName(item.subject)?.slug
-  })),
-  courses: courses.map((item) => ({
-    ...item,
-    subjectSlug: findSubjectByName(item.subject)?.slug
-  })),
-  tutors: tutors.map((item) => ({
-    ...item,
-    subjectSlug: findSubjectByName(item.subjects[0])?.slug,
-    subjectSlugs: item.subjects.map((subject) => findSubjectByName(subject)?.slug).filter(Boolean) as string[]
-  }))
-};
+const consultationCatalog = publishedCatalogFixture;
 
 describe("Phase 4.1-D: Consultation Form and API Integration", () => {
   describe("1. CTA Metadata Resolution", () => {

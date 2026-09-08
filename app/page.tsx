@@ -16,20 +16,20 @@ import {
   listPublishedMaterials,
   listPublishedTutors
 } from "@/lib/repositories/catalog-repository";
-import type { CourseItem, MaterialItem, TutorItem } from "@/lib/domain/catalog";
+import type { PublishedCourse, PublishedMaterial, PublishedTutor } from "@/lib/domain/catalog";
 
 export const revalidate = 60;
 
 export interface HomepageCatalog {
-  materials: MaterialItem[];
-  courses: CourseItem[];
-  tutors: TutorItem[];
+  materials: PublishedMaterial[];
+  courses: PublishedCourse[];
+  tutors: PublishedTutor[];
 }
 
 export interface HomepageCatalogLoaders {
-  listPublishedMaterials: () => Promise<MaterialItem[]>;
-  listPublishedCourses: () => Promise<CourseItem[]>;
-  listPublishedTutors: () => Promise<TutorItem[]>;
+  listPublishedMaterials: () => Promise<PublishedMaterial[]>;
+  listPublishedCourses: () => Promise<PublishedCourse[]>;
+  listPublishedTutors: () => Promise<PublishedTutor[]>;
 }
 
 export async function loadPublishedHomepageCatalog(

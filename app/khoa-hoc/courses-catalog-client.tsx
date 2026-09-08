@@ -6,35 +6,21 @@ import { CourseCard } from "@/components/catalog/course-card";
 import { EmptyState } from "@/components/catalog/empty-state";
 import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
-import type { CourseItem } from "@/lib/domain/catalog";
+import type { PublishedCourse } from "@/lib/domain/catalog";
+import { compareNullableVND } from "@/lib/domain/product-types";
+import { courseFilterOptions, type CourseFilter } from "@/components/catalog/catalog-options";
 
-type CourseFilter =
-  | "Tất cả"
-  | "Zoom"
-  | "Video"
-  | "Online"
-  | "Sắp mở"
-  | "Đang nhận đăng ký";
-
-type SortOption = "newest" | "price-asc" | "rating-desc";
-
-const filterOptions: Array<{ label: CourseFilter; icon: string }> = [
-  { label: "Tất cả", icon: "" },
-  { label: "Zoom", icon: "🎥" },
-  { label: "Video", icon: "💿" },
-  { label: "Online", icon: "🌐" },
-  { label: "Sắp mở", icon: "⏳" },
-  { label: "Đang nhận đăng ký", icon: "✅" }
-];
+type SortOption = "newest" | "price-asc" | "price-desc" | "rating-desc";
 
 const sortOptions = [
   { value: "newest", label: "Mới nhất" },
   { value: "price-asc", label: "Giá thấp đến cao" },
+  { value: "price-desc", label: "Giá cao đến thấp" },
   { value: "rating-desc", label: "Đánh giá cao" }
 ];
 
 interface CoursesCatalogClientProps {
-  initialCourses: CourseItem[];
+  initialCourses: PublishedCourse[];
 }
 
 export function CoursesCatalogClient({
@@ -71,17 +57,17 @@ export function CoursesCatalogClient({
 
     // Filter by type/status
     if (filter === "Zoom") {
-      result = result.filter((item) => item.format === "zoom");
+      result = result.filter((item) => item.course.format === "zoom");
     } else if (filter === "Video") {
-      result = result.filter((item) => item.format === "video");
+      result = result.filter((item) => item.course.format === "video");
     } else if (filter === "Online") {
       result = result.filter(
-        (item) => item.format === "online" || item.format === "zoom"
+        (item) => item.course.format === "online" || item.course.format === "zoom"
       );
     } else if (filter === "Sắp mở") {
-      result = result.filter((item) => item.status === "coming-soon");
+      result = result.filter((item) => item.course.enrollmentStatus === "coming-soon");
     } else if (filter === "Đang nhận đăng ký") {
-      result = result.filter((item) => item.status === "open");
+      result = result.filter((item) => item.course.enrollmentStatus === "open");
     }
 
     // Filter by search query
@@ -90,9 +76,9 @@ export function CoursesCatalogClient({
       result = result.filter((item) => {
         return (
           item.title.toLowerCase().includes(normalizedQuery) ||
-          item.subject.toLowerCase().includes(normalizedQuery) ||
+          item.subject.name.toLowerCase().includes(normalizedQuery) ||
           item.category.toLowerCase().includes(normalizedQuery) ||
-          item.mentor.toLowerCase().includes(normalizedQuery) ||
+          item.course.mentor.toLowerCase().includes(normalizedQuery) ||
           item.description.toLowerCase().includes(normalizedQuery)
         );
       });
@@ -101,9 +87,10 @@ export function CoursesCatalogClient({
     // Sort
     result.sort((a, b) => {
       if (sortBy === "price-asc") {
-        const priceA = parseFloat(a.price.replace(/[^\d]/g, "")) || 0;
-        const priceB = parseFloat(b.price.replace(/[^\d]/g, "")) || 0;
-        return priceA - priceB;
+        return compareNullableVND(a.pricing.amountVND, b.pricing.amountVND, "asc");
+      }
+      if (sortBy === "price-desc") {
+        return compareNullableVND(a.pricing.amountVND, b.pricing.amountVND, "desc");
       }
       if (sortBy === "rating-desc") {
         return b.rating - a.rating;
@@ -138,7 +125,7 @@ export function CoursesCatalogClient({
               ref={filterContainerRef}
               className="flex overflow-x-auto whitespace-nowrap gap-2 scrollbar-none pb-1 lg:pb-0 flex-1 min-w-0 scroll-smooth"
             >
-              {filterOptions.map((opt) => {
+              {courseFilterOptions.map((opt) => {
                 const isActive = filter === opt.label;
                 return (
                   <button

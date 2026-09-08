@@ -133,11 +133,16 @@ mock.module(cacheModule, {
   }
 });
 
+const domainSubjectsModule = "data:text/javascript," + encodeURIComponent("export const CATEGORIES = ['Kế toán','Kinh tế','Thống kê','Marketing','Quản trị','Tài chính','MIS','Luật','Ngoại ngữ']; export const COLOR_THEMES = ['accounting','economics','statistics','marketing','management','finance','law','mis','languages'];");
+const domainProductTypesModule = "data:text/javascript," + encodeURIComponent("export const DELIVERY_KINDS = ['digital_download','live_session','recorded_video','one_on_one_tutoring']; export const PUBLICATION_STATUSES = ['draft','published','archived']; export const COURSE_FORMATS = ['online','offline','video','zoom']; export const ENROLLMENT_STATUSES = ['open','coming-soon','full']; export const TUTOR_FORMATS = ['1:1 & Nhóm nhỏ (Online/Offline)','1:1 (Online/Offline quận 7)','1:1 & Nhóm nhỏ (Online)','1:1 (Online qua Google Meet)','1:1 & Nhóm nhỏ (Offline/Online)','1:1 (Online)','1:1 & Nhóm nhỏ (Online/Offline Q7)'];");
+
 try {
   let source = await readFile(process.cwd() + "/app/quan-tri/catalog/actions.ts", "utf8");
   source = source
     .replaceAll("@/lib/auth/session", authModule)
     .replaceAll("@/lib/repositories/admin-catalog-repository", repositoryModule)
+    .replaceAll("@/lib/domain/subjects", domainSubjectsModule)
+    .replaceAll("@/lib/domain/product-types", domainProductTypesModule)
     .replaceAll("next/navigation", navigationModule)
     .replaceAll("next/cache", cacheModule);
   const compiled = await transform(source, { loader: "ts", format: "esm", sourcefile: "actions.ts" });
@@ -213,7 +218,7 @@ const inputs: Record<string, Record<string, unknown>> = {
   createCourseAction: { ...productInput, delivery_kind: "live_session", publication_status: "published", format: "online", sessions: 4, duration: " 4 weeks ", schedule: " Saturday ", enrollment_status: "coming-soon", mentor: " Mentor ", tags: [" live ", " cohort "], curriculum: [" basics "], suitable_for: [" students "], preparation: [" notebook "] },
   updateCourseAction: { mentor: " Updated Mentor ", enrollment_status: "full" },
   deleteCourseAction: {},
-  createTutorAction: { ...productInput, delivery_kind: "one_on_one_tutoring", format: " 1:1 ", name: " Tutor ", faculty: " Business ", availability: " Weekends ", short_bio: " Tutor bio ", strengths: [" exams ", " planning "], tags: [" mentor "], suitable_for: [" students "], support_methods: [" chat "] },
+  createTutorAction: { ...productInput, delivery_kind: "one_on_one_tutoring", format: " 1:1 (Online) ", name: " Tutor ", faculty: " Business ", availability: " Weekends ", short_bio: " Tutor bio ", strengths: [" exams ", " planning "], tags: [" mentor "], suitable_for: [" students "], support_methods: [" chat "] },
   updateTutorAction: { availability: " Weekdays ", support_methods: [" video ", " chat "] },
   deleteTutorAction: {}
 };
@@ -315,7 +320,7 @@ const expectedRepositoryArguments: Record<ActionName, unknown[]> = {
       color_theme: "marketing",
       name: "Tutor",
       faculty: "Business",
-      format: "1:1",
+      format: "1:1 (Online)",
       availability: "Weekends",
       short_bio: "Tutor bio",
       strengths: ["exams", "planning"],

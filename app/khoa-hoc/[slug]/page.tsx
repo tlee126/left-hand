@@ -4,6 +4,7 @@ import { ArrowLeft, BookOpen, Calendar, Check, Clock, Home, Star, User, Video } 
 import { CatalogPageShell } from "@/components/catalog/catalog-page-shell";
 import { getPublishedCourseBySlug } from "@/lib/repositories/catalog-repository";
 import { coverThemes } from "@/components/catalog/theme";
+import { formatVND } from "@/lib/domain/product-types";
 
 export const revalidate = 60;
 
@@ -32,8 +33,8 @@ export default async function CourseDetailPage({
     notFound();
   }
 
-  const theme = coverThemes[item.colorTheme] || coverThemes.economics;
-  const status = statusConfig[item.status] || statusConfig.open;
+  const theme = coverThemes[item.colorTheme];
+  const status = statusConfig[item.course.enrollmentStatus];
 
   return (
     <CatalogPageShell>
@@ -64,7 +65,7 @@ export default async function CourseDetailPage({
               <div className="flex flex-wrap gap-2 mb-3">
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-[#fdf8ec] px-3 py-1 text-[11px] font-extrabold text-[#f59e0b] border border-[#fef3c7]">
                   <Video className="h-3.5 w-3.5" />
-                  {formatLabels[item.format]}
+                  {formatLabels[item.course.format]}
                 </span>
                 <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${status.class}`}>
                   {status.label}
@@ -81,7 +82,7 @@ export default async function CourseDetailPage({
                   <span>{item.rating.toFixed(1)}</span>
                 </div>
                 <span className="text-slate-300">|</span>
-                <span>Môn học: <strong>{item.subject}</strong></span>
+                <span>Môn học: <strong>{item.subject.name}</strong></span>
               </div>
             </div>
 
@@ -97,34 +98,34 @@ export default async function CourseDetailPage({
                 <Clock className="h-5 w-5 text-accent shrink-0 mt-0.5" />
                 <div>
                   <span className="block text-[11px] font-bold uppercase tracking-wider text-[#8a97b4]">Thời lượng</span>
-                  <span className="text-sm font-extrabold text-[#243152]">{item.duration}</span>
+                  <span className="text-sm font-extrabold text-[#243152]">{item.course.duration}</span>
                 </div>
               </div>
               <div className="flex items-start gap-3">
                 <Calendar className="h-5 w-5 text-accent shrink-0 mt-0.5" />
                 <div>
                   <span className="block text-[11px] font-bold uppercase tracking-wider text-[#8a97b4]">Lịch học</span>
-                  <span className="text-sm font-extrabold text-[#243152]">{item.schedule}</span>
+                  <span className="text-sm font-extrabold text-[#243152]">{item.course.schedule}</span>
                 </div>
               </div>
               <div className="flex items-start gap-3">
                 <User className="h-5 w-5 text-accent shrink-0 mt-0.5" />
                 <div>
                   <span className="block text-[11px] font-bold uppercase tracking-wider text-[#8a97b4]">Mentor hướng dẫn</span>
-                  <span className="text-sm font-extrabold text-[#243152]">{item.mentor}</span>
+                  <span className="text-sm font-extrabold text-[#243152]">{item.course.mentor}</span>
                 </div>
               </div>
             </div>
 
             {/* Curriculum */}
-            {item.curriculum && item.curriculum.length > 0 && (
+            {item.course.curriculum.length > 0 && (
               <div className="rounded-2xl border border-slate-100 bg-slate-50/50 p-5 sm:p-6">
                 <h3 className="flex items-center gap-2 text-base font-extrabold text-[#132a67] mb-4">
                   <BookOpen className="h-5 w-5 text-accent" />
                   Nội dung lớp học
                 </h3>
                 <ul className="space-y-3.5">
-                  {item.curriculum.map((curr, idx) => (
+                  {item.course.curriculum.map((curr, idx) => (
                     <li key={idx} className="flex gap-3 text-[14px] leading-6 text-[#5f6d8f]">
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-[10px] font-bold text-accent">
                         {idx + 1}
@@ -137,11 +138,11 @@ export default async function CourseDetailPage({
             )}
 
             {/* Suitable For */}
-            {item.suitableFor && item.suitableFor.length > 0 && (
+            {item.course.suitableFor.length > 0 && (
               <div className="rounded-2xl border border-slate-100 bg-slate-50/50 p-5 sm:p-6">
                 <h3 className="text-base font-extrabold text-[#132a67] mb-4">Khóa học này phù hợp với ai?</h3>
                 <ul className="space-y-3">
-                  {item.suitableFor.map((suit, idx) => (
+                  {item.course.suitableFor.map((suit, idx) => (
                     <li key={idx} className="flex gap-2.5 text-[14px] leading-6 text-[#5f6d8f]">
                       <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
                       <span>{suit}</span>
@@ -152,11 +153,11 @@ export default async function CourseDetailPage({
             )}
 
             {/* Preparation */}
-            {item.preparation && item.preparation.length > 0 && (
+            {item.course.preparation.length > 0 && (
               <div className="rounded-2xl border border-slate-100 bg-slate-50/50 p-5 sm:p-6">
                 <h3 className="text-base font-extrabold text-[#132a67] mb-4">Bạn cần chuẩn bị gì?</h3>
                 <ul className="grid gap-3 sm:grid-cols-2">
-                  {item.preparation.map((prep, idx) => (
+                  {item.course.preparation.map((prep, idx) => (
                     <li key={idx} className="flex gap-2.5 text-[14px] leading-6 text-[#5f6d8f]">
                       <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" strokeWidth={3} />
                       <span>{prep}</span>
@@ -175,9 +176,9 @@ export default async function CourseDetailPage({
 
               <span className="text-[10px] font-bold uppercase tracking-wider text-[#8a97b4]">Chi phí lớp học</span>
               <div className="mt-1 flex items-baseline gap-2">
-                <span className="text-3xl font-black text-[#243152]">{item.price}</span>
-                {item.oldPrice && (
-                  <span className="text-sm font-semibold text-[#9ca7bf] line-through">{item.oldPrice}</span>
+                <span className="text-3xl font-black text-[#243152]">{formatVND(item.pricing.amountVND)}</span>
+                {item.pricing.originalAmountVND !== null && (
+                  <span className="text-sm font-semibold text-[#9ca7bf] line-through">{formatVND(item.pricing.originalAmountVND)}</span>
                 )}
               </div>
 
@@ -189,12 +190,12 @@ export default async function CourseDetailPage({
                 <Link
                   href={`/?interest=${item.slug}&type=course#contact`}
                   className={`flex h-12 w-full items-center justify-center rounded-full text-sm font-extrabold text-white shadow-md transition-all hover:opacity-95 hover:shadow-lg active:scale-98 ${
-                    item.status === "full"
+                    item.course.enrollmentStatus === "full"
                       ? "bg-slate-500 hover:bg-slate-600"
                       : "bg-gradient-to-r from-blue-600 via-violet-600 to-fuchsia-600"
                   }`}
                 >
-                  {item.status === "full" ? "Nhận tư vấn lớp khác" : "Đăng ký lớp này"}
+                  {item.course.enrollmentStatus === "full" ? "Nhận tư vấn lớp khác" : "Đăng ký lớp này"}
                 </Link>
 
                 <Link

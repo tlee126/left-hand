@@ -11,28 +11,6 @@ export type FeatureIconKey =
 
 export type SocialIconKey = "facebook" | "youtube" | "messenger";
 
-import type { Category, ColorTheme } from "@/lib/domain/subjects";
-
-export type ResourceCategory = Category;
-export type ResourceColorTheme = ColorTheme;
-
-export type ResourceType = "TÀI LIỆU" | "KHÓA HỌC";
-
-export type ResourceItem = {
-  id: string;
-  title: string;
-  category: ResourceCategory;
-  type: ResourceType;
-  description: string;
-  price: string;
-  oldPrice?: string;
-  meta: string;
-  bonus?: string;
-  rating: number;
-  isHot?: boolean;
-  colorTheme: ResourceColorTheme;
-};
-
 export const navItems = [
   { label: "Dịch vụ", href: "/#services" },
   { label: "Tài liệu", href: "/#resources" },

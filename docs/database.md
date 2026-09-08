@@ -3,7 +3,7 @@
 This document outlines the PostgreSQL database schema for the LEFT HAND learning platform, designed for Supabase.
 
 > [!NOTE]
-> **Status:** Migrations `0001_core_schema.sql` through `0016_study_plans.sql` are already applied and content-locked. Migration `0017_profile_on_auth_signup.sql` is prepared locally and verified via automated contract checks; it has **NOT** yet been applied to the hosted Supabase project.
+> **Status:** Migrations `0001_core_schema.sql` through `0017_profile_on_auth_signup.sql` are already applied and content-locked. Migration `0018_catalog_semantic_invariants.sql` is prepared locally and verified via automated contract checks; it has **NOT** yet been applied to the hosted Supabase project.
 
 ---
 
@@ -149,6 +149,15 @@ erDiagram
 - No fractional cents or formatted strings (`29.000đ`) are stored in the database.
 - Contact pricing is enforced via `is_contact_for_price = true` with `price_vnd IS NULL` via check constraint `chk_pricing_consistency`.
 
+### Catalog semantic invariants (`0018_catalog_semantic_invariants.sql`)
+
+- A product's `category` and `color_theme` must match its subject and the canonical category/theme mapping.
+- `materials`, `courses`, and `tutors` can only extend products of their matching `kind`.
+- `old_price_vnd` is nullable, but when present it must be at least `price_vnd`; contact-price products cannot carry an original price.
+- `tutors.format` is restricted to the canonical `TUTOR_FORMATS` set, and `tutor_subjects` has at most one primary subject through a partial unique index. The typed repository rejects published tutors without exactly one primary subject before rendering.
+- Trigger helpers are `SECURITY INVOKER`, use a fixed `search_path = public`, perform no out-of-scope DML, and do not change RLS grants or policies.
+- The seed is transactional and updates every product semantic field on conflict, so reruns reconcile stale category, subject, theme, delivery, publication, pricing, rating, and hot flags.
+
 ---
 
 ## 4. Security & Row Level Security (RLS) Policy
@@ -226,6 +235,7 @@ psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0014_p
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0015_learning_progress.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0016_study_plans.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0017_profile_on_auth_signup.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0018_catalog_semantic_invariants.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/seed.sql
 ```
 

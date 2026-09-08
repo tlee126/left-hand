@@ -4,6 +4,7 @@ import { ArrowLeft, BookOpen, Check, FileText, Home, Star, Users } from "lucide-
 import { CatalogPageShell } from "@/components/catalog/catalog-page-shell";
 import { getPublishedMaterialBySlug } from "@/lib/repositories/catalog-repository";
 import { coverThemes } from "@/components/catalog/theme";
+import { formatVND } from "@/lib/domain/product-types";
 
 export const revalidate = 60;
 
@@ -19,10 +20,10 @@ export default async function MaterialDetailPage({
     notFound();
   }
 
-  const theme = coverThemes[item.colorTheme] || coverThemes.accounting;
+  const theme = coverThemes[item.colorTheme];
 
   // Determine document badge label based on tags
-  const docType = item.tags.includes("Sơ đồ Mindmap") ? "MINDMAP" : "PDF HỌC TẬP";
+  const docType = item.material.tags.includes("Sơ đồ Mindmap") ? "MINDMAP" : "PDF HỌC TẬP";
 
   return (
     <CatalogPageShell>
@@ -71,9 +72,9 @@ export default async function MaterialDetailPage({
                   <span>{item.rating.toFixed(1)}</span>
                 </div>
                 <span className="text-slate-300">|</span>
-                <span>Môn học: <strong>{item.subject}</strong></span>
+                <span>Môn học: <strong>{item.subject.name}</strong></span>
                 <span className="text-slate-300">|</span>
-                <span>{item.pages} trang</span>
+                <span>{item.material.pages} trang</span>
               </div>
             </div>
 
@@ -84,14 +85,14 @@ export default async function MaterialDetailPage({
             </div>
 
             {/* Inclusions */}
-            {item.includes && item.includes.length > 0 && (
+            {item.material.includes.length > 0 && (
               <div className="rounded-2xl border border-slate-100 bg-slate-50/50 p-5 sm:p-6">
                 <h3 className="flex items-center gap-2 text-base font-extrabold text-[#132a67] mb-4">
                   <BookOpen className="h-5 w-5 text-accent" />
                   Bạn sẽ nhận được gì?
                 </h3>
                 <ul className="grid gap-3 sm:grid-cols-2">
-                  {item.includes.map((inc, index) => (
+                  {item.material.includes.map((inc, index) => (
                     <li key={index} className="flex gap-2.5 text-[14px] leading-6 text-[#5f6d8f]">
                       <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" strokeWidth={3} />
                       <span>{inc}</span>
@@ -102,14 +103,14 @@ export default async function MaterialDetailPage({
             )}
 
             {/* Suitable For */}
-            {item.suitableFor && item.suitableFor.length > 0 && (
+            {item.material.suitableFor.length > 0 && (
               <div className="rounded-2xl border border-slate-100 bg-slate-50/50 p-5 sm:p-6">
                 <h3 className="flex items-center gap-2 text-base font-extrabold text-[#132a67] mb-4">
                   <Users className="h-5 w-5 text-accent" />
                   Tài liệu này phù hợp với ai?
                 </h3>
                 <ul className="space-y-3">
-                  {item.suitableFor.map((suit, index) => (
+                  {item.material.suitableFor.map((suit, index) => (
                     <li key={index} className="flex gap-2.5 text-[14px] leading-6 text-[#5f6d8f]">
                       <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
                       <span>{suit}</span>
@@ -128,9 +129,9 @@ export default async function MaterialDetailPage({
 
               <span className="text-[10px] font-bold uppercase tracking-wider text-[#8a97b4]">Chi phí sở hữu</span>
               <div className="mt-1 flex items-baseline gap-2">
-                <span className="text-3xl font-black text-[#243152]">{item.price}</span>
-                {item.oldPrice && (
-                  <span className="text-sm font-semibold text-[#9ca7bf] line-through">{item.oldPrice}</span>
+                <span className="text-3xl font-black text-[#243152]">{formatVND(item.pricing.amountVND)}</span>
+                {item.pricing.originalAmountVND !== null && (
+                  <span className="text-sm font-semibold text-[#9ca7bf] line-through">{formatVND(item.pricing.originalAmountVND)}</span>
                 )}
               </div>
 

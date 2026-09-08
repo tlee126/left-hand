@@ -4,15 +4,16 @@ import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
 import { Eye, FileText, Sparkles, Star } from "lucide-react";
 import { coverThemes } from "./theme";
-import type { MaterialItem } from "@/lib/domain/catalog";
+import type { PublishedMaterial } from "@/lib/domain/catalog";
+import { formatVND } from "@/lib/domain/product-types";
 
 interface MaterialCardProps {
-  item: MaterialItem;
+  item: PublishedMaterial;
 }
 
 export function MaterialCard({ item }: MaterialCardProps) {
   const shouldReduceMotion = useReducedMotion();
-  const theme = coverThemes[item.colorTheme] || coverThemes.accounting;
+  const theme = coverThemes[item.colorTheme];
 
   return (
     <motion.article
@@ -66,7 +67,7 @@ export function MaterialCard({ item }: MaterialCardProps) {
             <span>TÀI LIỆU</span>
           </div>
           <span className="text-[12px] font-semibold leading-5 text-[#8a97b4]">
-            {item.pages} trang PDF
+            {item.material.pages} trang PDF
           </span>
         </div>
 
@@ -76,7 +77,7 @@ export function MaterialCard({ item }: MaterialCardProps) {
 
         {/* Tags */}
         <div className="mt-3 flex flex-wrap gap-1.5">
-          {item.tags.map((tag) => (
+          {item.material.tags.map((tag) => (
             <span
               key={tag}
               className="inline-block rounded-md bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-[#8091b8] border border-slate-100"
@@ -91,11 +92,11 @@ export function MaterialCard({ item }: MaterialCardProps) {
           <div className="flex items-end justify-between border-t border-slate-100 pt-4">
             <div className="flex flex-wrap items-center gap-2">
               <strong className="text-[1.15rem] font-black text-[#243152]">
-                {item.price}
+                {formatVND(item.pricing.amountVND)}
               </strong>
-              {item.oldPrice && (
+              {item.pricing.originalAmountVND !== null && (
                 <span className="text-sm font-semibold text-[#9ca7bf] line-through">
-                  {item.oldPrice}
+                  {formatVND(item.pricing.originalAmountVND)}
                 </span>
               )}
             </div>

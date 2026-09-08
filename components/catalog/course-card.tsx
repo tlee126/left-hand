@@ -4,10 +4,11 @@ import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
 import { Calendar, Clock, PlayCircle, Star, User, Video } from "lucide-react";
 import { coverThemes } from "./theme";
-import type { CourseItem } from "@/lib/domain/catalog";
+import type { PublishedCourse } from "@/lib/domain/catalog";
+import { formatVND } from "@/lib/domain/product-types";
 
 interface CourseCardProps {
-  item: CourseItem;
+  item: PublishedCourse;
 }
 
 const formatLabels = {
@@ -25,8 +26,8 @@ const statusConfig = {
 
 export function CourseCard({ item }: CourseCardProps) {
   const shouldReduceMotion = useReducedMotion();
-  const theme = coverThemes[item.colorTheme] || coverThemes.economics;
-  const status = statusConfig[item.status] || statusConfig.open;
+  const theme = coverThemes[item.colorTheme];
+  const status = statusConfig[item.course.enrollmentStatus];
 
   return (
     <motion.article
@@ -69,7 +70,7 @@ export function CourseCard({ item }: CourseCardProps) {
         <div className="mb-4 flex items-center justify-between gap-2">
           <span className="inline-flex items-center gap-1.5 rounded-full bg-[#fdf8ec] px-3 py-1 text-xs font-bold text-[#f59e0b] border border-[#fef3c7]">
             <Video className="h-3.5 w-3.5" />
-            <span>{formatLabels[item.format]}</span>
+            <span>{formatLabels[item.course.format]}</span>
           </span>
           <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${status.class}`}>
             {status.label}
@@ -84,15 +85,15 @@ export function CourseCard({ item }: CourseCardProps) {
         <div className="mt-4 space-y-2.5 border-t border-b border-slate-100 py-3.5 text-xs text-[#617092]">
           <div className="flex items-center gap-2">
             <Clock className="h-3.5 w-3.5 text-accent/70 shrink-0" />
-            <span>Thời lượng: <strong>{item.duration}</strong> ({item.sessions} buổi)</span>
+            <span>Thời lượng: <strong>{item.course.duration}</strong> ({item.course.sessions} buổi)</span>
           </div>
           <div className="flex items-center gap-2">
             <Calendar className="h-3.5 w-3.5 text-accent/70 shrink-0" />
-            <span className="truncate">Lịch học: {item.schedule}</span>
+            <span className="truncate">Lịch học: {item.course.schedule}</span>
           </div>
           <div className="flex items-center gap-2">
             <User className="h-3.5 w-3.5 text-accent/70 shrink-0" />
-            <span className="truncate">Mentor: {item.mentor}</span>
+            <span className="truncate">Mentor: {item.course.mentor}</span>
           </div>
         </div>
 
@@ -101,17 +102,17 @@ export function CourseCard({ item }: CourseCardProps) {
           <div className="flex items-end justify-between">
             <div className="flex flex-wrap items-center gap-2">
               <strong className="text-[1.15rem] font-black text-[#243152]">
-                {item.price}
+                {formatVND(item.pricing.amountVND)}
               </strong>
-              {item.oldPrice && (
+              {item.pricing.originalAmountVND !== null && (
                 <span className="text-sm font-semibold text-[#9ca7bf] line-through">
-                  {item.oldPrice}
+                  {formatVND(item.pricing.originalAmountVND)}
                 </span>
               )}
             </div>
-            {item.tags?.[0] && (
+            {item.course.tags[0] && (
               <span className="rounded-md bg-slate-50 px-2 py-1 text-[10px] font-bold text-[#8091b8] border border-slate-100">
-                {item.tags[0]}
+                {item.course.tags[0]}
               </span>
             )}
           </div>
@@ -126,7 +127,7 @@ export function CourseCard({ item }: CourseCardProps) {
             <Link
               href={`/?interest=${item.slug}&type=course#contact`}
               className={`inline-flex h-10 items-center justify-center gap-1.5 rounded-full text-xs font-bold text-white shadow-sm transition active:scale-95 ${
-                item.status === "full"
+                item.course.enrollmentStatus === "full"
                   ? "bg-slate-300 cursor-not-allowed pointer-events-none"
                   : "bg-gradient-to-r from-blue-600 via-violet-600 to-fuchsia-600 hover:opacity-95 hover:shadow-md"
               }`}
