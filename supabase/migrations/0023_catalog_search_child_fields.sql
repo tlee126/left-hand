@@ -37,13 +37,19 @@ LANGUAGE plpgsql
 SET search_path = public, extensions
 AS $function$
 BEGIN
-    UPDATE public.products
-    SET search_document = public.normalize_catalog_search(concat_ws(' ', products.slug, products.title, products.description, subjects.slug, subjects.name, array_to_string(materials.tags, ' '), courses.mentor, array_to_string(courses.tags, ' '), tutors.name, tutors.faculty, tutors.format, array_to_string(tutors.tags, ' ')))
-    FROM public.subjects AS subjects
-    LEFT JOIN public.materials AS materials ON materials.product_id = products.id
-    LEFT JOIN public.courses AS courses ON courses.product_id = products.id
-    LEFT JOIN public.tutors AS tutors ON tutors.product_id = products.id
-    WHERE products.subject_id = NEW.id AND subjects.id = products.subject_id;
+    UPDATE public.products AS target_products
+    SET search_document = source_products.search_document
+    FROM (
+        SELECT products.id,
+               public.normalize_catalog_search(concat_ws(' ', products.slug, products.title, products.description, subjects.slug, subjects.name, array_to_string(materials.tags, ' '), courses.mentor, array_to_string(courses.tags, ' '), tutors.name, tutors.faculty, tutors.format, array_to_string(tutors.tags, ' '))) AS search_document
+        FROM public.products AS products
+        JOIN public.subjects AS subjects ON subjects.id = products.subject_id
+        LEFT JOIN public.materials AS materials ON materials.product_id = products.id
+        LEFT JOIN public.courses AS courses ON courses.product_id = products.id
+        LEFT JOIN public.tutors AS tutors ON tutors.product_id = products.id
+        WHERE products.subject_id = NEW.id
+    ) AS source_products
+    WHERE target_products.id = source_products.id;
     RETURN NULL;
 END;
 $function$;
@@ -57,13 +63,19 @@ DECLARE
     checked_product_id UUID;
 BEGIN
     checked_product_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.product_id ELSE NEW.product_id END;
-    UPDATE public.products
-    SET search_document = public.normalize_catalog_search(concat_ws(' ', products.slug, products.title, products.description, subjects.slug, subjects.name, array_to_string(materials.tags, ' '), courses.mentor, array_to_string(courses.tags, ' '), tutors.name, tutors.faculty, tutors.format, array_to_string(tutors.tags, ' ')))
-    FROM public.subjects AS subjects
-    LEFT JOIN public.materials AS materials ON materials.product_id = products.id
-    LEFT JOIN public.courses AS courses ON courses.product_id = products.id
-    LEFT JOIN public.tutors AS tutors ON tutors.product_id = products.id
-    WHERE products.id = checked_product_id AND subjects.id = products.subject_id;
+    UPDATE public.products AS target_products
+    SET search_document = source_products.search_document
+    FROM (
+        SELECT products.id,
+               public.normalize_catalog_search(concat_ws(' ', products.slug, products.title, products.description, subjects.slug, subjects.name, array_to_string(materials.tags, ' '), courses.mentor, array_to_string(courses.tags, ' '), tutors.name, tutors.faculty, tutors.format, array_to_string(tutors.tags, ' '))) AS search_document
+        FROM public.products AS products
+        JOIN public.subjects AS subjects ON subjects.id = products.subject_id
+        LEFT JOIN public.materials AS materials ON materials.product_id = products.id
+        LEFT JOIN public.courses AS courses ON courses.product_id = products.id
+        LEFT JOIN public.tutors AS tutors ON tutors.product_id = products.id
+        WHERE products.id = checked_product_id
+    ) AS source_products
+    WHERE target_products.id = source_products.id;
     RETURN NULL;
 END;
 $function$;
@@ -89,13 +101,18 @@ ON public.tutors
 FOR EACH ROW
 EXECUTE FUNCTION public.refresh_product_search_document_from_child();
 
-UPDATE public.products
-SET search_document = public.normalize_catalog_search(concat_ws(' ', products.slug, products.title, products.description, subjects.slug, subjects.name, array_to_string(materials.tags, ' '), courses.mentor, array_to_string(courses.tags, ' '), tutors.name, tutors.faculty, tutors.format, array_to_string(tutors.tags, ' ')))
-FROM public.subjects AS subjects
-LEFT JOIN public.materials AS materials ON materials.product_id = products.id
-LEFT JOIN public.courses AS courses ON courses.product_id = products.id
-LEFT JOIN public.tutors AS tutors ON tutors.product_id = products.id
-WHERE subjects.id = products.subject_id;
+UPDATE public.products AS target_products
+SET search_document = source_products.search_document
+FROM (
+    SELECT products.id,
+           public.normalize_catalog_search(concat_ws(' ', products.slug, products.title, products.description, subjects.slug, subjects.name, array_to_string(materials.tags, ' '), courses.mentor, array_to_string(courses.tags, ' '), tutors.name, tutors.faculty, tutors.format, array_to_string(tutors.tags, ' '))) AS search_document
+    FROM public.products AS products
+    JOIN public.subjects AS subjects ON subjects.id = products.subject_id
+    LEFT JOIN public.materials AS materials ON materials.product_id = products.id
+    LEFT JOIN public.courses AS courses ON courses.product_id = products.id
+    LEFT JOIN public.tutors AS tutors ON tutors.product_id = products.id
+) AS source_products
+WHERE target_products.id = source_products.id;
 
 REVOKE ALL ON FUNCTION public.normalize_catalog_search(TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.refresh_product_search_document() FROM PUBLIC;

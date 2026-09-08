@@ -1448,7 +1448,7 @@ export function assertCatalogChildSearchMigrationContract(sql0023: string): void
     /^create trigger trg_refresh_material_search_document after insert or update of product_id, tags, includes, suitable_for or delete on public\.materials for each row execute function public\.refresh_product_search_document_from_child\(\)$/i,
     /^create trigger trg_refresh_course_search_document after insert or update of product_id, mentor, tags, format or delete on public\.courses for each row execute function public\.refresh_product_search_document_from_child\(\)$/i,
     /^create trigger trg_refresh_tutor_search_document after insert or update of product_id, name, faculty, format, tags or delete on public\.tutors for each row execute function public\.refresh_product_search_document_from_child\(\)$/i,
-    /^update public\.products set search_document = public\.normalize_catalog_search\([\s\S]+ from public\.subjects as subjects[\s\S]+$/i,
+    /^update public\.products as target_products set search_document = source_products\.search_document from \( select products\.id, public\.normalize_catalog_search\([\s\S]+ from public\.products as products join public\.subjects as subjects on subjects\.id = products\.subject_id[\s\S]+\) as source_products(?: where target_products\.id = source_products\.id)?$/i,
     /^revoke all on function public\.(?:normalize_catalog_search\(text\)|refresh_product_search_document\(\)|refresh_products_for_subject_search\(\)|refresh_product_search_document_from_child\(\)) from public$/i
   ];
   fail(statements.length === 15, "Migration 0023 must contain exactly its 15 allowlisted statements");

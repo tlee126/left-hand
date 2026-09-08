@@ -31,6 +31,7 @@ import {
   assertCatalogSearchNormalizationMigrationContract,
   assertCatalogIntegrityBoundaryMigrationContract,
   assertCatalogChildSearchMigrationContract,
+  stripSqlCommentsAndSplitStatements,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
 } from "../../scripts/verify-supabase-migrations-seed-rls";
@@ -1634,6 +1635,20 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       const sql = await fs.readFile(migrationPath, "utf8");
       assert.doesNotThrow(() => assertCatalogChildSearchMigrationContract(sql));
       for (const field of ["courses.mentor", "tutors.name", "tutors.faculty", "tutors.format", "materials.tags"]) assert.match(sql, new RegExp(field.replace(".", "\\."), "i"));
+    });
+
+    test("uses source aliases for trigger refresh and backfill updates", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      const normalized = stripSqlCommentsAndSplitStatements(sql).map(normalizeSql).join(" ; ");
+      const lower = normalized.toLowerCase();
+      const updateStatements = lower.match(/update public\.products as target_products set search_document = source_products\.search_document from \(/g) ?? [];
+
+      assert.equal(updateStatements.length, 3);
+      assert.equal((lower.match(/\) as source_products where target_products\.id = source_products\.id/g) ?? []).length, 3);
+      assert.doesNotMatch(lower, /left join public\.(?:materials|courses|tutors) as \w+ on \w+\.product_id = target_products\.id/);
+      assert.match(lower, /array_to_string\(materials\.tags, ' '\)/);
+      assert.match(lower, /courses\.mentor/);
+      assert.match(lower, /tutors\.(?:name|faculty|format)/);
     });
 
     test("rejects hostile nested and appended statements while ignoring literals", async () => {
