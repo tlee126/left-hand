@@ -40,6 +40,64 @@ export const KNOWN_CONSULTATION_FIELDS = new Set<string>([
 ]);
 
 /**
+ * Consultation attribution is intentionally limited to public, internal
+ * paths. The API endpoint must never persist an arbitrary URL supplied by a
+ * browser.
+ */
+const CONSULTATION_SOURCE_PATH_PREFIXES = ["/tai-lieu", "/khoa-hoc", "/tutor"] as const;
+
+export function normalizeConsultationSourcePath(rawSourcePath: unknown): string | null {
+  if (rawSourcePath === undefined || rawSourcePath === null) return null;
+  if (typeof rawSourcePath !== "string") return null;
+
+  const value = rawSourcePath.trim();
+  if (value.length === 0) return null;
+  if (
+    value.length > CONSULTATION_LIMITS.sourcePath.max ||
+    /[\r\n\\]/.test(value) ||
+    /^[a-z][a-z\d+.-]*:/i.test(value) ||
+    value.startsWith("//") ||
+    !value.startsWith("/")
+  ) {
+    return null;
+  }
+
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+  if (
+    /[\r\n\\]/.test(decoded) ||
+    decoded.startsWith("//") ||
+    /^[a-z][a-z\d+.-]*:/i.test(decoded)
+  ) {
+    return null;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(value, "https://consultation.internal");
+  } catch {
+    return null;
+  }
+  if (parsed.origin !== "https://consultation.internal" || parsed.username || parsed.password) {
+    return null;
+  }
+
+  const pathname = parsed.pathname;
+  const allowed =
+    pathname === "/" ||
+    CONSULTATION_SOURCE_PATH_PREFIXES.some(
+      (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+    );
+  if (!allowed) return null;
+
+  return `${pathname}${parsed.search}`;
+}
+
+/**
  * Raw consultation input shape from client form or API request body.
  */
 export interface ConsultationInput {
@@ -301,7 +359,7 @@ export function validateConsultationInput(input: unknown): ConsultationValidatio
     }
   }
 
-  // 9. sourcePath: optional, string, max 500 characters after trim (empty -> null)
+  // 9. sourcePath: optional internal pathname only (empty -> null)
   const rawSourcePath = record.sourcePath;
   let normalizedSourcePath: string | null = null;
   if (rawSourcePath !== undefined && rawSourcePath !== null) {
@@ -312,7 +370,12 @@ export function validateConsultationInput(input: unknown): ConsultationValidatio
       if (trimmed.length > CONSULTATION_LIMITS.sourcePath.max) {
         errors.sourcePath = `Đường dẫn nguồn không được vượt quá ${CONSULTATION_LIMITS.sourcePath.max} ký tự.`;
       } else if (trimmed.length > 0) {
-        normalizedSourcePath = trimmed;
+        const normalized = normalizeConsultationSourcePath(trimmed);
+        if (normalized === null) {
+          errors.sourcePath = "Đường dẫn nguồn nội bộ không hợp lệ.";
+        } else {
+          normalizedSourcePath = normalized;
+        }
       }
     }
   }

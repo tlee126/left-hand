@@ -1505,6 +1505,7 @@ export function assertConsultationWorkflowMigrationContract(sql0024: string): vo
   const code = normalized.join(" ; ");
   fail(code.includes("old_status <> new_status"), "History must reject same-state entries");
   fail(code.includes("unique (consultation_id, version)"), "History must be unique per consultation version");
+  fail(code.includes("new.status is not distinct from old.status") && code.includes("new.updated_at = old.updated_at") && code.includes("new.updated_by = old.updated_by"), "Same-state retries must preserve database audit fields as an idempotent no-op");
   fail(code.includes("old.status = 'new' and new.status = 'contacted'") && code.includes("old.status = 'contacted' and new.status = 'qualified'") && code.includes("old.status = 'qualified' and new.status = 'closed'"), "Workflow must allow only forward transitions");
   fail(code.includes("new.version is distinct from old.version + 1"), "Real transitions must increment version atomically");
   fail(code.includes("new.updated_by = auth.uid()") && code.includes("new.updated_at = timezone('utc'::text, now())"), "Updater and timestamp must be database-managed");
@@ -1516,6 +1517,20 @@ export function assertConsultationWorkflowMigrationContract(sql0024: string): vo
   const executableCode = maskSqlStringLiterals(normalized.join(" ; "));
   fail(!/\b(?:execute\s+(?:immediate|format)|set\s+role|alter\s+role|service_role|bypassrls)\b/i.test(executableCode), "Migration 0024 must not contain dynamic SQL, role escalation, service role, or BYPASSRLS");
   assertNestedFunctionSqlScope(statements, { allowDmlTables: ["consultation_status_history"], allowSelectTables: [] });
+}
+
+/** Exact trigger cleanup contract for the post-0024 consultation workflow fix. */
+export function assertConsultationWorkflowTriggerCleanupMigrationContract(sql0025: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const normalized = stripSqlCommentsAndSplitStatements(sql0025).map(normalizeMigrationStatement);
+  const allowed = [
+    /^drop trigger if exists trg_consultations_updated_at on public\.consultations$/i,
+    /^drop trigger if exists trg_consultations_updated_by on public\.consultations$/i
+  ];
+  fail(normalized.length === 2, "Migration 0025 must contain exactly two trigger cleanup statements");
+  fail(normalized.every((statement) => allowed.some((pattern) => pattern.test(statement))), "Migration 0025 contains a statement outside its exact allowlist");
 }
 
 export async function runAudit(): Promise<boolean> {
@@ -1557,13 +1572,14 @@ export async function runAudit(): Promise<boolean> {
       "0021_catalog_search_normalization.sql",
       "0022_catalog_integrity_boundary.sql",
       "0023_catalog_search_child_fields.sql",
-      "0024_consultation_workflow_hardening.sql"
+      "0024_consultation_workflow_hardening.sql",
+      "0025_consultation_workflow_trigger_order.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 24 migration files exist in strict topological order",
+      check: "All 25 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -2030,6 +2046,15 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0024_consultation_workflow_hardening", check: "Enforces forward status workflow, append-only history, approved-admin RLS, and optimistic concurrency", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0024ContractValid) results.push({ category: "0024_consultation_workflow_hardening", check: "Enforces forward status workflow, append-only history, approved-admin RLS, and optimistic concurrency", passed: true, details: "Forward-only trigger, database actor/timestamp, atomic history, protected grants, and version token verified" });
+
+    // 25. Audit 0025_consultation_workflow_trigger_order.sql
+    const sql0025 = await fs.readFile(path.join(migrationsDir, "0025_consultation_workflow_trigger_order.sql"), "utf-8");
+    let migration0025ContractValid = true;
+    try { assertConsultationWorkflowTriggerCleanupMigrationContract(sql0025); } catch (error) {
+      migration0025ContractValid = false;
+      results.push({ category: "0025_consultation_workflow_trigger_order", check: "Removes legacy consultation triggers that overwrite workflow-managed audit fields", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0025ContractValid) results.push({ category: "0025_consultation_workflow_trigger_order", check: "Removes legacy consultation triggers that overwrite workflow-managed audit fields", passed: true, details: "Legacy updated_at and updated_by triggers are removed without modifying migrations 0001-0024" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

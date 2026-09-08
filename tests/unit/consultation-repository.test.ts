@@ -585,6 +585,30 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
       );
     });
 
+    test("listConsultations and getConsultationById map createClient factory failures generically", async () => {
+      const sensitive = "SQL password=super-secret phone=0901234567";
+      mockCreateClientError = new Error(sensitive);
+      await assert.rejects(
+        () => listConsultations(),
+        (error: unknown) => error instanceof ConsultationRepositoryError &&
+          (error as Error).message === "Failed to list consultations from database."
+      );
+      await assert.rejects(
+        () => getConsultationById(SAMPLE_CONSULTATION.id),
+        (error: unknown) => error instanceof ConsultationRepositoryError &&
+          (error as Error).message === "Failed to retrieve consultation from database."
+      );
+    });
+
+    test("getConsultationById rejects malformed database rows with a fixed repository error", async () => {
+      mockClientInstance = createMockClient({ queryData: { id: SAMPLE_CONSULTATION.id, status: "new", version: "not-a-number" } });
+      await assert.rejects(
+        () => getConsultationById(SAMPLE_CONSULTATION.id),
+        (error: unknown) => error instanceof ConsultationRepositoryError &&
+          (error as Error).message === "Failed to retrieve consultation from database."
+      );
+    });
+
     test("no raw database details or PII are logged to console", async () => {
       const loggedMessages: string[] = [];
       const originalConsoleError = console.error;
@@ -1390,6 +1414,64 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
           client._calls.find((c) => c.method === "range")?.args,
           [0, 99]
         );
+      });
+
+      test("two concurrent repository mutations use compare-and-swap and leave the stale attempt untouched", async () => {
+        let row = {
+          id: SAMPLE_CONSULTATION.id,
+          status: "new" as const,
+          updated_at: "2026-09-03T10:00:00Z",
+          updated_by: null as string | null,
+          version: 0
+        };
+        let updateCount = 0;
+        const client = {
+          from(table: string) {
+            assert.equal(table, "consultations");
+            let expectedVersion: number | undefined;
+            let expectedStatus: string | undefined;
+            let payload: any;
+            const query: any = {
+              update(value: any) { payload = value; return query; },
+              eq(column: string, value: unknown) {
+                if (column === "version") expectedVersion = value as number;
+                if (column === "status") expectedStatus = value as string;
+                return query;
+              },
+              select() { return query; },
+              async maybeSingle() {
+                if (expectedVersion === row.version && expectedStatus === row.status) {
+                  updateCount++;
+                  row = {
+                    ...row,
+                    status: payload.status,
+                    version: payload.version,
+                    updated_at: "2026-09-03T10:01:00Z",
+                    updated_by: "550e8400-e29b-41d4-a716-446655440001"
+                  };
+                  return { data: row, error: null };
+                }
+                return { data: null, error: null };
+              }
+            };
+            return query;
+          }
+        };
+
+        const results = await Promise.all([
+          updateConsultationStatus(SAMPLE_CONSULTATION.id, "contacted", 0, "new", client),
+          updateConsultationStatus(SAMPLE_CONSULTATION.id, "contacted", 0, "new", client)
+        ]);
+        assert.equal(results.filter(Boolean).length, 1);
+        assert.equal(results.filter((value) => value === null).length, 1);
+        assert.equal(updateCount, 1);
+        assert.deepEqual(row, {
+          id: SAMPLE_CONSULTATION.id,
+          status: "contacted",
+          updated_at: "2026-09-03T10:01:00Z",
+          updated_by: "550e8400-e29b-41d4-a716-446655440001",
+          version: 1
+        });
       });
     });
   });

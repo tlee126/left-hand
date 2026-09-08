@@ -158,6 +158,57 @@ function readInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
 }
 
+function readNullableString(value: unknown): string | null {
+  return value === null ? null : typeof value === "string" ? value : null;
+}
+
+function parseConsultationRow(value: unknown): Consultation {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ConsultationRepositoryError("Failed to retrieve consultation from database.");
+  }
+  const row = value as Record<string, unknown>;
+  const version = readInteger(row.version);
+  if (
+    typeof row.id !== "string" ||
+    typeof row.request_id !== "string" ||
+    typeof row.full_name !== "string" ||
+    typeof row.phone !== "string" ||
+    typeof row.faculty !== "string" ||
+    typeof row.interest !== "string" ||
+    typeof row.need !== "string" ||
+    typeof row.status !== "string" ||
+    !VALID_CONSULTATION_STATUSES.includes(row.status as ConsultationStatus) ||
+    typeof row.created_at !== "string" ||
+    typeof row.updated_at !== "string" ||
+    version === null ||
+    version < 0 ||
+    ![row.major, row.note, row.source_path, row.selected_product_slug, row.selected_subject_slug, row.updated_by]
+      .every((field) => field === null || typeof field === "string")
+  ) {
+    throw new ConsultationRepositoryError("Failed to retrieve consultation from database.");
+  }
+
+  return {
+    id: row.id,
+    request_id: row.request_id,
+    full_name: row.full_name,
+    phone: row.phone,
+    faculty: row.faculty,
+    interest: row.interest,
+    need: row.need,
+    major: readNullableString(row.major),
+    note: readNullableString(row.note),
+    source_path: readNullableString(row.source_path),
+    selected_product_slug: readNullableString(row.selected_product_slug),
+    selected_subject_slug: readNullableString(row.selected_subject_slug),
+    status: row.status,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    updated_by: readNullableString(row.updated_by),
+    version
+  };
+}
+
 function readActorName(value: unknown): string | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const name = Object.getOwnPropertyDescriptor(value, "full_name")?.value;
@@ -229,11 +280,10 @@ export async function resolvePublishedConsultationSelection(
     }
 
     const result = await supabase
-      .from("products")
-      .select(CONSULTATION_CATALOG_SELECT_COLUMNS)
-      .eq("subjects.slug", selectedSubjectSlug)
-      .eq("publication_status", "published")
-      .range(0, 0);
+      .from("subjects")
+      .select("slug")
+      .eq("slug", selectedSubjectSlug)
+      .maybeSingle();
 
     if (result.error) {
       throw new ConsultationRepositoryError(
@@ -241,12 +291,11 @@ export async function resolvePublishedConsultationSelection(
       );
     }
 
-    const rows = Array.isArray(result.data) ? result.data : [];
-    const row = rows[0];
+    const row = result.data;
     const resolvedSubjectSlug = row && typeof row === "object" && !Array.isArray(row)
-      ? readJoinedSubjectSlug(Object.getOwnPropertyDescriptor(row, "subjects")?.value)
+      ? Object.getOwnPropertyDescriptor(row, "slug")?.value
       : null;
-    if (resolvedSubjectSlug === null || resolvedSubjectSlug !== selectedSubjectSlug) {
+    if (typeof resolvedSubjectSlug !== "string" || resolvedSubjectSlug !== selectedSubjectSlug) {
       throw new ConsultationInputError("Invalid consultation catalog selection.");
     }
 
@@ -357,31 +406,30 @@ export async function listConsultations(
     }
   }
 
-  const supabase = await createClient();
-
-  let query = supabase
-    .from("consultations")
-    .select(CONSULTATION_LIST_SELECT_COLUMNS);
-
-  if (options?.status) {
-    query = query.eq("status", options.status);
-  }
-
-  if (sanitizedSearch) {
-    query = query.or(
-      `full_name.ilike.%${sanitizedSearch}%,phone.ilike.%${sanitizedSearch}%`
-    );
-  }
-
-  query = query
-    .order("created_at", { ascending: false })
-    .order("id", { ascending: false })
-    .range(effectiveOffset, effectiveOffset + effectiveLimit - 1);
-
   let data: unknown;
   let error: unknown;
 
   try {
+    const supabase = await createClient();
+    let query = supabase
+      .from("consultations")
+      .select(CONSULTATION_LIST_SELECT_COLUMNS);
+
+    if (options?.status) {
+      query = query.eq("status", options.status);
+    }
+
+    if (sanitizedSearch) {
+      query = query.or(
+        `full_name.ilike.%${sanitizedSearch}%,phone.ilike.%${sanitizedSearch}%`
+      );
+    }
+
+    query = query
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .range(effectiveOffset, effectiveOffset + effectiveLimit - 1);
+
     const result = await query;
     data = result.data;
     error = result.error;
@@ -435,12 +483,11 @@ export async function getConsultationById(
     throw new ConsultationInputError("Invalid consultation ID: must be a valid UUID.");
   }
 
-  const supabase = await createClient();
-
   let data: unknown;
   let error: unknown;
 
   try {
+    const supabase = await createClient();
     const result = await supabase
       .from("consultations")
       .select(CONSULTATION_DETAIL_SELECT_COLUMNS)
@@ -460,7 +507,7 @@ export async function getConsultationById(
     );
   }
 
-  return (data as unknown as Consultation) ?? null;
+  return data === null ? null : parseConsultationRow(data);
 }
 
 /**

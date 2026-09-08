@@ -32,14 +32,44 @@ function normalizeRuntimeIp(value: unknown): string | null {
   return normalized.length > 0 && isIP(normalized) !== 0 ? normalized.toLowerCase() : null;
 }
 
-export function getClientIp(req: NextRequest | Request): string | null {
-  // Only use the platform-provided identity. Forwarded headers are not trusted
-  // because this deployment does not declare a trusted proxy chain.
-  if ("ip" in req) {
-    return normalizeRuntimeIp((req as any).ip);
+function resolveTrustedForwardedIp(req: Request): string | null {
+  // This opt-in is a deployment contract: the configured edge/proxy must
+  // overwrite the header before forwarding it to Next.js. A browser cannot
+  // enable this contract because it cannot change server configuration.
+  if (process.env.CONSULTATION_TRUSTED_PROXY !== "true") return null;
+
+  const forwarded = req.headers.get("x-forwarded-for");
+  if (forwarded !== null) {
+    const hops = forwarded.split(",").map((value) => normalizeRuntimeIp(value));
+    // A malformed hop makes the whole chain unusable; never fall through to
+    // another client-controlled header or silently share a global bucket.
+    return hops.length > 0 && hops.every((value): value is string => value !== null)
+      ? hops[0]
+      : null;
   }
-  return null;
+
+  return normalizeRuntimeIp(req.headers.get("x-real-ip"));
 }
+
+/**
+ * Resolves the consultation rate-limit identity.
+ *
+ * The target Next.js runtime does not expose `NextRequest.ip`. Deployments
+ * must either provide that platform metadata or explicitly set
+ * CONSULTATION_TRUSTED_PROXY=true for a proxy that overwrites X-Forwarded-For
+ * / X-Real-IP. Without either source this returns null and POST fails closed
+ * with an intentional configuration response; it never uses a shared
+ * "unknown" bucket.
+ */
+export function resolveClientIp(request: NextRequest | Request): string | null {
+  const runtimeIp = normalizeRuntimeIp(
+    "ip" in request ? (request as NextRequest & { ip?: unknown }).ip : undefined
+  );
+  return runtimeIp ?? resolveTrustedForwardedIp(request);
+}
+
+/** @deprecated Use resolveClientIp. */
+export const getClientIp = resolveClientIp;
 
 function cleanupRateLimitMap(now: number) {
   for (const [key, val] of RATE_LIMIT_MAP.entries()) {
@@ -89,19 +119,18 @@ export function resetRateLimit() {
   RATE_LIMIT_MAP.clear();
 }
 
-function getDeclaredBodyLength(req: Request): number | null | undefined {
+function getDeclaredBodyLength(req: Request): number | undefined {
   const raw = req.headers.get("content-length");
   if (raw === null) return undefined;
-  if (!/^\d+$/.test(raw)) return null;
+  // An absent or untrusted declaration is not a reason to reject a request;
+  // the capped reader below remains the authoritative byte limit.
+  if (!/^\d+$/.test(raw.trim())) return undefined;
   const length = Number(raw);
-  return Number.isSafeInteger(length) ? length : null;
+  return Number.isSafeInteger(length) ? length : undefined;
 }
 
 async function readBodyWithinLimit(req: Request): Promise<string> {
   const declaredLength = getDeclaredBodyLength(req);
-  if (declaredLength === null) {
-    throw new SyntaxError("Invalid Content-Length");
-  }
   if (declaredLength !== undefined && declaredLength > MAX_CONSULTATION_BODY_BYTES) {
     throw new ConsultationBodyTooLargeError();
   }
@@ -148,7 +177,7 @@ async function readBodyWithinLimit(req: Request): Promise<string> {
  */
 export async function handleConsultationPost(
   req: Request,
-  supabase: any,
+  supabaseOrFactory: any,
   ip: string | null
 ) {
   const contentType = req.headers.get("content-type") || "";
@@ -168,12 +197,6 @@ export async function handleConsultationPost(
       return NextResponse.json(
         { error: "Request entity too large" },
         { status: 413 }
-      );
-    }
-    if (error instanceof SyntaxError && error.message === "Invalid Content-Length") {
-      return NextResponse.json(
-        { error: "Invalid Content-Length" },
-        { status: 400 }
       );
     }
     return NextResponse.json(
@@ -210,6 +233,19 @@ export async function handleConsultationPost(
     return NextResponse.json(
       { error: "Missing or invalid Idempotency-Key header" },
       { status: 400 }
+    );
+  }
+
+  let supabase: any;
+  try {
+    supabase = typeof supabaseOrFactory === "function"
+      ? await supabaseOrFactory()
+      : supabaseOrFactory;
+  } catch {
+    console.error("Failed to create Supabase client");
+    return NextResponse.json(
+      { error: "Service Unavailable" },
+      { status: 503 }
     );
   }
 
@@ -286,19 +322,16 @@ export async function handleConsultationPost(
 }
 
 export async function POST(req: NextRequest) {
-  let supabase;
-  try {
-    // Use the existing server Supabase client
-    supabase = await createClient();
-  } catch (e) {
-    console.error("Failed to create Supabase client");
+  const ip = resolveClientIp(req);
+  if (!ip) {
+    console.error("Consultation rate-limit IP source is not configured");
     return NextResponse.json(
       { error: "Service Unavailable" },
       { status: 503 }
     );
   }
 
-  const ip = getClientIp(req);
-
-  return handleConsultationPost(req, supabase, ip);
+  // Defer client creation until after content-size, JSON, validation, rate
+  // limit, and idempotency guards have passed.
+  return handleConsultationPost(req, createClient, ip);
 }

@@ -113,7 +113,7 @@ const VALID_PAYLOAD = {
   interest: "Toán",
   need: "Cần tư vấn",
   note: "Không",
-  sourcePath: "/path",
+  sourcePath: "/",
   selectedProductSlug: "prod",
   selectedSubjectSlug: "subj"
 };

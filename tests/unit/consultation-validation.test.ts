@@ -7,12 +7,49 @@ import {
   validateConsultation,
   normalizeVietnamesePhone,
   isValidVietnamesePhone,
+  normalizeConsultationSourcePath,
   CONSULTATION_LIMITS,
   KNOWN_CONSULTATION_FIELDS,
   type ConsultationInput
 } from "../../lib/validation/consultation";
 
 describe("Phase 4.1-B: Shared Consultation Validation", () => {
+  describe("0. Internal source attribution boundary", () => {
+    test("normalizes only allowlisted internal pathnames and rejects URL spoofing", () => {
+      assert.equal(normalizeConsultationSourcePath(" /tai-lieu/ke-toan?type=material "), "/tai-lieu/ke-toan?type=material");
+      for (const source of [
+        "https://evil.example/fake",
+        "//evil.example/fake",
+        "javascript:alert(1)",
+        "data:text/html,owned",
+        "/%2f%2fevil.example",
+        "/tai-lieu/%0d%0aX-Leak: yes",
+        "/admin/secret",
+        "https://%65vil.example/encoded"
+      ]) {
+        assert.equal(normalizeConsultationSourcePath(source), null, source);
+      }
+      assert.equal(normalizeConsultationSourcePath(undefined), null);
+      assert.equal(normalizeConsultationSourcePath(""), null);
+    });
+
+    test("validation rejects a spoofed source and persists the canonical pathname", () => {
+      const base: ConsultationInput = {
+        fullName: "Nguyễn Văn An",
+        phone: "0901234567",
+        faculty: "Khoa Tài chính",
+        interest: "Toán",
+        need: "Cần tư vấn"
+      };
+      const rejected = validateConsultationInput({ ...base, sourcePath: "https://evil.example/x" });
+      assert.equal(rejected.isValid, false);
+      assert.ok(rejected.errors.sourcePath);
+      const accepted = validateConsultationInput({ ...base, sourcePath: " /tai-lieu/ke-toan?x=1 " });
+      assert.equal(accepted.isValid, true);
+      assert.equal(accepted.data?.sourcePath, "/tai-lieu/ke-toan?x=1");
+    });
+  });
+
   describe("1. Valid Submissions & Trimming Normalization", () => {
     test("accepts valid complete input with all required and optional fields", () => {
       const input: ConsultationInput = {

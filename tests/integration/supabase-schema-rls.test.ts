@@ -32,6 +32,7 @@ import {
   assertCatalogIntegrityBoundaryMigrationContract,
   assertCatalogChildSearchMigrationContract,
   assertConsultationWorkflowMigrationContract,
+  assertConsultationWorkflowTriggerCleanupMigrationContract,
   stripSqlCommentsAndSplitStatements,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
@@ -250,7 +251,8 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       "0021_catalog_search_normalization.sql",
       "0022_catalog_integrity_boundary.sql",
       "0023_catalog_search_child_fields.sql",
-      "0024_consultation_workflow_hardening.sql"
+      "0024_consultation_workflow_hardening.sql",
+      "0025_consultation_workflow_trigger_order.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -1684,6 +1686,23 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       ]) {
         assert.throws(() => assertConsultationWorkflowMigrationContract(`${sql}\n${hostile}`), /./, hostile);
       }
+    });
+  });
+
+  describe("21. Migration 0025 Consultation Workflow Trigger Cleanup", () => {
+    const migrationPath = path.resolve(process.cwd(), "supabase/migrations/0025_consultation_workflow_trigger_order.sql");
+
+    test("accepts only the legacy consultation trigger cleanup", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      assert.doesNotThrow(() => assertConsultationWorkflowTriggerCleanupMigrationContract(sql));
+    });
+
+    test("rejects unrelated DDL or DML", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      assert.throws(
+        () => assertConsultationWorkflowTriggerCleanupMigrationContract(`${sql}\nDROP TABLE public.consultations;`),
+        /./
+      );
     });
   });
 

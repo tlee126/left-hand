@@ -40,6 +40,13 @@ npm run verify:db
 - Public catalog chạy từ dữ liệu published trong Supabase qua server repository; không dùng catalog static làm nguồn production.
 - Auth, signup, profile và account approval đã có.
 - Admin shell, consultation và catalog CRUD đã có.
+
+Consultation intake rate limiting uses platform-provided request IP metadata when
+available. If the deployment runs behind a proxy, set `CONSULTATION_TRUSTED_PROXY=true`
+only when that proxy overwrites `X-Forwarded-For`/`X-Real-IP`; otherwise the route
+fails closed with an intentional configuration response instead of sharing a
+global anonymous bucket. Source attribution accepts only allowlisted internal
+pathnames.
 - Private storage, upload metadata và signed URL đã có.
 - Product entitlement, student workspace, learning progress và study plans đã có.
 - Schema repository hiện có migration từ `0001` đến `0024` (`0017` xử lý profile signup, `0018` bổ sung invariant semantic cho catalog, `0019` cung cấp transaction-safe admin catalog RPC, `0020` đóng direct table-mutation boundary, `0021` chuẩn hóa search Unicode, `0022` đóng mutation/semantic boundary, `0023` duy trì search document cho child fields, `0024` harden consultation workflow, status history và optimistic concurrency).
