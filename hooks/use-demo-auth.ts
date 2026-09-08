@@ -3,7 +3,10 @@
 import { useEffect, useState, useTransition } from "react";
 import type { User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/browser";
-import { mapAuthError } from "@/lib/auth/error-mapper";
+import {
+  mapAuthError,
+  PUBLIC_ERROR_MESSAGES
+} from "@/lib/auth/error-mapper";
 import {
   performSignup,
   mapSignupError,
@@ -22,6 +25,8 @@ function loadDemoRuntime(): Promise<DemoAuthRuntime> {
   demoRuntimePromise ??= import("./demo-auth-runtime");
   return demoRuntimePromise;
 }
+
+const LOGOUT_ERROR_MESSAGE = PUBLIC_ERROR_MESSAGES.AUTH_UNAVAILABLE;
 
 export {
   performSignup,
@@ -44,6 +49,11 @@ export interface AuthStateUser {
   isDemo?: boolean;
 }
 
+export interface LogoutResult {
+  success: boolean;
+  error?: string;
+}
+
 function getInitialsFromEmailOrName(nameOrEmail: string): string {
   const clean = nameOrEmail.replace(/^tutor\s+/i, "").trim();
   const parts = clean.split(/\s+/);
@@ -61,6 +71,13 @@ export function useDemoAuth() {
   const [user, setUser] = useState<AuthStateUser | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [isPending, startTransition] = useTransition();
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+  // Keep a stable mutable cell without requiring a separate React hook export
+  // in lightweight consumers/test harnesses.
+  const [logoutInFlightRef] = useState<{
+    current: Promise<LogoutResult> | null;
+    succeeded: boolean;
+  }>({ current: null, succeeded: false });
 
   useEffect(() => {
     let isMounted = true;
@@ -80,7 +97,7 @@ export function useDemoAuth() {
 
       // Initial user check
       supabase.auth.getUser().then(({ data: { user: authUser } }) => {
-        if (!isMounted) return;
+        if (!isMounted || logoutInFlightRef.succeeded || logoutInFlightRef.current) return;
 
         if (authUser) {
           const email = authUser.email ?? "";
@@ -103,7 +120,7 @@ export function useDemoAuth() {
         }
         setLoading(false);
       }).catch(() => {
-        if (isMounted) {
+        if (isMounted && !logoutInFlightRef.succeeded && !logoutInFlightRef.current) {
           if (demoRuntime?.hasDemoCredentials()) {
             setUser(demoRuntime.readStoredDemoUser());
           } else {
@@ -119,7 +136,12 @@ export function useDemoAuth() {
       } = supabase.auth.onAuthStateChange((_event, session) => {
         if (!isMounted) return;
 
+        // Do not let a transient SIGNED_OUT event mark the UI logged out before
+        // signOut() confirms that the provider actually invalidated the session.
+        if (logoutInFlightRef.current) return;
+
         if (session?.user) {
+          logoutInFlightRef.succeeded = false;
           const email = session.user.email ?? "";
           const fullName =
             (session.user.user_metadata?.full_name as string) ||
@@ -144,7 +166,7 @@ export function useDemoAuth() {
     };
 
     void initializeAuth().catch(() => {
-      if (isMounted) {
+      if (isMounted && !logoutInFlightRef.succeeded && !logoutInFlightRef.current) {
         setUser(null);
         setLoading(false);
       }
@@ -183,6 +205,7 @@ export function useDemoAuth() {
       }
 
       if (data.user) {
+        logoutInFlightRef.succeeded = false;
         const userEmail = data.user.email ?? "";
         const fullName =
           (data.user.user_metadata?.full_name as string) ||
@@ -242,23 +265,45 @@ export function useDemoAuth() {
     }
   };
 
-  const logout = async () => {
-    try {
-      const supabase = createClient();
-      await supabase.auth.signOut();
-    } catch {
-      // Ignore signOut network errors in local dev
+  const logout = (): Promise<LogoutResult> => {
+    if (logoutInFlightRef.current) {
+      return logoutInFlightRef.current;
     }
 
-    if (isDemoMode) {
+    const operation = (async (): Promise<LogoutResult> => {
+      logoutInFlightRef.succeeded = false;
+      setLogoutError(null);
+
       try {
-        const demoRuntime = await loadDemoRuntime();
-        demoRuntime.clearStoredDemoUser();
+        const supabase = createClient();
+        const { error } = await supabase.auth.signOut();
+
+        if (error) {
+          setLogoutError(LOGOUT_ERROR_MESSAGE);
+          // The current header redirects after a resolved logout promise. A
+          // mapped error keeps that success continuation from running without
+          // exposing the provider's raw error.
+          throw new Error(LOGOUT_ERROR_MESSAGE);
+        }
+
+        if (isDemoMode) {
+          const demoRuntime = await loadDemoRuntime();
+          demoRuntime.clearStoredDemoUser();
+        }
+
+        logoutInFlightRef.succeeded = true;
+        setUser(null);
+        return { success: true };
       } catch {
-        // Ignore unavailable local fixture cleanup.
+        setLogoutError(LOGOUT_ERROR_MESSAGE);
+        throw new Error(LOGOUT_ERROR_MESSAGE);
+      } finally {
+        logoutInFlightRef.current = null;
       }
-    }
-    setUser(null);
+    })();
+
+    logoutInFlightRef.current = operation;
+    return operation;
   };
 
   return {
@@ -269,6 +314,7 @@ export function useDemoAuth() {
     demoEmail,
     login,
     signup,
-    logout
+    logout,
+    logoutError
   };
 }

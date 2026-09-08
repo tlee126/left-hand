@@ -230,6 +230,10 @@ let refCursor = 0;
 const routerCalls = [];
 const authCalls = [];
 const localStorageValues = new Map();
+const authenticatedUser = scenario.authenticated
+  ? { id: "authenticated-user-1", email: "student@example.test", user_metadata: { full_name: "Student" } }
+  : null;
+let authStateChangeCallback;
 
 function useState(initialValue) {
   const index = cursor++;
@@ -246,8 +250,11 @@ function useTransition() { return [false, (callback) => callback()]; }
 
 const authClient = {
   auth: {
-    getUser: async () => ({ data: { user: null }, error: null }),
-    onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
+    getUser: async () => ({ data: { user: authenticatedUser }, error: null }),
+    onAuthStateChange: (eventCallback) => {
+      authStateChangeCallback = eventCallback;
+      return { data: { subscription: { unsubscribe() {} } } };
+    },
     signInWithPassword: async (options) => {
       authCalls.push({ method: "signInWithPassword", options });
       if (scenario.throwError) throw new Error(scenario.rawError || "network failure");
@@ -259,6 +266,13 @@ const authClient = {
     signOut: async () => {
       authCalls.push({ method: "signOut" });
       if (scenario.throwError) throw new Error(scenario.rawError || "network failure");
+      if (scenario.signOutError) {
+        return { error: { message: scenario.rawError || "provider logout details" } };
+      }
+      if (scenario.emitSignedOut) {
+        await Promise.resolve();
+        authStateChangeCallback?.("SIGNED_OUT", null);
+      }
       return { error: null };
     }
   }
@@ -285,7 +299,7 @@ const navigationModule = "data:text/javascript," + encodeURIComponent("export co
 globalThis.__phase3UseRef = useRef;
 const reactModule = "data:text/javascript," + encodeURIComponent("export const useState = (...args) => globalThis.__phase3UseState(...args); export const useRef = (...args) => globalThis.__phase3UseRef(...args); export const useEffect = (...args) => globalThis.__phase3UseEffect(...args); export const useTransition = (...args) => globalThis.__phase3UseTransition(...args); export const Suspense = (props) => props.children;");
 const signupModule = "data:text/javascript," + encodeURIComponent("export const performSignup = async () => ({ success: false }); export const mapSignupError = () => \"Không thể hoàn tất đăng ký lúc này.\"; export const getValidCallbackUrl = () => undefined; export const validateSignupInput = () => ({ isValid: true }); export const validateSignupFullName = () => ({ isValid: true });");
-const errorModule = "data:text/javascript," + encodeURIComponent("export const AUTH_CALLBACK_ERROR_MESSAGE = \"Liên kết xác thực không hợp lệ hoặc đã hết hạn. Vui lòng đăng nhập lại.\"; export const mapAuthError = (error) => ({ code: error?.code === \"invalid_credentials\" ? \"AUTH_INVALID_CREDENTIALS\" : \"AUTH_UNAVAILABLE\", message: error?.code === \"invalid_credentials\" ? \"Email hoặc mật khẩu không chính xác. Vui lòng kiểm tra lại.\" : \"Không thể hoàn tất thao tác tài khoản lúc này. Vui lòng thử lại sau.\" });");
+const errorModule = "data:text/javascript," + encodeURIComponent("export const AUTH_CALLBACK_ERROR_MESSAGE = \"Liên kết xác thực không hợp lệ hoặc đã hết hạn. Vui lòng đăng nhập lại.\"; export const PUBLIC_ERROR_MESSAGES = { AUTH_UNAVAILABLE: \"Không thể hoàn tất thao tác tài khoản lúc này. Vui lòng thử lại sau.\" }; export const mapAuthError = (error) => ({ code: error?.code === \"invalid_credentials\" ? \"AUTH_INVALID_CREDENTIALS\" : \"AUTH_UNAVAILABLE\", message: error?.code === \"invalid_credentials\" ? \"Email hoặc mật khẩu không chính xác. Vui lòng kiểm tra lại.\" : \"Không thể hoàn tất thao tác tài khoản lúc này. Vui lòng thử lại sau.\" });");
 const redirectModule = "data:text/javascript," + encodeURIComponent("export const getSafeRedirectPath = (value) => typeof value === \"string\" && value.startsWith(\"/\") && !value.startsWith(\"//\") && !value.includes(\"://\") ? value : \"/ca-nhan\";");
 const imageModule = "data:text/javascript," + encodeURIComponent("export default (props) => ({ type: \"img\", props });");
 const linkModule = "data:text/javascript," + encodeURIComponent("export default (props) => ({ type: \"a\", props });");
@@ -298,7 +312,7 @@ const moduleValues = {
   [authClientModule]: { createClient: () => { if (scenario.missingEnv) throw new Error("Missing Supabase token=secret"); return authClient; } },
   [navigationModule]: { useRouter: () => ({ push: (value) => routerCalls.push(value) }), useSearchParams: () => new URLSearchParams(scenario.query || "") },
   [signupModule]: { performSignup: async () => ({ success: false }), mapSignupError: () => "Không thể hoàn tất đăng ký lúc này.", getValidCallbackUrl: () => undefined, validateSignupInput: () => ({ isValid: true }), validateSignupFullName: () => ({ isValid: true }) },
-  [errorModule]: { AUTH_CALLBACK_ERROR_MESSAGE: "Liên kết xác thực không hợp lệ hoặc đã hết hạn. Vui lòng đăng nhập lại.", mapAuthError: (error) => ({ code: error?.code === "invalid_credentials" ? "AUTH_INVALID_CREDENTIALS" : "AUTH_UNAVAILABLE", message: error?.code === "invalid_credentials" ? "Email hoặc mật khẩu không chính xác. Vui lòng kiểm tra lại." : "Không thể hoàn tất thao tác tài khoản lúc này. Vui lòng thử lại sau." }) },
+  [errorModule]: { AUTH_CALLBACK_ERROR_MESSAGE: "Liên kết xác thực không hợp lệ hoặc đã hết hạn. Vui lòng đăng nhập lại.", PUBLIC_ERROR_MESSAGES: { AUTH_UNAVAILABLE: "Không thể hoàn tất thao tác tài khoản lúc này. Vui lòng thử lại sau." }, mapAuthError: (error) => ({ code: error?.code === "invalid_credentials" ? "AUTH_INVALID_CREDENTIALS" : "AUTH_UNAVAILABLE", message: error?.code === "invalid_credentials" ? "Email hoặc mật khẩu không chính xác. Vui lòng kiểm tra lại." : "Không thể hoàn tất thao tác tài khoản lúc này. Vui lòng thử lại sau." }) },
   [redirectModule]: { getSafeRedirectPath: (value) => typeof value === "string" && value.startsWith("/") && !value.startsWith("//") && !value.includes("://") ? value : "/ca-nhan" },
   [imageModule]: { default: (props) => ({ type: "img", props }) },
   [linkModule]: { default: (props) => ({ type: "a", props }) },
@@ -361,8 +375,30 @@ try {
   const first = render(page);
 
   if (scenario.operation === "logout") {
+    cursor = 0;
+    refCursor = 0;
     const hook = (await import(hookModule)).useDemoAuth();
-    await hook.logout();
+    const firstLogout = hook.logout();
+    const secondLogout = scenario.repeatedLogout ? hook.logout() : null;
+    const settled = await Promise.allSettled(
+      secondLogout ? [firstLogout, secondLogout] : [firstLogout]
+    );
+    const firstResult = settled[0];
+    if (firstResult.status === "fulfilled" && firstResult.value.success) {
+      routerCalls.push("/");
+    }
+    console.log(JSON.stringify({
+      routerCalls,
+      authCalls,
+      logoutSettled: settled.map((item) =>
+        item.status === "fulfilled"
+          ? item
+          : { status: "rejected", reason: { message: item.reason?.message } }
+      ),
+      state: { user: state[0] ?? null, logoutError: state[2] ?? null },
+      text: ""
+    }));
+    process.exit(0);
   } else {
     for (const input of [
       { name: "email", value: scenario.email || "student@example.test" },
@@ -402,7 +438,7 @@ async function runLoginScenario(scenario: Record<string, unknown>) {
     ["--experimental-test-module-mocks", "--import", "tsx/esm", "-e", loginRuntimeHarness, JSON.stringify(scenario)],
     { cwd: process.cwd(), maxBuffer: 1024 * 1024 }
   );
-  return JSON.parse(stdout.trim()) as { routerCalls: string[]; authCalls: unknown[]; text: string; error?: string };
+  return JSON.parse(stdout.trim()) as { routerCalls: string[]; authCalls: unknown[]; text: string; error?: string; state: { user: any; logoutError: string | null }; logoutSettled: any[] };
 }
 
 describe("Phase 3 login page/hook runtime", () => {
@@ -444,9 +480,64 @@ describe("Phase 3 login page/hook runtime", () => {
   });
 
   test("logout executes the real signOut boundary", async () => {
-    const result = await runLoginScenario({ operation: "logout" });
+    const result = await runLoginScenario({ operation: "logout", authenticated: true });
     assert.equal(result.error, undefined);
     assert.deepEqual(result.authCalls, [{ method: "signOut" }]);
+    assert.deepEqual(result.routerCalls, ["/"]);
+    assert.equal(result.state.user, null);
+    assert.equal(result.state.logoutError, null);
+    assert.equal(result.logoutSettled[0].status, "fulfilled");
+    assert.deepEqual(result.logoutSettled[0].value, { success: true });
+  });
+
+  test("logout provider errors keep the authenticated state and never redirect", async () => {
+    const result = await runLoginScenario({
+      operation: "logout",
+      authenticated: true,
+      signOutError: true,
+      rawError: "RAW SQL session token=secret student@example.test"
+    });
+    assert.equal(result.error, undefined);
+    assert.deepEqual(result.authCalls, [{ method: "signOut" }]);
+    assert.deepEqual(result.routerCalls, []);
+    assert.equal(result.state.user.id, "authenticated-user-1");
+    assert.equal(result.state.logoutError, PUBLIC_ERROR_MESSAGES.AUTH_UNAVAILABLE);
+    assert.equal(result.logoutSettled[0].status, "rejected");
+    assert.equal(result.logoutSettled[0].reason.message, PUBLIC_ERROR_MESSAGES.AUTH_UNAVAILABLE);
+    assert.doesNotMatch(JSON.stringify(result), /RAW SQL|session token=secret/);
+  });
+
+  test("logout exceptions are mapped generically and keep the authenticated state", async () => {
+    const result = await runLoginScenario({
+      operation: "logout",
+      authenticated: true,
+      throwError: true,
+      rawError: "RAW provider stack SQL password=secret"
+    });
+    assert.equal(result.error, undefined);
+    assert.deepEqual(result.authCalls, [{ method: "signOut" }]);
+    assert.deepEqual(result.routerCalls, []);
+    assert.equal(result.state.user.id, "authenticated-user-1");
+    assert.equal(result.state.logoutError, PUBLIC_ERROR_MESSAGES.AUTH_UNAVAILABLE);
+    assert.equal(result.logoutSettled[0].status, "rejected");
+    assert.equal(result.logoutSettled[0].reason.message, PUBLIC_ERROR_MESSAGES.AUTH_UNAVAILABLE);
+    assert.doesNotMatch(JSON.stringify(result), /RAW provider|password=secret|SQL/);
+  });
+
+  test("repeated logout shares one in-flight signOut and one success redirect", async () => {
+    const result = await runLoginScenario({
+      operation: "logout",
+      authenticated: true,
+      repeatedLogout: true,
+      emitSignedOut: true
+    });
+    assert.equal(result.error, undefined);
+    assert.deepEqual(result.authCalls, [{ method: "signOut" }]);
+    assert.deepEqual(result.routerCalls, ["/"]);
+    assert.equal(result.state.user, null);
+    assert.equal(result.logoutSettled.length, 2);
+    assert.deepEqual(result.logoutSettled[0], { status: "fulfilled", value: { success: true } });
+    assert.deepEqual(result.logoutSettled[1], { status: "fulfilled", value: { success: true } });
   });
 });
 
