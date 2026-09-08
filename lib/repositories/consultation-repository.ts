@@ -45,6 +45,8 @@ export const CONSULTATION_STATUS_UPDATE_COLUMNS = [
 export const CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS =
   CONSULTATION_STATUS_UPDATE_COLUMNS.join(", ");
 
+const CONSULTATION_CATALOG_SELECT_COLUMNS = "slug, subjects!inner(slug)";
+
 export interface UpdatedConsultationStatus {
   id: string;
   status: ConsultationStatus;
@@ -70,6 +72,103 @@ export class ConsultationRepositoryError extends Error {
   constructor(message = "Failed to perform consultation repository operation.") {
     super(message);
     this.name = "ConsultationRepositoryError";
+  }
+}
+
+type ConsultationCatalogSelection = {
+  selectedProductSlug: string | null;
+  selectedSubjectSlug: string | null;
+};
+
+function readJoinedSubjectSlug(value: unknown): string | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const slug = Object.getOwnPropertyDescriptor(value, "slug")?.value;
+  return typeof slug === "string" && slug.length > 0 ? slug : null;
+}
+
+/**
+ * Resolves optional consultation catalog references against the public,
+ * published catalog. Client-provided slugs are never returned directly.
+ */
+export async function resolvePublishedConsultationSelection(
+  selectedProductSlug: string | null,
+  selectedSubjectSlug: string | null,
+  client?: any
+): Promise<ConsultationCatalogSelection> {
+  if (selectedProductSlug === null && selectedSubjectSlug === null) {
+    return { selectedProductSlug: null, selectedSubjectSlug: null };
+  }
+
+  try {
+    const supabase = client ?? (await createClient());
+
+    if (selectedProductSlug !== null) {
+      const result = await supabase
+        .from("products")
+        .select(CONSULTATION_CATALOG_SELECT_COLUMNS)
+        .eq("slug", selectedProductSlug)
+        .eq("publication_status", "published")
+        .maybeSingle();
+
+      if (result.error) {
+        throw new ConsultationRepositoryError(
+          "Failed to resolve consultation catalog selection."
+        );
+      }
+
+      const row = result.data;
+      if (row === null || typeof row !== "object" || Array.isArray(row)) {
+        throw new ConsultationInputError("Invalid consultation catalog selection.");
+      }
+
+      const resolvedProductSlug = Object.getOwnPropertyDescriptor(row, "slug")?.value;
+      const resolvedSubjectSlug = readJoinedSubjectSlug(
+        Object.getOwnPropertyDescriptor(row, "subjects")?.value
+      );
+      if (
+        typeof resolvedProductSlug !== "string" ||
+        resolvedSubjectSlug === null ||
+        (selectedSubjectSlug !== null && selectedSubjectSlug !== resolvedSubjectSlug)
+      ) {
+        throw new ConsultationInputError("Invalid consultation catalog selection.");
+      }
+
+      return {
+        selectedProductSlug: resolvedProductSlug,
+        selectedSubjectSlug: resolvedSubjectSlug
+      };
+    }
+
+    const result = await supabase
+      .from("products")
+      .select(CONSULTATION_CATALOG_SELECT_COLUMNS)
+      .eq("subjects.slug", selectedSubjectSlug)
+      .eq("publication_status", "published")
+      .range(0, 0);
+
+    if (result.error) {
+      throw new ConsultationRepositoryError(
+        "Failed to resolve consultation catalog selection."
+      );
+    }
+
+    const rows = Array.isArray(result.data) ? result.data : [];
+    const row = rows[0];
+    const resolvedSubjectSlug = row && typeof row === "object" && !Array.isArray(row)
+      ? readJoinedSubjectSlug(Object.getOwnPropertyDescriptor(row, "subjects")?.value)
+      : null;
+    if (resolvedSubjectSlug === null || resolvedSubjectSlug !== selectedSubjectSlug) {
+      throw new ConsultationInputError("Invalid consultation catalog selection.");
+    }
+
+    return { selectedProductSlug: null, selectedSubjectSlug: resolvedSubjectSlug };
+  } catch (error) {
+    if (error instanceof ConsultationInputError || error instanceof ConsultationRepositoryError) {
+      throw error;
+    }
+    throw new ConsultationRepositoryError(
+      "Failed to resolve consultation catalog selection."
+    );
   }
 }
 
