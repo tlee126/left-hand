@@ -16,7 +16,7 @@ import {
 describe("Phase 4.1-B: Shared Consultation Validation", () => {
   describe("0. Internal source attribution boundary", () => {
     test("normalizes only allowlisted internal pathnames and rejects URL spoofing", () => {
-      assert.equal(normalizeConsultationSourcePath(" /tai-lieu/ke-toan?type=material "), "/tai-lieu/ke-toan?type=material");
+      assert.equal(normalizeConsultationSourcePath(" /tai-lieu/ke-toan?type=material "), "/tai-lieu/ke-toan");
       for (const source of [
         "https://evil.example/fake",
         "//evil.example/fake",
@@ -46,7 +46,7 @@ describe("Phase 4.1-B: Shared Consultation Validation", () => {
       assert.ok(rejected.errors.sourcePath);
       const accepted = validateConsultationInput({ ...base, sourcePath: " /tai-lieu/ke-toan?x=1 " });
       assert.equal(accepted.isValid, true);
-      assert.equal(accepted.data?.sourcePath, "/tai-lieu/ke-toan?x=1");
+      assert.equal(accepted.data?.sourcePath, "/tai-lieu/ke-toan");
     });
   });
 

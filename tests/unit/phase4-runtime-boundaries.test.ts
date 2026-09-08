@@ -9,6 +9,7 @@ type RouteScenario = {
   ip?: string;
   forwarded?: string;
   trustedProxy?: boolean;
+  trustedProxyHops?: string;
   body?: unknown;
   rawBody?: string;
   contentLength?: string;
@@ -20,8 +21,10 @@ type RouteScenario = {
   subjectExists?: boolean;
   sourcePath?: unknown;
   clientError?: boolean;
-  insertError?: { code?: string; message?: string };
+  rpcError?: { code?: string; message?: string };
+  rpcOutcome?: "created" | "duplicate" | "invalid";
   calls?: number;
+  forwardedVariants?: string[];
 };
 
 const routeHarness = String.raw`
@@ -33,6 +36,7 @@ import { NextRequest } from "next/server.js";
 
 const scenario = JSON.parse(process.argv[1]);
 process.env.CONSULTATION_TRUSTED_PROXY = scenario.trustedProxy ? "true" : "false";
+process.env.CONSULTATION_TRUSTED_PROXY_HOPS = scenario.trustedProxyHops ?? "1";
 let createClientCalls = 0;
 const calls = [];
 let inserted = [];
@@ -72,14 +76,15 @@ globalThis.__client = {
   from(table) {
     calls.push(["from", table]);
     if (table === "products" || table === "subjects") return queryFor(table);
-    if (table === "consultations") return {
-      insert(payload) {
-        calls.push(["insert", payload]);
-        inserted.push(payload);
-        return Promise.resolve({ error: scenario.insertError ?? null });
-      }
-    };
     throw new Error("unexpected table");
+  },
+  rpc(name, payload) {
+    calls.push(["rpc", name, payload]);
+    if (name !== "submit_consultation_intake") throw new Error("unexpected RPC");
+    if (scenario.rpcError) return Promise.resolve({ data: null, error: scenario.rpcError });
+    if (scenario.rpcOutcome === "invalid") return Promise.resolve({ data: { outcome: "invalid" }, error: null });
+    inserted.push(payload);
+    return Promise.resolve({ data: { outcome: scenario.rpcOutcome ?? "created" }, error: null });
   }
 };
 
@@ -142,7 +147,11 @@ function makeRequest(s, index = 0) {
 }
 
 const responses = [];
-if (scenario.calls) {
+if (scenario.forwardedVariants) {
+  for (let i = 0; i < scenario.forwardedVariants.length; i++) {
+    responses.push((await POST(makeRequest({ ...scenario, forwarded: scenario.forwardedVariants[i] }, i))).status);
+  }
+} else if (scenario.calls) {
   for (let i = 0; i < scenario.calls; i++) {
     const response = await POST(makeRequest(scenario, i));
     responses.push(response.status);
@@ -187,16 +196,47 @@ describe("Phase 4 runtime boundary coverage", () => {
       body: validBody
     });
     assert.deepEqual(result.statuses, [201]);
-    assert.equal(result.inserted[0].source_path, "/tai-lieu/ke-toan");
-    assert.equal(result.inserted[0].phone, "0901234567");
+    assert.equal(result.inserted[0].p_source_path, "/tai-lieu/ke-toan");
+    assert.equal(result.inserted[0].p_phone, "0901234567");
+    assert.equal(result.calls.filter((call) => call[0] === "rpc").length, 1);
   });
 
   test("isolates two IP buckets, rate-limits the sixth request, and does not call repository after limit", async () => {
-    const first = await runRouteScenario({ trustedProxy: true, forwarded: "198.51.100.1", body: validBody, calls: 6 });
+    const first = await runRouteScenario({ trustedProxy: true, forwarded: "198.51.100.1, 10.0.0.1", body: validBody, calls: 6 });
     assert.deepEqual(first.statuses, [201, 201, 201, 201, 201, 429]);
     assert.equal(first.inserted.length, 5);
-    const second = await runRouteScenario({ trustedProxy: true, forwarded: "198.51.100.2", body: validBody, calls: 1 });
+    const second = await runRouteScenario({ trustedProxy: true, forwarded: "198.51.100.2, 10.0.0.1", body: validBody, calls: 1 });
     assert.deepEqual(second.statuses, [201]);
+  });
+
+  test("canonicalizes IPv6 and IPv4-mapped forms before the exported POST rate limiter", async () => {
+    const ipv6 = await runRouteScenario({
+      trustedProxy: true,
+      body: validBody,
+      forwardedVariants: [
+        "2001:0DB8:0000:0000:0000:0000:0000:0001, 2001:db8::ff",
+        "2001:db8::1, 2001:db8::ff",
+        "2001:db8::1, 2001:db8::ff",
+        "2001:db8::1, 2001:db8::ff",
+        "2001:db8::1, 2001:db8::ff",
+        "2001:db8::1, 2001:db8::ff"
+      ]
+    });
+    assert.deepEqual(ipv6.statuses, [201, 201, 201, 201, 201, 429]);
+
+    const mapped = await runRouteScenario({
+      trustedProxy: true,
+      body: validBody,
+      forwardedVariants: [
+        "::ffff:192.0.2.44, 2001:db8::ff",
+        "0:0:0:0:0:ffff:c000:22c, 2001:db8::ff",
+        "::ffff:192.0.2.44, 2001:db8::ff",
+        "::ffff:192.0.2.44, 2001:db8::ff",
+        "::ffff:192.0.2.44, 2001:db8::ff",
+        "::ffff:192.0.2.44, 2001:db8::ff"
+      ]
+    });
+    assert.deepEqual(mapped.statuses, [201, 201, 201, 201, 201, 429]);
   });
 
   test("fails closed for missing, malformed, and untrusted forwarded identity without a global bucket", async () => {
@@ -206,7 +246,7 @@ describe("Phase 4 runtime boundary coverage", () => {
       { forwarded: "203.0.113.5", trustedProxy: false, body: validBody }
     ]) {
       const result = await runRouteScenario(scenario);
-      assert.deepEqual(result.statuses, [503]);
+      assert.deepEqual(result.statuses, [400]);
       assert.equal(result.createClientCalls, 0);
       assert.equal(result.inserted.length, 0);
     }
@@ -214,41 +254,50 @@ describe("Phase 4 runtime boundary coverage", () => {
 
   test("rejects oversized declared and chunked bodies before client/catalog/repository access", async () => {
     const declared = await runRouteScenario({
-      trustedProxy: true, forwarded: "203.0.113.20", contentLength: String(32 * 1024 + 1), body: validBody
+      trustedProxy: true, forwarded: "203.0.113.20, 10.0.0.1", contentLength: String(32 * 1024 + 1), body: validBody
     });
     assert.deepEqual(declared.statuses, [413]);
     assert.equal(declared.createClientCalls, 0);
     assert.equal(declared.calls.length, 0);
 
-    const chunked = await runRouteScenario({ trustedProxy: true, forwarded: "203.0.113.21", streamCount: 33, streamChunkSize: 1024 });
+    const enormous = await runRouteScenario({
+      trustedProxy: true, forwarded: "203.0.113.201, 10.0.0.1", contentLength: "9007199254740992", body: validBody
+    });
+    assert.deepEqual(enormous.statuses, [413]);
+    assert.equal(enormous.createClientCalls, 0);
+    assert.equal(enormous.calls.length, 0);
+
+    const chunked = await runRouteScenario({ trustedProxy: true, forwarded: "203.0.113.21, 10.0.0.1", streamCount: 33, streamChunkSize: 1024 });
     assert.deepEqual(chunked.statuses, [413]);
     assert.equal(chunked.createClientCalls, 0);
     assert.equal(chunked.streamState.cancelled, true);
     assert.equal(chunked.streamState.pulls, 33);
     assert.equal(chunked.calls.length, 0);
 
-    const untrustedLength = await runRouteScenario({ trustedProxy: true, forwarded: "203.0.113.22", contentLength: "not-a-number", streamCount: 33, streamChunkSize: 1024, streamPrefix: '{"unknown":"' });
-    assert.deepEqual(untrustedLength.statuses, [413]);
+    const untrustedLength = await runRouteScenario({ trustedProxy: true, forwarded: "203.0.113.22, 10.0.0.1", contentLength: "not-a-number", streamCount: 33, streamChunkSize: 1024, streamPrefix: '{"unknown":"' });
+    assert.deepEqual(untrustedLength.statuses, [400]);
     assert.equal(untrustedLength.createClientCalls, 0);
-    assert.equal(untrustedLength.streamState.cancelled, true);
+    // NextRequest may pull one chunk while constructing the request, but the
+    // route itself rejects the malformed declaration before consuming it.
+    assert.equal(untrustedLength.streamState.pulls, 1);
   });
 
   test("maps malformed JSON, spoofed source, catalog lookup, and client factory errors safely", async () => {
-    const malformed = await runRouteScenario({ trustedProxy: true, forwarded: "203.0.113.30", rawBody: "{broken" });
+    const malformed = await runRouteScenario({ trustedProxy: true, forwarded: "203.0.113.30, 10.0.0.1", rawBody: "{broken" });
     assert.deepEqual(malformed.statuses, [400]);
     assert.equal(malformed.createClientCalls, 0);
 
-    const spoofed = await runRouteScenario({ trustedProxy: true, forwarded: "203.0.113.31", body: { ...validBody, sourcePath: "https://evil.example/fake" } });
+    const spoofed = await runRouteScenario({ trustedProxy: true, forwarded: "203.0.113.31, 10.0.0.1", body: { ...validBody, sourcePath: "https://evil.example/fake" } });
     assert.deepEqual(spoofed.statuses, [400]);
     assert.equal(spoofed.createClientCalls, 0);
 
-    const subject = await runRouteScenario({ trustedProxy: true, forwarded: "203.0.113.32", subjectExists: true, subjectOnly: true, body: { ...validBody, selectedSubjectSlug: "existing-subject" } });
+    const subject = await runRouteScenario({ trustedProxy: true, forwarded: "203.0.113.32, 10.0.0.1", subjectExists: true, subjectOnly: true, body: { ...validBody, selectedSubjectSlug: "existing-subject" } });
     assert.deepEqual(subject.statuses, [201]);
-    assert.equal(subject.inserted[0].selected_subject_slug, "existing-subject");
-    assert.equal(subject.inserted[0].selected_product_slug, null);
+    assert.equal(subject.inserted[0].p_selected_subject_slug, "existing-subject");
+    assert.equal(subject.inserted[0].p_selected_product_slug, null);
     assert.ok(subject.calls.some((call) => call[0] === "from" && call[1] === "subjects"));
 
-    const factory = await runRouteScenario({ trustedProxy: true, forwarded: "203.0.113.33", body: validBody, clientError: true });
+    const factory = await runRouteScenario({ trustedProxy: true, forwarded: "203.0.113.33, 10.0.0.1", body: validBody, clientError: true });
     assert.deepEqual(factory.statuses, [503]);
     assert.equal(factory.inserted.length, 0);
   });

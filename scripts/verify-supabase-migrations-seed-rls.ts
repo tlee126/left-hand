@@ -1533,6 +1533,38 @@ export function assertConsultationWorkflowTriggerCleanupMigrationContract(sql002
   fail(normalized.every((statement) => allowed.some((pattern) => pattern.test(statement))), "Migration 0025 contains a statement outside its exact allowlist");
 }
 
+/** Exact public-intake boundary: no table INSERT, one fixed-signature RPC. */
+export function assertConsultationIntakeAccessBoundaryMigrationContract(sql0026: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const statements = stripSqlCommentsAndSplitStatements(sql0026);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const signature = "text, text, text, text, text, text, text, text, text, text, text";
+  const allowed: RegExp[] = [
+    /^revoke insert on table public\.consultations from anon, authenticated$/i,
+    /^drop policy if exists consultations_allow_insert_anon_authenticated on public\.consultations$/i,
+    /^create or replace function public\.submit_consultation_intake\([\s\S]+\) returns jsonb language plpgsql security definer set search_path = pg_catalog, public as \$\$[\s\S]+\$\$$/i,
+    new RegExp(`^revoke all on function public\\.submit_consultation_intake\\(${signature}\\) from public$`, "i"),
+    new RegExp(`^grant execute on function public\\.submit_consultation_intake\\(${signature}\\) to anon, authenticated$`, "i")
+  ];
+  fail(statements.length === 5, "Migration 0026 must contain exactly its five allowlisted statements");
+  fail(normalized.every((statement) => allowed.some((pattern) => pattern.test(statement))), "Migration 0026 contains a statement outside its exact allowlist");
+  const code = normalized.join(" ; ");
+  fail(!/\b(?:service_role|bypassrls|set\s+role|alter\s+role|execute\s+(?:immediate|format)|truncate|copy|call)\b|\bdo\s+(?:(?:language\s+)?plpgsql\b|\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$)/i.test(maskSqlStringLiterals(code)), "Migration 0026 must not contain privilege escalation, dynamic SQL, or hidden executable SQL");
+  fail(!/grant\s+(?:insert|update|delete|all)\b[^;]*\bconsultations\b/i.test(code), "Migration 0026 must not re-grant direct consultation DML");
+  fail(code.includes("drop policy if exists consultations_allow_insert_anon_authenticated"), "Migration 0026 must remove the direct INSERT RLS policy");
+  for (const name of ["p_request_id", "p_full_name", "p_phone", "p_faculty", "p_major", "p_interest", "p_need", "p_note", "p_source_path", "p_selected_product_slug", "p_selected_subject_slug"]) {
+    fail(code.includes(name), `Migration 0026 RPC must use the exact ${name} parameter`);
+  }
+  fail(code.includes("product.publication_status = 'published'"), "Migration 0026 must require a published product");
+  fail(code.includes("inner join public.subjects as subject"), "Migration 0026 must bind a product to its actual subject");
+  fail(code.includes("from public.subjects as subject"), "Migration 0026 must resolve subject-only submissions directly");
+  fail(code.includes("on conflict (request_id) do nothing") && code.includes("'outcome', 'duplicate'"), "Migration 0026 must make duplicate request IDs idempotent");
+  fail(code.includes("v_source_path = '/'") && code.includes("/tai-lieu") && code.includes("/khoa-hoc") && code.includes("/tutor"), "Migration 0026 must allow only internal source paths");
+  assertNestedFunctionSqlScope(statements, { allowDmlTables: ["consultations"], allowSelectTables: ["products", "subjects"], allowSqlExpressionSelect: true });
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -1573,13 +1605,14 @@ export async function runAudit(): Promise<boolean> {
       "0022_catalog_integrity_boundary.sql",
       "0023_catalog_search_child_fields.sql",
       "0024_consultation_workflow_hardening.sql",
-      "0025_consultation_workflow_trigger_order.sql"
+      "0025_consultation_workflow_trigger_order.sql",
+      "0026_consultation_intake_access_boundary.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 25 migration files exist in strict topological order",
+      check: "All 26 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -1831,7 +1864,7 @@ export async function runAudit(): Promise<boolean> {
     }
     const repoSource = await fs.readFile(path.join(rootDir, "lib/repositories/consultation-repository.ts"), "utf-8");
     const repositoryDoesNotAcceptUpdater = /export\s+async\s+function\s+updateConsultationStatus\s*\(\s*id:\s*string\s*,\s*status:\s*ConsultationStatus\s*,\s*expectedVersion:\s*number\s*,\s*expectedStatus:\s*ConsultationStatus\s*,\s*client\?:\s*[^)]*\)/.test(repoSource)
-      && /\.update\(\{\s*status\s*,\s*version:\s*nextVersion\s*\}\)/.test(repoSource)
+      && /\.update\(\{\s*status\s*,\s*version:\s*expectedVersion\s*\+\s*1\s*\}\)/.test(repoSource)
       && !/\.update\(\{[^}]*\b(?:userId|user_id|updatedBy|updated_by)\b/i.test(repoSource);
     results.push({
       category: "0009_consultation_updated_by",
@@ -2055,6 +2088,14 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0025_consultation_workflow_trigger_order", check: "Removes legacy consultation triggers that overwrite workflow-managed audit fields", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0025ContractValid) results.push({ category: "0025_consultation_workflow_trigger_order", check: "Removes legacy consultation triggers that overwrite workflow-managed audit fields", passed: true, details: "Legacy updated_at and updated_by triggers are removed without modifying migrations 0001-0024" });
+
+    const sql0026 = await fs.readFile(path.join(migrationsDir, "0026_consultation_intake_access_boundary.sql"), "utf-8");
+    let migration0026ContractValid = true;
+    try { assertConsultationIntakeAccessBoundaryMigrationContract(sql0026); } catch (error) {
+      migration0026ContractValid = false;
+      results.push({ category: "0026_consultation_intake_access_boundary", check: "Closes direct consultation INSERT and exposes only the verified intake RPC", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0026ContractValid) results.push({ category: "0026_consultation_intake_access_boundary", check: "Closes direct consultation INSERT and exposes only the verified intake RPC", passed: true, details: "Exact payload signature, source/catalog binding, idempotency, and constrained SECURITY DEFINER scope verified" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

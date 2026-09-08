@@ -678,21 +678,31 @@ export async function updateConsultationStatus(
     throw new ConsultationInputError("Invalid consultation status transition.");
   }
 
-  const nextVersion = status === expectedStatus ? expectedVersion : expectedVersion + 1;
-
   let data: unknown;
   let error: unknown;
 
   try {
     const supabase = client ?? (await createClient());
-    const result = await supabase
-      .from("consultations")
-      .update({ status, version: nextVersion })
-      .eq("id", id)
-      .eq("version", expectedVersion)
-      .eq("status", expectedStatus)
-      .select(CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS)
-      .maybeSingle();
+    // A same-state retry is a read-only CAS check. Avoiding UPDATE entirely
+    // prevents legacy/third-party triggers from turning an idempotent retry
+    // into an audit mutation, while the DB trigger remains the authority for
+    // every direct SQL update.
+    const result = status === expectedStatus
+      ? await supabase
+        .from("consultations")
+        .select(CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS)
+        .eq("id", id)
+        .eq("version", expectedVersion)
+        .eq("status", expectedStatus)
+        .maybeSingle()
+      : await supabase
+        .from("consultations")
+        .update({ status, version: expectedVersion + 1 })
+        .eq("id", id)
+        .eq("version", expectedVersion)
+        .eq("status", expectedStatus)
+        .select(CONSULTATION_STATUS_UPDATE_SELECT_COLUMNS)
+        .maybeSingle();
     data = result.data;
     error = result.error;
   } catch {

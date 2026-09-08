@@ -751,7 +751,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
       // Verify only status update is performed, not general update
       const updateMatches = fileContent.match(/\.update\(([^)]*)\)/g) || [];
       assert.strictEqual(updateMatches.length, 1, "Only one .update() call must exist");
-      assert.ok(updateMatches[0].includes("{ status, version: nextVersion }"), "Update call must be strictly status plus expected-version");
+      assert.ok(updateMatches[0].includes("{ status, version: expectedVersion + 1 }"), "Update call must be strictly status plus expected-version");
     });
 
     test("repository selects only explicit consultation columns matching 0006 schema", () => {
@@ -825,6 +825,8 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
       const result = await updateConsultationStatus(
         SAMPLE_CONSULTATION.id,
         "contacted",
+        0,
+        "new",
         client
       );
 
@@ -837,7 +839,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
 
       const updateCall = client._calls.find((c) => c.method === "update");
       assert.ok(updateCall, "Must call .update()");
-      assert.deepStrictEqual(updateCall.args, [{ status: "contacted", version: 0 }]);
+      assert.deepStrictEqual(updateCall.args, [{ status: "contacted", version: 1 }]);
       assert.strictEqual(
         Object.keys(updateCall.args[0]).length,
         2,
@@ -909,7 +911,8 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
       assert.strictEqual(selectCall.args[0], "id, status, updated_at, updated_by, version");
     });
 
-    test("all four valid statuses are accepted and updated", async () => {
+    test("every valid status participates in the forward matrix or a no-op retry", async () => {
+      const expectedStatuses = { new: "new", contacted: "new", qualified: "contacted", closed: "qualified" } as const;
       for (const status of VALID_CONSULTATION_STATUSES) {
         const client = createMockClient({
           queryData: {
@@ -921,6 +924,8 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         const result = await updateConsultationStatus(
           SAMPLE_CONSULTATION.id,
           status,
+          0,
+          expectedStatuses[status],
           client
         );
 
@@ -928,8 +933,8 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
         assert.strictEqual(result.status, status);
 
         const updateCall = client._calls.find((c) => c.method === "update");
-        assert.ok(updateCall);
-        assert.deepStrictEqual(updateCall.args, [{ status, version: 0 }]);
+        if (status === "new") assert.equal(updateCall, undefined);
+        else assert.deepStrictEqual(updateCall?.args, [{ status, version: 1 }]);
       }
     });
 
@@ -1048,7 +1053,7 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
       }
 
       // In a valid call, ensure only status is passed and server-managed fields are never present
-      await updateConsultationStatus(SAMPLE_CONSULTATION.id, "closed", client);
+      await updateConsultationStatus(SAMPLE_CONSULTATION.id, "closed", 0, "qualified", client);
       const updateCall = client._calls.find((c) => c.method === "update");
       assert.ok(updateCall);
       const payloadKeys = Object.keys(updateCall.args[0]);

@@ -90,16 +90,19 @@ function createMockSupabase(
         return query;
       }
 
-      assert.strictEqual(table, "consultations");
-      return {
-        insert: async (payload: any) => {
-          insertedPayload = payload;
-          if (overrideInsert) {
-            return overrideInsert(payload);
-          }
-          return { error: null };
-        }
-      };
+      throw new Error(`unexpected table ${table}`);
+    }
+    ,
+    rpc: async (name: string, payload: any) => {
+      assert.strictEqual(name, "submit_consultation_intake");
+      insertedPayload = payload;
+      if (overrideInsert) {
+        const result = await overrideInsert(payload);
+        return result.error?.code === "23505"
+          ? { data: { outcome: "duplicate" }, error: null }
+          : { data: null, error: result.error };
+      }
+      return { data: { outcome: "created" }, error: null };
     }
   };
   return client;
@@ -138,9 +141,9 @@ describe("Consultation POST API", () => {
 
     const inserted = supabase._getInsertedPayload();
     assert.ok(inserted);
-    assert.strictEqual(inserted.request_id, "test-key-123");
-    assert.strictEqual(inserted.full_name, "Nguyễn Văn An");
-    assert.strictEqual(inserted.phone, "0901234567");
+    assert.strictEqual(inserted.p_request_id, "test-key-123");
+    assert.strictEqual(inserted.p_full_name, "Nguyễn Văn An");
+    assert.strictEqual(inserted.p_phone, "0901234567");
 
     // Server-managed fields like status, id should NOT be in the insert payload
     assert.strictEqual(inserted.status, undefined);
@@ -305,8 +308,8 @@ describe("Consultation POST API", () => {
         body: VALID_PAYLOAD
       });
       const response = await handleConsultationPost(req, supabase, getClientIp(req));
-      assert.strictEqual(response.status, 503);
-      assert.deepStrictEqual(await response.json(), { error: "Service Unavailable" });
+      assert.strictEqual(response.status, 400);
+      assert.deepStrictEqual(await response.json(), { error: "Request identity unavailable" });
     }
     assert.strictEqual(checkRateLimit("unknown"), true);
     assert.strictEqual(checkRateLimit("unknown"), true);
@@ -446,8 +449,8 @@ describe("Consultation POST API", () => {
       "127.0.0.1"
     );
     assert.strictEqual(subjectResponse.status, 201);
-    assert.strictEqual(subjectSupabase._getInsertedPayload().selected_product_slug, null);
-    assert.strictEqual(subjectSupabase._getInsertedPayload().selected_subject_slug, "real-subject");
+    assert.strictEqual(subjectSupabase._getInsertedPayload().p_selected_product_slug, null);
+    assert.strictEqual(subjectSupabase._getInsertedPayload().p_selected_subject_slug, "real-subject");
 
     const noSelectionSupabase = createMockSupabase();
     const noSelectionResponse = await handleConsultationPost(
@@ -456,8 +459,8 @@ describe("Consultation POST API", () => {
       "127.0.0.1"
     );
     assert.strictEqual(noSelectionResponse.status, 201);
-    assert.strictEqual(noSelectionSupabase._getInsertedPayload().selected_product_slug, null);
-    assert.strictEqual(noSelectionSupabase._getInsertedPayload().selected_subject_slug, null);
+    assert.strictEqual(noSelectionSupabase._getInsertedPayload().p_selected_product_slug, null);
+    assert.strictEqual(noSelectionSupabase._getInsertedPayload().p_selected_subject_slug, null);
   });
 
   test("19. product-only selection derives the subject from the published server row", async () => {
@@ -468,8 +471,8 @@ describe("Consultation POST API", () => {
       "127.0.0.1"
     );
     assert.strictEqual(response.status, 201);
-    assert.strictEqual(supabase._getInsertedPayload().selected_product_slug, "real-product");
-    assert.strictEqual(supabase._getInsertedPayload().selected_subject_slug, "real-subject");
+    assert.strictEqual(supabase._getInsertedPayload().p_selected_product_slug, "real-product");
+    assert.strictEqual(supabase._getInsertedPayload().p_selected_subject_slug, "real-subject");
   });
 
   test("20. catalog lookup errors are generic and do not insert", async () => {
@@ -503,7 +506,7 @@ describe("Consultation POST API", () => {
     try {
       await handleConsultationPost(req, supabase, "127.0.0.1");
       assert.strictEqual(loggedErrors.length, 1);
-      assert.strictEqual(loggedErrors[0][0], "Database insert failed for consultation");
+      assert.strictEqual(loggedErrors[0][0], "Consultation intake RPC failed");
       assert.strictEqual(loggedErrors[0].length, 1); // No second argument containing raw error details
     } finally {
       console.error = originalError;

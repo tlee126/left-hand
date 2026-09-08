@@ -94,7 +94,10 @@ export function normalizeConsultationSourcePath(rawSourcePath: unknown): string 
     );
   if (!allowed) return null;
 
-  return `${pathname}${parsed.search}`;
+  // Attribution intentionally stores only an internal pathname. Query strings
+  // can carry identifiers or PII and are not needed to identify the catalog
+  // page from which the form was opened.
+  return pathname;
 }
 
 /**

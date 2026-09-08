@@ -25,41 +25,114 @@ export const MAX_MAP_ENTRIES = 1000;
 export const MAX_CONSULTATION_BODY_BYTES = 32 * 1024;
 
 class ConsultationBodyTooLargeError extends Error {}
+class ConsultationInvalidBodyLengthError extends Error {}
 
-function normalizeRuntimeIp(value: unknown): string | null {
+/**
+ * RFC 5952-style IPv6 canonicalization, including the IPv4-mapped form.
+ * `node:net.isIP` validates the address; this code only serializes that
+ * validated address into one stable rate-limit key.
+ */
+function canonicalizeIpv4(value: string): string | null {
+  if (isIP(value) !== 4) return null;
+  const parts = value.split(".");
+  if (parts.length !== 4) return null;
+  const octets = parts.map((part) => {
+    if (!/^(?:0|[1-9]\d{0,2})$/.test(part)) return null;
+    const octet = Number(part);
+    return Number.isInteger(octet) && octet >= 0 && octet <= 255 ? octet : null;
+  });
+  return octets.every((octet): octet is number => octet !== null)
+    ? octets.join(".")
+    : null;
+}
+
+function canonicalizeIpv6(value: string): string | null {
+  if (isIP(value) !== 6 || value.includes("%")) return null;
+  const halves = value.toLowerCase().split("::");
+  if (halves.length > 2) return null;
+  const parseSide = (side: string): string[] | null => {
+    if (side === "") return [];
+    const groups = side.split(":");
+    const last = groups.at(-1);
+    if (last?.includes(".")) {
+      const ipv4 = canonicalizeIpv4(last);
+      if (!ipv4) return null;
+      const [first, second, third, fourth] = ipv4.split(".").map(Number);
+      groups.splice(-1, 1, ((first << 8) | second).toString(16), ((third << 8) | fourth).toString(16));
+    }
+    return groups.every((group) => /^[0-9a-f]{1,4}$/.test(group)) ? groups : null;
+  };
+  const left = parseSide(halves[0]);
+  const right = parseSide(halves.length === 2 ? halves[1] : "");
+  if (!left || !right) return null;
+  const missing = 8 - left.length - right.length;
+  if ((halves.length === 1 && missing !== 0) || (halves.length === 2 && missing < 1)) return null;
+  const groups = [...left, ...Array(missing).fill("0"), ...right].map((group) => Number.parseInt(group, 16));
+  if (groups.length !== 8 || groups.some((group) => !Number.isInteger(group) || group < 0 || group > 0xffff)) return null;
+  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+    return `::ffff:${groups[6] >> 8}.${groups[6] & 0xff}.${groups[7] >> 8}.${groups[7] & 0xff}`;
+  }
+  const words = groups.map((group) => group.toString(16));
+  let bestStart = -1;
+  let bestLength = 0;
+  for (let index = 0; index < words.length;) {
+    if (words[index] !== "0") { index += 1; continue; }
+    const start = index;
+    while (index < words.length && words[index] === "0") index += 1;
+    if (index - start > bestLength && index - start >= 2) {
+      bestStart = start;
+      bestLength = index - start;
+    }
+  }
+  if (bestStart === -1) return words.join(":");
+  const before = words.slice(0, bestStart).join(":");
+  const after = words.slice(bestStart + bestLength).join(":");
+  return before === "" ? `::${after}` : after === "" ? `${before}::` : `${before}::${after}`;
+}
+
+export function normalizeRuntimeIp(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const normalized = value.trim();
-  return normalized.length > 0 && isIP(normalized) !== 0 ? normalized.toLowerCase() : null;
+  const candidate = value.trim();
+  if (candidate.length === 0) return null;
+  return canonicalizeIpv4(candidate) ?? canonicalizeIpv6(candidate);
+}
+
+function getTrustedProxyHops(): number | null {
+  if (process.env.CONSULTATION_TRUSTED_PROXY !== "true") return null;
+  const raw = process.env.CONSULTATION_TRUSTED_PROXY_HOPS;
+  if (!raw || !/^[1-9]\d*$/.test(raw)) return null;
+  const hops = Number(raw);
+  return Number.isSafeInteger(hops) && hops <= 5 ? hops : null;
 }
 
 function resolveTrustedForwardedIp(req: Request): string | null {
   // This opt-in is a deployment contract: the configured edge/proxy must
   // overwrite the header before forwarding it to Next.js. A browser cannot
   // enable this contract because it cannot change server configuration.
-  if (process.env.CONSULTATION_TRUSTED_PROXY !== "true") return null;
+  const trustedProxyHops = getTrustedProxyHops();
+  if (trustedProxyHops === null) return null;
 
   const forwarded = req.headers.get("x-forwarded-for");
   if (forwarded !== null) {
     const hops = forwarded.split(",").map((value) => normalizeRuntimeIp(value));
     // A malformed hop makes the whole chain unusable; never fall through to
     // another client-controlled header or silently share a global bucket.
-    return hops.length > 0 && hops.every((value): value is string => value !== null)
-      ? hops[0]
+    return hops.length > trustedProxyHops && hops.every((value): value is string => value !== null)
+      ? hops[hops.length - trustedProxyHops - 1]
       : null;
   }
 
-  return normalizeRuntimeIp(req.headers.get("x-real-ip"));
+  return trustedProxyHops === 1 ? normalizeRuntimeIp(req.headers.get("x-real-ip")) : null;
 }
 
 /**
  * Resolves the consultation rate-limit identity.
  *
  * The target Next.js runtime does not expose `NextRequest.ip`. Deployments
- * must either provide that platform metadata or explicitly set
- * CONSULTATION_TRUSTED_PROXY=true for a proxy that overwrites X-Forwarded-For
- * / X-Real-IP. Without either source this returns null and POST fails closed
- * with an intentional configuration response; it never uses a shared
- * "unknown" bucket.
+ * must either provide that platform metadata or explicitly configure both
+ * CONSULTATION_TRUSTED_PROXY=true and CONSULTATION_TRUSTED_PROXY_HOPS for a
+ * proxy that strips and overwrites forwarding headers. Without either source
+ * this returns null; it never uses a shared "unknown" bucket.
  */
 export function resolveClientIp(request: NextRequest | Request): string | null {
   const runtimeIp = normalizeRuntimeIp(
@@ -122,19 +195,16 @@ export function resetRateLimit() {
 function getDeclaredBodyLength(req: Request): number | undefined {
   const raw = req.headers.get("content-length");
   if (raw === null) return undefined;
-  // An absent or untrusted declaration is not a reason to reject a request;
-  // the capped reader below remains the authoritative byte limit.
-  if (!/^\d+$/.test(raw.trim())) return undefined;
-  const length = Number(raw);
-  return Number.isSafeInteger(length) ? length : undefined;
+  // Never coerce unbounded decimal input through Number: it rounds beyond
+  // MAX_SAFE_INTEGER and could turn an oversized body into a chunked read.
+  if (!/^(?:0|[1-9]\d*)$/.test(raw)) throw new ConsultationInvalidBodyLengthError();
+  const length = BigInt(raw);
+  if (length > BigInt(MAX_CONSULTATION_BODY_BYTES)) throw new ConsultationBodyTooLargeError();
+  return Number(length);
 }
 
 async function readBodyWithinLimit(req: Request): Promise<string> {
-  const declaredLength = getDeclaredBodyLength(req);
-  if (declaredLength !== undefined && declaredLength > MAX_CONSULTATION_BODY_BYTES) {
-    throw new ConsultationBodyTooLargeError();
-  }
-
+  getDeclaredBodyLength(req);
   if (!req.body) return "";
 
   const reader = req.body.getReader();
@@ -199,6 +269,9 @@ export async function handleConsultationPost(
         { status: 413 }
       );
     }
+    if (error instanceof ConsultationInvalidBodyLengthError) {
+      return NextResponse.json({ error: "Invalid Content-Length" }, { status: 400 });
+    }
     return NextResponse.json(
       { error: "Invalid JSON body" },
       { status: 400 }
@@ -215,8 +288,8 @@ export async function handleConsultationPost(
 
   if (!ip) {
     return NextResponse.json(
-      { error: "Service Unavailable" },
-      { status: 503 }
+      { error: "Request identity unavailable" },
+      { status: 400 }
     );
   }
 
@@ -279,58 +352,48 @@ export async function handleConsultationPost(
   }
 
   try {
-    // Keep the remaining insert construction below so only server-verified
-    // catalog values enter persistence.
-    const insertPayload = {
-      request_id: idempotencyKey,
-      full_name: data.fullName,
-      phone: data.phone,
-      faculty: data.faculty,
-      major: data.major,
-      interest: data.interest,
-      need: data.need,
-      note: data.note,
-      source_path: data.sourcePath,
-      selected_product_slug: selection.selectedProductSlug,
-      selected_subject_slug: selection.selectedSubjectSlug
-    };
-
-    const { error } = await supabase.from("consultations").insert(insertPayload);
+    // 0026 revokes direct table INSERT. Its fixed-signature RPC repeats the
+    // source/catalog checks in PostgreSQL so API validation cannot be bypassed.
+    const { data: rpcData, error } = await supabase.rpc("submit_consultation_intake", {
+      p_request_id: idempotencyKey,
+      p_full_name: data.fullName,
+      p_phone: data.phone,
+      p_faculty: data.faculty,
+      p_major: data.major,
+      p_interest: data.interest,
+      p_need: data.need,
+      p_note: data.note,
+      p_source_path: data.sourcePath,
+      p_selected_product_slug: selection.selectedProductSlug,
+      p_selected_subject_slug: selection.selectedSubjectSlug
+    });
 
     if (error) {
-      // 23505 is the PostgreSQL error code for unique_violation
-      if (error.code === "23505") {
-        return NextResponse.json(
-          { error: "Request already processed" },
-          { status: 409 }
-        );
-      }
-
-      // Do not log full phone, note, request body, or secrets.
-      console.error("Database insert failed for consultation");
+      console.error("Consultation intake RPC failed");
       return NextResponse.json(
         { error: "Internal Server Error" },
         { status: 500 }
       );
     }
 
-    return NextResponse.json({ success: true }, { status: 201 });
+    if (rpcData && typeof rpcData === "object" && !Array.isArray(rpcData)) {
+      const outcome = Object.getOwnPropertyDescriptor(rpcData, "outcome")?.value;
+      if (outcome === "duplicate") {
+        return NextResponse.json({ error: "Request already processed" }, { status: 409 });
+      }
+      if (outcome === "created") return NextResponse.json({ success: true }, { status: 201 });
+    }
+
+    console.error("Consultation intake RPC returned an invalid response");
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   } catch (e) {
-    console.error("Database insert failed for consultation");
+    console.error("Consultation intake RPC failed");
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
 
 export async function POST(req: NextRequest) {
   const ip = resolveClientIp(req);
-  if (!ip) {
-    console.error("Consultation rate-limit IP source is not configured");
-    return NextResponse.json(
-      { error: "Service Unavailable" },
-      { status: 503 }
-    );
-  }
-
   // Defer client creation until after content-size, JSON, validation, rate
   // limit, and idempotency guards have passed.
   return handleConsultationPost(req, createClient, ip);

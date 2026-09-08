@@ -33,6 +33,7 @@ import {
   assertCatalogChildSearchMigrationContract,
   assertConsultationWorkflowMigrationContract,
   assertConsultationWorkflowTriggerCleanupMigrationContract,
+  assertConsultationIntakeAccessBoundaryMigrationContract,
   stripSqlCommentsAndSplitStatements,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
@@ -252,7 +253,8 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       "0022_catalog_integrity_boundary.sql",
       "0023_catalog_search_child_fields.sql",
       "0024_consultation_workflow_hardening.sql",
-      "0025_consultation_workflow_trigger_order.sql"
+      "0025_consultation_workflow_trigger_order.sql",
+      "0026_consultation_intake_access_boundary.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -1701,6 +1703,35 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       const sql = await fs.readFile(migrationPath, "utf8");
       assert.throws(
         () => assertConsultationWorkflowTriggerCleanupMigrationContract(`${sql}\nDROP TABLE public.consultations;`),
+        /./
+      );
+    });
+  });
+
+  describe("22. Migration 0026 Consultation Intake Access Boundary", () => {
+    const migrationPath = path.resolve(process.cwd(), "supabase/migrations/0026_consultation_intake_access_boundary.sql");
+
+    test("revokes direct INSERT and allows only the exact verified intake RPC", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      assert.doesNotThrow(() => assertConsultationIntakeAccessBoundaryMigrationContract(sql));
+      assert.match(sql, /REVOKE\s+INSERT\s+ON\s+TABLE\s+public\.consultations\s+FROM\s+anon,\s*authenticated/i);
+      assert.match(sql, /ON\s+CONFLICT\s*\(request_id\)\s+DO\s+NOTHING/i);
+      assert.match(sql, /product\.publication_status\s*=\s*'published'/i);
+    });
+
+    test("rejects direct grants, nested DDL/DML, trigger mutation, and privilege escalation", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      for (const hostile of [
+        "GRANT INSERT ON TABLE public.consultations TO anon;",
+        "CREATE POLICY bypass ON public.consultations FOR INSERT TO anon WITH CHECK (true);",
+        "DROP TRIGGER trg_consultations_status_workflow ON public.consultations;",
+        "CREATE OR REPLACE FUNCTION public.leaked() RETURNS void LANGUAGE plpgsql AS $$ BEGIN EXECUTE 'DELETE FROM public.consultations'; END $$;",
+        "ALTER TABLE public.consultations DISABLE ROW LEVEL SECURITY;"
+      ]) {
+        assert.throws(() => assertConsultationIntakeAccessBoundaryMigrationContract(`${sql}\n${hostile}`), /./, hostile);
+      }
+      assert.throws(
+        () => assertConsultationIntakeAccessBoundaryMigrationContract(sql.replace("BEGIN", "BEGIN\n  TRUNCATE TABLE public.consultations;")),
         /./
       );
     });

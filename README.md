@@ -41,15 +41,25 @@ npm run verify:db
 - Auth, signup, profile và account approval đã có.
 - Admin shell, consultation và catalog CRUD đã có.
 
-Consultation intake rate limiting uses platform-provided request IP metadata when
-available. If the deployment runs behind a proxy, set `CONSULTATION_TRUSTED_PROXY=true`
-only when that proxy overwrites `X-Forwarded-For`/`X-Real-IP`; otherwise the route
-fails closed with an intentional configuration response instead of sharing a
-global anonymous bucket. Source attribution accepts only allowlisted internal
-pathnames.
+Consultation intake rate limiting uses canonical platform-provided IP metadata when
+available. A deployment behind a proxy must set both
+`CONSULTATION_TRUSTED_PROXY=true` and `CONSULTATION_TRUSTED_PROXY_HOPS=<n>` only
+after the terminating edge is verified to strip client-supplied forwarding headers,
+write its own `X-Forwarded-For`/`X-Real-IP`, and be the only path to Next.js. The
+route canonicalizes IPv4, IPv6 and IPv4-mapped IPv6 before rate limiting; it never
+shares an `unknown` bucket. Source attribution persists an allowlisted internal
+pathname only (never query parameters).
 - Private storage, upload metadata và signed URL đã có.
 - Product entitlement, student workspace, learning progress và study plans đã có.
-- Schema repository hiện có migration từ `0001` đến `0024` (`0017` xử lý profile signup, `0018` bổ sung invariant semantic cho catalog, `0019` cung cấp transaction-safe admin catalog RPC, `0020` đóng direct table-mutation boundary, `0021` chuẩn hóa search Unicode, `0022` đóng mutation/semantic boundary, `0023` duy trì search document cho child fields, `0024` harden consultation workflow, status history và optimistic concurrency).
+- Schema repository hiện có migration từ `0001` đến `0026` (`0017` xử lý profile signup, `0018` bổ sung invariant semantic cho catalog, `0019` cung cấp transaction-safe admin catalog RPC, `0020` đóng direct table-mutation boundary, `0021` chuẩn hóa search Unicode, `0022` đóng mutation/semantic boundary, `0023` duy trì search document cho child fields, `0024` harden consultation workflow, `0025` loại trigger legacy ghi đè audit, và `0026` đóng direct consultation INSERT bằng RPC kiểm soát).
+
+Consultation rows cannot be inserted directly by `anon` or `authenticated` after
+`0026`. The public form calls the exact-signature `submit_consultation_intake`
+RPC through the API, which repeats source-path, published-catalog, subject relation,
+format, and request-id checks in PostgreSQL. Because a public RPC cannot derive a
+trustworthy network IP on its own, the IP rate limit is an HTTP-edge/API control;
+the edge contract above must be enforced so callers cannot bypass it by reaching a
+different origin. Database validation and idempotency still apply to every RPC call.
 
 `npm run verify:db` kiểm tra tĩnh migration, seed và RLS contract. Đây không phải live database verification; việc xác nhận Supabase instance thực tế cần credentials và môi trường database tương ứng.
 
