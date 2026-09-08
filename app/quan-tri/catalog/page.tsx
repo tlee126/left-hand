@@ -5,8 +5,6 @@ import { COURSE_FORMATS, DELIVERY_KINDS, ENROLLMENT_STATUSES, PUBLICATION_STATUS
 import {
   listAdminSubjects, listAdminMaterials, listAdminCourses, listAdminTutors,
   isValidUuid, type AdminSubject,
-  type CreateAdminSubjectInput, type CreateAdminMaterialInput,
-  type CreateAdminCourseInput, type CreateAdminTutorInput
 } from "@/lib/repositories/admin-catalog-repository";
 import {
   createSubjectAction, updateSubjectAction, deleteSubjectAction,
@@ -73,9 +71,12 @@ const optionLabels: Record<string, string> = {
   accounting: "Kế toán", economics: "Kinh tế", statistics: "Thống kê", marketing: "Marketing", management: "Quản trị", finance: "Tài chính", law: "Luật", mis: "MIS", languages: "Ngoại ngữ"
 };
 
-// Only allowlisted controls become action input. The existing actions validate
-// authorization and every typed value again before any mutation.
-function formInput(kind: Kind, data: FormData) {
+type FormInputValue = string | number | boolean | string[] | null;
+interface FormInput {
+  [key: string]: FormInputValue;
+}
+
+function formInput(kind: Kind, data: FormData): FormInput {
   return Object.fromEntries(fields[kind].map((field) => {
     const raw = data.get(field.name);
     const value = typeof raw === "string" ? raw : "";
@@ -86,27 +87,31 @@ function formInput(kind: Kind, data: FormData) {
   }));
 }
 
+function valueOf(values: object, key: string): unknown {
+  return Object.getOwnPropertyDescriptor(values, key)?.value;
+}
+
 async function saveRecord(kind: Kind, id: string | null, data: FormData) {
   "use server";
   if (id !== null && !isValidUuid(id)) redirect("/quan-tri/catalog?error=1");
   const input = formInput(kind, data);
   switch (kind) {
-    case "subject": return id === null ? createSubjectAction(input as unknown as CreateAdminSubjectInput) : updateSubjectAction(id, input as unknown as CreateAdminSubjectInput);
-    case "material": return id === null ? createMaterialAction(input as unknown as CreateAdminMaterialInput) : updateMaterialAction(id, input as unknown as CreateAdminMaterialInput);
-    case "course": return id === null ? createCourseAction(input as unknown as CreateAdminCourseInput) : updateCourseAction(id, input as unknown as CreateAdminCourseInput);
-    case "tutor": return id === null ? createTutorAction(input as unknown as CreateAdminTutorInput) : updateTutorAction(id, input as unknown as CreateAdminTutorInput);
+    case "subject": return id === null ? createSubjectAction(input) : updateSubjectAction(id, input);
+    case "material": return id === null ? createMaterialAction(input) : updateMaterialAction(id, input);
+    case "course": return id === null ? createCourseAction(input) : updateCourseAction(id, input);
+    case "tutor": return id === null ? createTutorAction(input) : updateTutorAction(id, input);
   }
 }
 
 const button = "inline-flex min-h-11 items-center justify-center rounded-full bg-accent px-5 py-2 text-sm font-extrabold text-white shadow-sm transition hover:bg-[#1258ce]";
-function Editor({ kind, id = null, values = {}, subjects }: { kind: Kind; id?: string | null; values?: Record<string, unknown>; subjects: AdminSubject[] }) {
+function Editor({ kind, id = null, values = {}, subjects }: { kind: Kind; id?: string | null; values?: object; subjects: AdminSubject[] }) {
   return <form action={saveRecord.bind(null, kind, id)} className="mt-4 space-y-4">
     <fieldset className="min-w-0">
       <legend className="text-sm font-black text-ink">{id ? "Chỉnh sửa" : "Tạo mới"} · {labels[kind]}</legend>
       <p className="mt-2 text-xs leading-6 text-ink/65">Các trường có * là bắt buộc. Với danh sách, nhập mỗi mục trên một dòng.</p>
       <div className="mt-4 grid min-w-0 gap-4 sm:grid-cols-2">
         {fields[kind].map((field) => {
-          const value = values[field.name] ?? field.initial ?? (field.name === "delivery_kind" ? ({ material: "digital_download", course: "live_session", tutor: "one_on_one_tutoring", subject: "" }[kind]) : "");
+          const value = valueOf(values, field.name) ?? field.initial ?? (field.name === "delivery_kind" ? ({ material: "digital_download", course: "live_session", tutor: "one_on_one_tutoring", subject: "" }[kind]) : "");
           const control = { name: field.name, required: field.required, className: "notebook-input mt-1 min-w-0 max-w-full", defaultValue: String(value), maxLength: field.maxLength };
           return <label key={field.name} className="block min-w-0 text-sm font-bold text-ink/65">
             <span>{field.label}{field.required ? " *" : ""}</span>
@@ -162,7 +167,7 @@ export default async function AdminCatalogPage({ searchParams }: { searchParams?
       {result.status === "rejected" ? <p role="alert" className="surface-card p-5 text-sm text-ink/65">Không thể tải danh mục lúc này. Vui lòng thử lại sau.</p> : rows.length === 0 ? <p className="notebook-card notebook-paper-lines rounded-2xl p-6 text-sm text-ink/65">Chưa có {labels[kind].toLowerCase()} trong trang này.</p> : rows.slice(0, 20).map((row) => <article key={row.id} className="surface-card min-w-0 p-5 sm:p-6">
         <h3 className="break-words text-lg font-black [overflow-wrap:anywhere]">{row.title}</h3>
         {"publication_status" in row.values ? <p className="mt-2 text-sm text-ink/65">{optionLabels[String(row.values.publication_status)] ?? "Trạng thái chưa xác định"}</p> : null}
-        {kind === "material" && materialVersions !== null && isValidUuid(row.id) ? <div className="mt-4 border-t border-ink/10 pt-4"><p className="text-sm font-bold text-ink/65">{typeof (row.values as Record<string, unknown>).material_asset_version === "number" ? `Phiên bản tệp hiện tại: v${(row.values as unknown as Record<string, number>).material_asset_version}` : "Chưa có tệp được tải lên."}</p><form action={`/api/admin/materials/${row.id}/upload`} method="post" encType="multipart/form-data" className="mt-3 flex flex-wrap items-end gap-3"><label className="block text-sm font-bold text-ink/65"><span>Tệp PDF hoặc video</span><input name="file" type="file" required accept="application/pdf,video/mp4,video/webm,video/quicktime" className="mt-1 block max-w-full text-sm" /></label><button type="submit" className={button}>Tải phiên bản mới</button></form></div> : null}
+        {kind === "material" && materialVersions !== null && isValidUuid(row.id) ? <div className="mt-4 border-t border-ink/10 pt-4"><p className="text-sm font-bold text-ink/65">{typeof valueOf(row.values, "material_asset_version") === "number" ? `Phiên bản tệp hiện tại: v${String(valueOf(row.values, "material_asset_version"))}` : "Chưa có tệp được tải lên."}</p><form action={`/api/admin/materials/${row.id}/upload`} method="post" encType="multipart/form-data" className="mt-3 flex flex-wrap items-end gap-3"><label className="block text-sm font-bold text-ink/65"><span>Tệp PDF hoặc video</span><input name="file" type="file" required accept="application/pdf,video/mp4,video/webm,video/quicktime" className="mt-1 block max-w-full text-sm" /></label><button type="submit" className={button}>Tải phiên bản mới</button></form></div> : null}
         {isValidUuid(row.id) ? <><details className="mt-4 min-w-0"><summary className="cursor-pointer text-sm font-bold text-accent">Chỉnh sửa · {row.title}</summary><Editor kind={kind} id={row.id} values={row.values} subjects={subjects} /></details>
           <details className="mt-4 border-t border-ink/10 pt-4"><summary className="cursor-pointer text-sm font-bold text-rose-700">Xóa · {row.title}</summary><form action={remove.bind(null, row.id)} className="mt-3 space-y-3"><p className="text-sm text-ink/65">Thao tác xóa không thể hoàn tác. Nếu nội dung đang được sử dụng, yêu cầu có thể không thực hiện được.</p><label className="flex items-center gap-2 text-sm text-ink/65"><input type="checkbox" required />Tôi xác nhận xóa bản ghi này</label><button type="submit" className="min-h-11 rounded-full border border-rose-200 px-5 py-2 text-sm font-extrabold text-rose-700">Xác nhận xóa</button></form></details></> : <p className="mt-3 text-sm text-ink/65">Không thể chỉnh sửa bản ghi này.</p>}
       </article>)}

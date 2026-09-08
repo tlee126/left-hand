@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Search } from "lucide-react";
 import { CourseCard } from "@/components/catalog/course-card";
 import { EmptyState } from "@/components/catalog/empty-state";
 import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
-import type { PublishedCourse } from "@/lib/domain/catalog";
-import { compareNullableVND } from "@/lib/domain/product-types";
+import { CatalogPagination } from "@/components/catalog/catalog-pagination";
+import type { CatalogFilters, CatalogPage, PublishedCourse } from "@/lib/domain/catalog";
 import { courseFilterOptions, type CourseFilter } from "@/components/catalog/catalog-options";
+import { buildCatalogFilterUrl } from "@/lib/domain/catalog-url";
 
 type SortOption = "newest" | "price-asc" | "price-desc" | "rating-desc";
 
@@ -20,16 +22,41 @@ const sortOptions = [
 ];
 
 interface CoursesCatalogClientProps {
-  initialCourses: PublishedCourse[];
+  initialCourses: readonly PublishedCourse[];
+  pagination: CatalogPage<PublishedCourse>;
+  initialFilters: CatalogFilters;
 }
 
 export function CoursesCatalogClient({
-  initialCourses
+  initialCourses,
+  pagination,
+  initialFilters
 }: CoursesCatalogClientProps) {
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<CourseFilter>("Tất cả");
-  const [sortBy, setSortBy] = useState<SortOption>("newest");
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [query, setQuery] = useState(initialFilters.search ?? "");
+  const filter: CourseFilter = initialFilters.courseFormats?.length === 2 && initialFilters.courseFormats.includes("zoom")
+    ? "Online"
+    : initialFilters.courseFormat === "zoom"
+    ? "Zoom"
+    : initialFilters.courseFormat === "video"
+      ? "Video"
+      : initialFilters.courseFormat === "online"
+        ? "Online"
+        : initialFilters.enrollmentStatus === "coming-soon"
+          ? "Sắp mở"
+          : initialFilters.enrollmentStatus === "open" ? "Đang nhận đăng ký" : "Tất cả";
+  const sortBy = (initialFilters.sort as SortOption | undefined) ?? "newest";
   const filterContainerRef = useRef<HTMLDivElement>(null);
+
+  const updateQuery = (key: string, value?: string) => {
+    router.push(buildCatalogFilterUrl(pathname, searchParams.toString(), [[key, value]]), { scroll: false });
+  };
+
+  const updateFilters = (entries: Array<[string, string | undefined]>) => {
+    router.push(buildCatalogFilterUrl(pathname, searchParams.toString(), entries), { scroll: false });
+  };
 
   // Auto-scroll filter chip into view
   useEffect(() => {
@@ -46,61 +73,14 @@ export function CoursesCatalogClient({
     }
   }, [filter]);
 
+  useEffect(() => {
+    setQuery(initialFilters.search ?? "");
+  }, [initialFilters.search]);
+
   const handleReset = () => {
     setQuery("");
-    setFilter("Tất cả");
-    setSortBy("newest");
+    router.push(pathname, { scroll: false });
   };
-
-  const processedCourses = useMemo(() => {
-    let result = [...initialCourses];
-
-    // Filter by type/status
-    if (filter === "Zoom") {
-      result = result.filter((item) => item.course.format === "zoom");
-    } else if (filter === "Video") {
-      result = result.filter((item) => item.course.format === "video");
-    } else if (filter === "Online") {
-      result = result.filter(
-        (item) => item.course.format === "online" || item.course.format === "zoom"
-      );
-    } else if (filter === "Sắp mở") {
-      result = result.filter((item) => item.course.enrollmentStatus === "coming-soon");
-    } else if (filter === "Đang nhận đăng ký") {
-      result = result.filter((item) => item.course.enrollmentStatus === "open");
-    }
-
-    // Filter by search query
-    const normalizedQuery = query.trim().toLowerCase();
-    if (normalizedQuery) {
-      result = result.filter((item) => {
-        return (
-          item.title.toLowerCase().includes(normalizedQuery) ||
-          item.subject.name.toLowerCase().includes(normalizedQuery) ||
-          item.category.toLowerCase().includes(normalizedQuery) ||
-          item.course.mentor.toLowerCase().includes(normalizedQuery) ||
-          item.description.toLowerCase().includes(normalizedQuery)
-        );
-      });
-    }
-
-    // Sort
-    result.sort((a, b) => {
-      if (sortBy === "price-asc") {
-        return compareNullableVND(a.pricing.amountVND, b.pricing.amountVND, "asc");
-      }
-      if (sortBy === "price-desc") {
-        return compareNullableVND(a.pricing.amountVND, b.pricing.amountVND, "desc");
-      }
-      if (sortBy === "rating-desc") {
-        return b.rating - a.rating;
-      }
-      // "newest"
-      return 0;
-    });
-
-    return result;
-  }, [initialCourses, filter, query, sortBy]);
 
   return (
     <div className="section-shell px-4 py-8 sm:px-8 sm:py-10 lg:px-10">
@@ -131,7 +111,14 @@ export function CoursesCatalogClient({
                   <button
                     key={opt.label}
                     type="button"
-                    onClick={() => setFilter(opt.label)}
+                  onClick={() => {
+                    if (opt.label === "Zoom") updateFilters([["courseFormat", "zoom"], ["enrollmentStatus", undefined]]);
+                    else if (opt.label === "Video") updateFilters([["courseFormat", "video"], ["enrollmentStatus", undefined]]);
+                    else if (opt.label === "Online") updateFilters([["courseFormat", "online,zoom"], ["enrollmentStatus", undefined]]);
+                    else if (opt.label === "Sắp mở") updateFilters([["courseFormat", undefined], ["enrollmentStatus", "coming-soon"]]);
+                    else if (opt.label === "Đang nhận đăng ký") updateFilters([["courseFormat", undefined], ["enrollmentStatus", "open"]]);
+                    else updateFilters([["courseFormat", undefined], ["enrollmentStatus", undefined]]);
+                  }}
                     data-filter-active={isActive ? "true" : "false"}
                     className={[
                       "inline-flex h-10 items-center rounded-full px-4 text-xs font-semibold transition shrink-0",
@@ -154,6 +141,7 @@ export function CoursesCatalogClient({
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === "Enter") updateQuery("search", query.trim() || undefined); }}
                   placeholder="Tìm khóa học, mentor..."
                   className="h-10 w-full rounded-[16px] border border-[#d8deef] bg-slate-50/90 pl-10 pr-4 text-xs font-medium text-[#22325f] outline-none transition placeholder:text-[#98a4be] focus:border-accent/45 focus:bg-white focus:ring-4 focus:ring-accent/10"
                 />
@@ -161,7 +149,7 @@ export function CoursesCatalogClient({
 
               <select
                 value={sortBy}
-                onChange={(event) => setSortBy(event.target.value as SortOption)}
+                onChange={(event) => updateQuery("sort", event.target.value === "newest" ? undefined : event.target.value)}
                 className="h-10 rounded-[16px] border border-[#d8deef] bg-slate-50/90 px-4 text-xs font-semibold text-[#22325f] outline-none transition focus:border-accent/45 focus:bg-white"
               >
                 {sortOptions.map((opt) => (
@@ -177,9 +165,9 @@ export function CoursesCatalogClient({
 
       {/* Results grid */}
       <div className="mt-6">
-        {processedCourses.length > 0 ? (
+        {initialCourses.length > 0 ? (
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {processedCourses.map((item) => (
+            {initialCourses.map((item) => (
               <CourseCard key={item.id} item={item} />
             ))}
           </div>
@@ -189,6 +177,7 @@ export function CoursesCatalogClient({
             message="Không tìm thấy khóa học phù hợp."
           />
         )}
+        <CatalogPagination page={pagination} />
       </div>
     </div>
   );

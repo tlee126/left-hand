@@ -12,15 +12,23 @@ import {
   listPublishedMaterials,
   listPublishedProducts,
   listPublishedTutors,
+  listMaterials,
+  listCourses,
+  listTutors,
+  getProductBySlug,
+  type CatalogFilters,
   mapRowToCourseItem,
   mapRowToMaterialItem,
   mapRowToTutorItem,
-  type CatalogClient
+  type CatalogClient,
+  type CatalogQuery,
+  type CatalogQueryResult
 } from "../../lib/repositories/catalog-repository";
+import { normalizeCatalogSearch } from "../../lib/domain/catalog";
 
 const timestamps = { created_at: "2026-08-25T00:00:00Z", updated_at: "2026-08-25T00:00:00Z" };
 
-function subject(overrides: Record<string, unknown> = {}) {
+function subject(overrides: object = {}) {
   return {
     id: "subj-123", slug: "ke-toan-tai-chinh-1", name: "Kế toán tài chính 1",
     category: "Kế toán" as const, faculty_group: "Kế toán - Kiểm toán", color_theme: "accounting" as const,
@@ -28,7 +36,7 @@ function subject(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function product(overrides: Record<string, unknown> = {}) {
+function product(overrides: object = {}) {
   return {
     id: "prod-123", slug: "ke-toan-tai-chinh-1", kind: "material" as const,
     title: "Tóm tắt Kế toán tài chính 1", description: "Mô tả tài liệu", subject_id: "subj-123",
@@ -39,7 +47,7 @@ function product(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function materialRow(overrides: Record<string, unknown> = {}) {
+function materialRow(overrides: object = {}) {
   return {
     ...product(overrides),
     materials: { product_id: "prod-123", pages: 48, tags: ["Lý thuyết", "Bài tập"], includes: ["48 trang PDF"], suitable_for: ["Sinh viên UFM"], ...timestamps },
@@ -47,7 +55,7 @@ function materialRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function courseRow(overrides: Record<string, unknown> = {}) {
+function courseRow(overrides: object = {}) {
   return {
     ...product({ id: "crs-123", slug: "lop-on-thi-cuoi-ky-marketing", kind: "course" as const, title: "Lớp ôn Marketing", description: "Mô tả khóa học", subject_id: "subj-mkt", category: "Marketing" as const, delivery_kind: "live_session" as const, color_theme: "marketing" as const, price_vnd: 129000, old_price_vnd: 250000, is_hot: false }),
     courses: { product_id: "crs-123", format: "zoom" as const, sessions: 4, duration: "8 giờ học", schedule: "Tối Thứ 4", enrollment_status: "open" as const, mentor: "Chị Minh Thư", tags: ["Live Zoom"], curriculum: ["Buổi 1"], suitable_for: ["Sinh viên UFM"], preparation: ["Đề cương"], ...timestamps },
@@ -56,7 +64,7 @@ function courseRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function tutorRow(overrides: Record<string, unknown> = {}) {
+function tutorRow(overrides: object = {}) {
   const primary = subject();
   return {
     ...product({ id: "tut-123", slug: "tutor-ke-toan-tai-chinh-1", kind: "tutor" as const, title: "Tutor Minh Thư", description: "Giới thiệu tutor", delivery_kind: "one_on_one_tutoring" as const, is_hot: false }),
@@ -67,18 +75,49 @@ function tutorRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function mockClient(rows: Record<string, unknown[] | unknown> = {}, error: unknown = null): CatalogClient {
+interface MockRows { products?: unknown[] | unknown; }
+
+function field(value: unknown, key: string): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return Object.getOwnPropertyDescriptor(value, key)?.value;
+}
+
+function mockClient(rows: MockRows = {}, error: unknown = null, calls: string[] = [], countOverride?: number | null): CatalogClient {
   return {
-    from(table: string) {
-      const data = rows[table] ?? [];
-      const query = {
-        select() { return query; }, eq() { return query; }, order() { return query; },
-        then(resolve: (value: { data: unknown; error: unknown }) => unknown) { return Promise.resolve(resolve({ data, error })); },
-        maybeSingle() { return Promise.resolve({ data, error }); }
+    products() {
+      let data = rows.products ?? [];
+      const allRows = Array.isArray(data) ? data : data === null ? [] : [data];
+      const count = countOverride === undefined ? (Array.isArray(data) ? data.length : data ? 1 : 0) : countOverride;
+      const query: CatalogQuery = {
+        select() { calls.push("select"); return query; },
+        eq(column: string, value: unknown) {
+          calls.push(`eq:${column}=${String(value)}`);
+          if (Array.isArray(data)) data = data.filter((row) => field(row, column) === value);
+          else if (data && typeof data === "object" && field(data, column) !== value) data = [];
+          return query;
+        },
+        gte(column: string, value: unknown) { calls.push(`gte:${column}=${String(value)}`); return query; },
+        lte(column: string, value: unknown) { calls.push(`lte:${column}=${String(value)}`); return query; },
+        in(column: string, values: readonly unknown[]) { calls.push(`in:${column}=${values.join(",")}`); return query; },
+        ilike(column: string, value: unknown) { calls.push(`ilike:${column}=${String(value)}`); return query; },
+        or(value: string) { calls.push(`or:${value}`); return query; },
+        order(column: string, options: { ascending: boolean }) { calls.push(`order:${column}:${options.ascending ? "asc" : "desc"}`); return query; },
+        range(from: number, to: number) { calls.push(`range:${from}-${to}`); data = (Array.isArray(data) ? data : allRows).slice(from, to + 1); return query; },
+        then<TResult1 = CatalogQueryResult, TResult2 = never>(
+          onfulfilled?: ((value: CatalogQueryResult) => TResult1 | PromiseLike<TResult1>) | null,
+          onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null
+        ): PromiseLike<TResult1 | TResult2> {
+          return Promise.resolve({ data, error, count }).then(onfulfilled, onrejected);
+        },
+        maybeSingle() {
+          const values = Array.isArray(data) ? data : data ? [data] : [];
+          if (values.length > 1) return Promise.resolve({ data: null, error: { code: "PGRST116" } });
+          return Promise.resolve({ data: values[0] ?? null, error });
+        }
       };
       return query;
     }
-  } as unknown as CatalogClient;
+  };
 }
 
 describe("Canonical catalog repository DTO mapper", () => {
@@ -135,6 +174,70 @@ describe("Canonical catalog repository DTO mapper", () => {
 });
 
 describe("Catalog repository runtime data flow", () => {
+  test("normalizes accented, unaccented, case-insensitive and excess-whitespace search once", () => {
+    assert.strictEqual(normalizeCatalogSearch("  KẾ toán   "), "ke toan");
+    assert.strictEqual(normalizeCatalogSearch("Đặng"), "dang");
+    assert.strictEqual(normalizeCatalogSearch("!!!"), "");
+    assert.strictEqual(normalizeCatalogSearch(""), "");
+  });
+
+  test("uses the same normalized database search document for materials, courses, and tutors", async () => {
+    for (const list of [listMaterials, listCourses, listTutors]) {
+      const calls: string[] = [];
+      await list({ search: "  ĐẶNG   KẾ toán  " }, mockClient({ products: [] }, null, calls));
+      assert.ok(calls.includes("ilike:search_document=%dang ke toan%"));
+    }
+  });
+
+  test("runs filters, bounded range, and deterministic secondary ordering in the repository", async () => {
+    const calls: string[] = [];
+    const filters: CatalogFilters = {
+      search: "Kế toán",
+      category: "Kế toán",
+      subject: "ke-toan-tai-chinh-1",
+      minPrice: 0,
+      maxPrice: 100000,
+      sort: "price-asc",
+      limit: 100,
+      page: 2
+    };
+    const result = await listMaterials(filters, mockClient({ products: [materialRow()] }, null, calls));
+    assert.strictEqual(result.limit, 48);
+    assert.strictEqual(result.offset, 48);
+    assert.ok(calls.includes("eq:publication_status=published"));
+    assert.ok(calls.includes("eq:category=Kế toán"));
+    assert.ok(calls.includes("eq:subjects.slug=ke-toan-tai-chinh-1"));
+    assert.ok(calls.includes("gte:price_vnd=0"));
+    assert.ok(calls.includes("lte:price_vnd=100000"));
+    assert.ok(calls.some((call) => call.startsWith("ilike:search_document=%ke toan%")));
+    assert.deepStrictEqual(calls.slice(-4), ["order:price_vnd:asc", "order:created_at:desc", "order:id:asc", "range:48-95"]);
+    assert.deepStrictEqual(result.items, []);
+  });
+
+  test("keeps exact pagination metadata for normal counts, zero counts, null counts, and final pages", async () => {
+    const normal = await listMaterials({ limit: 2, offset: 1 }, mockClient({ products: [materialRow(), materialRow({ id: "prod-2", slug: "ke-toan-2", materials: { ...materialRow().materials, product_id: "prod-2" } }), materialRow({ id: "prod-3", slug: "ke-toan-3", materials: { ...materialRow().materials, product_id: "prod-3" } })] }, null, [], 3));
+    assert.deepStrictEqual({ total: normal.total, page: normal.page, hasNext: normal.hasNext }, { total: 3, page: 1, hasNext: false });
+
+    const empty = await listMaterials({ limit: 12 }, mockClient({ products: [] }, null, [], 0));
+    assert.deepStrictEqual({ total: empty.total, hasNext: empty.hasNext }, { total: 0, hasNext: false });
+
+    const unknown = await listMaterials({ limit: 12 }, mockClient({ products: [] }, null, [], null));
+    assert.deepStrictEqual({ total: unknown.total, hasNext: unknown.hasNext }, { total: null, hasNext: null });
+
+    await assert.rejects(() => listMaterials({}, mockClient({ products: [] }, new Error("count query failed"))), { message: "Failed to list published materials." });
+  });
+
+  test("fails closed for duplicate detail rows and malformed child joins", async () => {
+    await assert.rejects(
+      () => getProductBySlug("material", "ke-toan-tai-chinh-1", mockClient({ products: [materialRow(), materialRow({ id: "prod-duplicate" })] })),
+      { message: "Failed to get published catalog product." }
+    );
+    await assert.rejects(
+      () => getProductBySlug("material", "ke-toan-tai-chinh-1", mockClient({ products: materialRow({ materials: null }) })),
+      { message: "Failed to get published catalog product." }
+    );
+  });
+
   test("uses database rows, filters draft/archived and handles empty result", async () => {
     const client = mockClient({ products: [materialRow(), materialRow({ id: "draft", slug: "draft", publication_status: "draft" })] });
     const materials = await listPublishedMaterials(client);
@@ -149,6 +252,20 @@ describe("Catalog repository runtime data flow", () => {
     assert.strictEqual(await getPublishedMaterialBySlug("missing", mockClient({ products: null })), null);
   });
 
+  test("maps a catalog client factory failure to the same generic repository error", async () => {
+    await assert.rejects(
+      () => listMaterials({}, undefined, async () => { throw new Error("SUPABASE_URL=secret PII@example.test"); }),
+      { message: "Failed to list published materials." }
+    );
+  });
+
+  test("rejects an invalid kind before client creation or query", async () => {
+    let factoryOrQueryCalled = false;
+    const client: CatalogClient = { products() { factoryOrQueryCalled = true; throw new Error("must not query"); } };
+    await assert.rejects(() => getProductBySlug("invalid" as never, "ke-toan-tai-chinh-1", client), CatalogDataError);
+    assert.equal(factoryOrQueryCalled, false);
+  });
+
   test("resolves slug input canonically and uses detail joins", async () => {
     const result = await getPublishedMaterialBySlug("  Kế toán tài chính 1 ", mockClient({ products: materialRow() }));
     assert.strictEqual(result?.slug, "ke-toan-tai-chinh-1");
@@ -158,7 +275,7 @@ describe("Catalog repository runtime data flow", () => {
   test("all public repositories return their discriminated DTOs", async () => {
     assert.strictEqual((await listPublishedCourses(mockClient({ products: [courseRow()] })))[0].kind, "course");
     assert.strictEqual((await listPublishedTutors(mockClient({ products: [tutorRow()] })))[0].kind, "tutor");
-    assert.strictEqual((await getPublishedProductBySlug("ke-toan-tai-chinh-1", mockClient({ products: materialRow() })))?.publication_status, "published");
+    assert.strictEqual((await getPublishedProductBySlug("ke-toan-tai-chinh-1", mockClient({ products: materialRow() })))?.publicationStatus, "published");
     assert.strictEqual(await getPublishedCourseBySlug("missing", mockClient({ products: null })), null);
     assert.strictEqual(await getPublishedTutorBySlug("missing", mockClient({ products: null })), null);
   });
@@ -167,7 +284,8 @@ describe("Catalog repository runtime data flow", () => {
 test("repository implementation keeps canonical mapping and no formatted-price logic", async () => {
   const source = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/catalog-repository.ts"), "utf8");
   assert.match(source, /PublishedMaterial|PublishedCourse|PublishedTutor/);
-  assert.match(source, /materials!inner\(\*\), subjects\(\*\)/);
-  assert.match(source, /tutors!inner\(\*, tutor_subjects\(is_primary, subjects\(\*\)\)\), subjects\(\*\)/);
+  assert.match(source, /const MATERIAL_COLUMNS = "product_id, pages, tags, includes, suitable_for/);
+  assert.match(source, /const TUTOR_COLUMNS = "product_id, name, faculty, format, availability/);
+  assert.doesNotMatch(source, /select\(\s*["'`]\*|!inner\(\*/);
   assert.doesNotMatch(source, /formatVND|parseFloat|price:\s*string/);
 });

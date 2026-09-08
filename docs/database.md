@@ -3,7 +3,7 @@
 This document outlines the PostgreSQL database schema for the LEFT HAND learning platform, designed for Supabase.
 
 > [!NOTE]
-> **Status:** Migrations `0001_core_schema.sql` through `0017_profile_on_auth_signup.sql` are already applied and content-locked. Migrations `0018_catalog_semantic_invariants.sql` and `0019_admin_catalog_transaction_rpc.sql` are prepared locally and verified via automated contract checks; neither has been applied to the hosted Supabase project.
+> **Status:** Migrations `0001_core_schema.sql` through `0017_profile_on_auth_signup.sql` are already applied and content-locked. Migrations `0018_catalog_semantic_invariants.sql` through `0021_catalog_search_normalization.sql` are prepared locally and verified via automated contract checks; neither has been applied to the hosted Supabase project.
 
 ---
 
@@ -164,6 +164,16 @@ erDiagram
 - The RPC checks an approved admin in `public.profiles`, uses fixed SQL (no dynamic SQL or privileged role bypass), and deliberately omits `products.kind` from update payloads.
 - A database trigger rejects any attempted product-kind change. Public child policies also require both the matching parent kind and `publication_status = 'published'`.
 
+### Mutation access boundary (`0020_catalog_mutation_access_boundary.sql`)
+
+- `authenticated` retains only public `SELECT` privileges on `products`, `materials`, `courses`, and `tutors`; direct table `INSERT`, `UPDATE`, and `DELETE` privileges and the old direct-admin mutation policies are removed.
+- Approved authenticated admins use only `admin_catalog_mutate_atomic`, which delegates to the fixed typed RPC inside the same database transaction. Anonymous and public execution are revoked.
+
+### Normalized catalog search (`0021_catalog_search_normalization.sql`)
+
+- `products.search_document` and `subjects.search_document` store one database-normalized search document covering product slug, title, description, and subject identity.
+- The `unaccent`/trigram-backed search columns are maintained by fixed triggers and queried server-side; product and subject updates keep the documents synchronized.
+
 ---
 
 ## 4. Security & Row Level Security (RLS) Policy
@@ -196,7 +206,7 @@ erDiagram
 - **Learning Progress (`0015_learning_progress.sql`):** `learning_progress` is keyed uniquely by `(user_id, product_id, item_type, item_id)`. `item_type` is limited to `material` or `lesson`, `status` is limited to `not_started`, `in_progress`, or `completed`, and `watched_percent` is constrained to `0`–`100`. Authenticated users can select, insert, and update only rows whose `user_id = auth.uid()`; there is no anonymous, public, admin-wide, delete, service-role, or bypass-RLS access. The `updated_at` trigger reuses `update_updated_at_column()` from migration 0004.
 - **Study Plans (`0016_study_plans.sql`):** `study_plans` stores one student task per UUID with a per-user UUID `request_key` unique constraint for atomic create idempotency, a local-calendar `task_date`, trimmed title (1–200 characters), duration (1–1440 minutes), a required `subjects` foreign key, and `pending`, `in_progress`, or `completed` status. Completed rows require `completed_at`; other statuses require it to be null. Authenticated users can select, insert, update, and delete only their own rows through `auth.uid()`-backed RLS policies. The dashboard reads a bounded window of 90 past days through 30 future days using `Asia/Ho_Chi_Minh` calendar dates. There are no anonymous/public/service-role grants or bypass access, and the `updated_at` trigger reuses `update_updated_at_column()` from migration 0004.
 - **Auth Signup Profiles (`0017_profile_on_auth_signup.sql`):** An `AFTER INSERT` trigger on `auth.users` creates one explicit `public.profiles` row with the auth user ID, email, and bounded full name from signup metadata. It uses a fixed-`search_path` `SECURITY DEFINER` function, falls back through `full_name`, `name`, the email local-part, and `Học viên`, and is idempotent with `ON CONFLICT (id) DO NOTHING`. Existing profile defaults keep new rows at `role = 'student'` and `account_status = 'pending'`; no public function execution or profile table writes are granted.
-- **Atomic Admin Catalog (`0019_admin_catalog_transaction_rpc.sql`):** Approved admins call the fixed-signature transaction RPC for product-plus-child mutations. The RPC validates discriminated product kind and child payload keys, and the kind trigger plus parent-kind public policies provide database defense in depth.
+- **Atomic Admin Catalog (`0019_admin_catalog_transaction_rpc.sql` + `0020_catalog_mutation_access_boundary.sql`):** Approved admins call the fixed-signature transaction RPC for product-plus-child mutations. Direct authenticated table mutations are revoked, so product and child writes cannot bypass the RPC. The RPC validates discriminated product kind and child payload keys, and the kind trigger plus parent-kind public policies provide database defense in depth.
 
 ### Private material file convention
 
@@ -244,6 +254,8 @@ psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0016_s
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0017_profile_on_auth_signup.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0018_catalog_semantic_invariants.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0019_admin_catalog_transaction_rpc.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0020_catalog_mutation_access_boundary.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0021_catalog_search_normalization.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/seed.sql
 ```
 

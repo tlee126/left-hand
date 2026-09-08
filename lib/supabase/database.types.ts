@@ -6,6 +6,62 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[]
 
+export type AdminCatalogMutationOperation = "create" | "update" | "delete"
+export type AdminCatalogTutorFormat =
+  | "1:1 & Nhóm nhỏ (Online/Offline)"
+  | "1:1 (Online/Offline quận 7)"
+  | "1:1 & Nhóm nhỏ (Online)"
+  | "1:1 (Online qua Google Meet)"
+  | "1:1 & Nhóm nhỏ (Offline/Online)"
+  | "1:1 (Online)"
+  | "1:1 & Nhóm nhỏ (Online/Offline Q7)"
+type AdminCatalogProductFields = {
+  slug?: string
+  title?: string
+  description?: string
+  subject_id?: string
+  category?: Database["public"]["Enums"]["category_enum"]
+  delivery_kind?: Database["public"]["Enums"]["delivery_kind_enum"]
+  publication_status?: Database["public"]["Enums"]["publication_status_enum"]
+  price_vnd?: number | null
+  old_price_vnd?: number | null
+  is_contact_for_price?: boolean
+  rating?: number
+  is_hot?: boolean
+  color_theme?: Database["public"]["Enums"]["color_theme_enum"]
+}
+export type AdminCatalogProductPayload = AdminCatalogProductFields
+export type AdminCatalogCreateProductPayload = {
+  slug: string
+  title: string
+  description: string
+  subject_id: string
+  category: Database["public"]["Enums"]["category_enum"]
+  delivery_kind: Database["public"]["Enums"]["delivery_kind_enum"]
+  publication_status?: Database["public"]["Enums"]["publication_status_enum"]
+  price_vnd: number | null
+  old_price_vnd: number | null
+  is_contact_for_price: boolean
+  rating?: number
+  is_hot?: boolean
+  color_theme: Database["public"]["Enums"]["color_theme_enum"]
+}
+export type AdminCatalogMaterialPayload = { pages?: number; tags?: string[]; includes?: string[]; suitable_for?: string[] }
+export type AdminCatalogCreateMaterialPayload = { pages: number; tags?: string[]; includes?: string[]; suitable_for?: string[] }
+export type AdminCatalogCoursePayload = { format?: Database["public"]["Enums"]["course_format_enum"]; sessions?: number; duration?: string; schedule?: string; enrollment_status?: Database["public"]["Enums"]["enrollment_status_enum"]; mentor?: string; tags?: string[]; curriculum?: string[]; suitable_for?: string[]; preparation?: string[] }
+export type AdminCatalogCreateCoursePayload = { format: Database["public"]["Enums"]["course_format_enum"]; sessions: number; duration: string; schedule: string; enrollment_status?: Database["public"]["Enums"]["enrollment_status_enum"]; mentor: string; tags?: string[]; curriculum?: string[]; suitable_for?: string[]; preparation?: string[] }
+export type AdminCatalogTutorPayload = { name?: string; faculty?: string; format?: AdminCatalogTutorFormat; availability?: string; short_bio?: string; strengths?: string[]; tags?: string[]; suitable_for?: string[]; support_methods?: string[] }
+export type AdminCatalogCreateTutorPayload = { name: string; faculty: string; format: AdminCatalogTutorFormat; availability: string; short_bio: string; strengths?: string[]; tags?: string[]; suitable_for?: string[]; support_methods?: string[] }
+export type AdminCatalogChildPayload = AdminCatalogMaterialPayload | AdminCatalogCoursePayload | AdminCatalogTutorPayload
+export type AdminCatalogMutateArgs =
+  | { p_operation: "create"; p_kind: "material"; p_product: AdminCatalogCreateProductPayload; p_child: AdminCatalogCreateMaterialPayload; p_product_id?: never }
+  | { p_operation: "create"; p_kind: "course"; p_product: AdminCatalogCreateProductPayload; p_child: AdminCatalogCreateCoursePayload; p_product_id?: never }
+  | { p_operation: "create"; p_kind: "tutor"; p_product: AdminCatalogCreateProductPayload; p_child: AdminCatalogCreateTutorPayload; p_product_id?: never }
+  | { p_operation: "update"; p_kind: "material"; p_product: AdminCatalogProductPayload; p_child: AdminCatalogMaterialPayload; p_product_id: string }
+  | { p_operation: "update"; p_kind: "course"; p_product: AdminCatalogProductPayload; p_child: AdminCatalogCoursePayload; p_product_id: string }
+  | { p_operation: "update"; p_kind: "tutor"; p_product: AdminCatalogProductPayload; p_child: AdminCatalogTutorPayload; p_product_id: string }
+  | { p_operation: "delete"; p_kind: "material" | "course" | "tutor"; p_product: {}; p_child: {}; p_product_id: string }
+
 export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
@@ -422,6 +478,7 @@ export type Database = {
           price_vnd: number | null
           publication_status: Database["public"]["Enums"]["publication_status_enum"]
           rating: number
+          search_document: string
           slug: string
           subject_id: string
           title: string
@@ -441,6 +498,7 @@ export type Database = {
           price_vnd?: number | null
           publication_status?: Database["public"]["Enums"]["publication_status_enum"]
           rating?: number
+          search_document?: string
           slug: string
           subject_id: string
           title: string
@@ -460,6 +518,7 @@ export type Database = {
           price_vnd?: number | null
           publication_status?: Database["public"]["Enums"]["publication_status_enum"]
           rating?: number
+          search_document?: string
           slug?: string
           subject_id?: string
           title?: string
@@ -540,6 +599,7 @@ export type Database = {
           faculty_group: string
           id: string
           name: string
+          search_document: string
           slug: string
           updated_at: string
         }
@@ -550,6 +610,7 @@ export type Database = {
           faculty_group: string
           id?: string
           name: string
+          search_document?: string
           slug: string
           updated_at?: string
         }
@@ -560,6 +621,7 @@ export type Database = {
           faculty_group?: string
           id?: string
           name?: string
+          search_document?: string
           slug?: string
           updated_at?: string
         }
@@ -660,13 +722,11 @@ export type Database = {
     }
     Functions: {
       admin_catalog_mutate: {
-        Args: {
-          p_child?: Json
-          p_kind: Database["public"]["Enums"]["product_kind_enum"]
-          p_operation: string
-          p_product?: Json
-          p_product_id?: string
-        }
+        Args: AdminCatalogMutateArgs
+        Returns: Json
+      }
+      admin_catalog_mutate_atomic: {
+        Args: AdminCatalogMutateArgs
         Returns: Json
       }
     }

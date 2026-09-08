@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Search } from "lucide-react";
 import { MaterialCard } from "@/components/catalog/material-card";
 import { EmptyState } from "@/components/catalog/empty-state";
 import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
-import type { PublishedMaterial } from "@/lib/domain/catalog";
-import { compareNullableVND } from "@/lib/domain/product-types";
+import { CatalogPagination } from "@/components/catalog/catalog-pagination";
+import type { CatalogFilters, CatalogPage, PublishedMaterial } from "@/lib/domain/catalog";
 import { categoryFilterOptions, type CategoryFilter } from "@/components/catalog/catalog-options";
+import { buildCatalogFilterUrl } from "@/lib/domain/catalog-url";
 
 type SortOption = "newest" | "price-asc" | "price-desc" | "rating-desc";
 
@@ -20,16 +22,27 @@ const sortOptions = [
 ];
 
 interface MaterialsCatalogClientProps {
-  initialMaterials: PublishedMaterial[];
+  initialMaterials: readonly PublishedMaterial[];
+  pagination: CatalogPage<PublishedMaterial>;
+  initialFilters: CatalogFilters;
 }
 
 export function MaterialsCatalogClient({
-  initialMaterials
+  initialMaterials,
+  pagination,
+  initialFilters
 }: MaterialsCatalogClientProps) {
-  const [query, setQuery] = useState("");
-  const [category, setCategory] = useState<CategoryFilter>("Tất cả");
-  const [sortBy, setSortBy] = useState<SortOption>("newest");
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [query, setQuery] = useState(initialFilters.search ?? "");
+  const category = initialFilters.category ?? "Tất cả";
+  const sortBy = (initialFilters.sort as SortOption | undefined) ?? "newest";
   const filterContainerRef = useRef<HTMLDivElement>(null);
+
+  const updateQuery = (key: string, value?: string) => {
+    router.push(buildCatalogFilterUrl(pathname, searchParams.toString(), [[key, value]]), { scroll: false });
+  };
 
   // Auto-scroll filter chip into view
   useEffect(() => {
@@ -46,51 +59,14 @@ export function MaterialsCatalogClient({
     }
   }, [category]);
 
+  useEffect(() => {
+    setQuery(initialFilters.search ?? "");
+  }, [initialFilters.search]);
+
   const handleReset = () => {
     setQuery("");
-    setCategory("Tất cả");
-    setSortBy("newest");
+    router.push(pathname, { scroll: false });
   };
-
-  const processedMaterials = useMemo(() => {
-    let result = [...initialMaterials];
-
-    // Filter by category
-    if (category !== "Tất cả") {
-      result = result.filter((item) => item.category === category);
-    }
-
-    // Filter by query
-    const normalizedQuery = query.trim().toLowerCase();
-    if (normalizedQuery) {
-      result = result.filter((item) => {
-        return (
-          item.title.toLowerCase().includes(normalizedQuery) ||
-          item.subject.name.toLowerCase().includes(normalizedQuery) ||
-          item.category.toLowerCase().includes(normalizedQuery) ||
-          item.description.toLowerCase().includes(normalizedQuery) ||
-          item.material.tags.some((tag) => tag.toLowerCase().includes(normalizedQuery))
-        );
-      });
-    }
-
-    // Sort
-    result.sort((a, b) => {
-      if (sortBy === "price-asc") {
-        return compareNullableVND(a.pricing.amountVND, b.pricing.amountVND, "asc");
-      }
-      if (sortBy === "price-desc") {
-        return compareNullableVND(a.pricing.amountVND, b.pricing.amountVND, "desc");
-      }
-      if (sortBy === "rating-desc") {
-        return b.rating - a.rating;
-      }
-      // "newest" - keep natural list order
-      return 0;
-    });
-
-    return result;
-  }, [initialMaterials, category, query, sortBy]);
 
   return (
     <div className="section-shell px-4 py-8 sm:px-8 sm:py-10 lg:px-10">
@@ -121,7 +97,7 @@ export function MaterialsCatalogClient({
                   <button
                     key={opt.label}
                     type="button"
-                    onClick={() => setCategory(opt.label)}
+                  onClick={() => updateQuery("category", opt.label === "Tất cả" ? undefined : opt.label)}
                     data-filter-active={isActive ? "true" : "false"}
                     className={[
                       "inline-flex h-10 items-center rounded-full px-4 text-xs font-semibold transition shrink-0",
@@ -144,6 +120,7 @@ export function MaterialsCatalogClient({
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === "Enter") updateQuery("search", query.trim() || undefined); }}
                   placeholder="Tìm tài liệu, môn học..."
                   className="h-10 w-full rounded-[16px] border border-[#d8deef] bg-slate-50/90 pl-10 pr-4 text-xs font-medium text-[#22325f] outline-none transition placeholder:text-[#98a4be] focus:border-accent/45 focus:bg-white focus:ring-4 focus:ring-accent/10"
                 />
@@ -151,7 +128,7 @@ export function MaterialsCatalogClient({
 
               <select
                 value={sortBy}
-                onChange={(event) => setSortBy(event.target.value as SortOption)}
+                onChange={(event) => updateQuery("sort", event.target.value === "newest" ? undefined : event.target.value)}
                 className="h-10 rounded-[16px] border border-[#d8deef] bg-slate-50/90 px-4 text-xs font-semibold text-[#22325f] outline-none transition focus:border-accent/45 focus:bg-white"
               >
                 {sortOptions.map((opt) => (
@@ -167,9 +144,9 @@ export function MaterialsCatalogClient({
 
       {/* Results grid */}
       <div className="mt-6">
-        {processedMaterials.length > 0 ? (
+        {initialMaterials.length > 0 ? (
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {processedMaterials.map((item) => (
+            {initialMaterials.map((item) => (
               <MaterialCard key={item.id} item={item} />
             ))}
           </div>
@@ -179,6 +156,7 @@ export function MaterialsCatalogClient({
             message="Không tìm thấy tài liệu phù hợp."
           />
         )}
+        <CatalogPagination page={pagination} />
       </div>
     </div>
   );
