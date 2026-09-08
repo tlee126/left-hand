@@ -6,7 +6,7 @@ import { CourseCard } from "@/components/catalog/course-card";
 import { EmptyState } from "@/components/catalog/empty-state";
 import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
-import type { CourseItem } from "@/data/catalog";
+import type { CourseItem } from "@/lib/domain/catalog";
 
 type CourseFilter =
   | "Tất cả"

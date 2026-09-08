@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import type { Database } from "@/lib/supabase/database.types";
-import type { MaterialItem, CourseItem, TutorItem, CourseFormat, TutorFormat } from "@/data/catalog";
+import type { MaterialItem, CourseItem, TutorItem, CourseFormat, TutorFormat } from "@/lib/domain/catalog";
 import type { Category, ColorTheme } from "@/lib/domain/subjects";
 import type { EnrollmentStatus } from "@/lib/domain/product-types";
 import { formatVND } from "@/lib/domain/product-types";
@@ -46,6 +46,7 @@ export function mapRowToMaterialItem(row: MaterialJoinedRow): MaterialItem {
     slug: row.slug,
     title: row.title,
     subject: subj?.name ?? row.title,
+    subjectSlug: subj?.slug ?? undefined,
     facultyGroup: subj?.faculty_group ?? "UFM",
     category: row.category as Category,
     type: "TÀI LIỆU",
@@ -76,6 +77,7 @@ export function mapRowToCourseItem(row: CourseJoinedRow): CourseItem {
     slug: row.slug,
     title: row.title,
     subject: subj?.name ?? row.title,
+    subjectSlug: subj?.slug ?? undefined,
     category: row.category as Category,
     format: (crs?.format ?? "online") as CourseFormat,
     sessions: crs?.sessions ?? 0,
@@ -107,6 +109,7 @@ export function mapRowToTutorItem(row: TutorJoinedRow): TutorItem {
   // Collect subjects from tutor_subjects join (nested under tutors or top-level row), sorting primary subject first
   const tutorSubjects = tut?.tutor_subjects ?? row.tutor_subjects ?? [];
   const subjectList: string[] = [];
+  const subjectSlugs: string[] = [];
   if (tutorSubjects.length > 0) {
     const sorted = [...tutorSubjects].sort(
       (a, b) => (b.is_primary ? 1 : 0) - (a.is_primary ? 1 : 0)
@@ -115,12 +118,18 @@ export function mapRowToTutorItem(row: TutorJoinedRow): TutorItem {
       if (ts.subjects?.name && !subjectList.includes(ts.subjects.name)) {
         subjectList.push(ts.subjects.name);
       }
+      if (ts.subjects?.slug && !subjectSlugs.includes(ts.subjects.slug)) {
+        subjectSlugs.push(ts.subjects.slug);
+      }
     }
   }
 
   // Fallback to primary product subject if no tutor_subjects rows were attached
   if (subjectList.length === 0 && primarySubject) {
     subjectList.push(primarySubject);
+  }
+  if (row.subjects?.slug && !subjectSlugs.includes(row.subjects.slug)) {
+    subjectSlugs.unshift(row.subjects.slug);
   }
 
   // Format tutor price (e.g., "120.000đ / giờ" or "Liên hệ")
@@ -136,6 +145,8 @@ export function mapRowToTutorItem(row: TutorJoinedRow): TutorItem {
     slug: row.slug,
     name: tut?.name ?? row.title,
     subjects: subjectList,
+    subjectSlug: row.subjects?.slug ?? undefined,
+    subjectSlugs: subjectSlugs.length ? subjectSlugs : undefined,
     faculty: tut?.faculty ?? (row.subjects?.faculty_group ?? "UFM"),
     strengths: tut?.strengths ?? [],
     format: (tut?.format ?? "1:1 & Online") as TutorFormat,
@@ -167,7 +178,7 @@ export async function listPublishedProducts(): Promise<ProductRow[]> {
     throw new Error(`Failed to list published products: ${error.message}`);
   }
 
-  return data ?? [];
+  return (data ?? []).filter((row) => row.publication_status === "published");
 }
 
 /**
@@ -212,7 +223,9 @@ export async function listPublishedMaterials(): Promise<MaterialItem[]> {
     throw new Error(`Failed to list published materials: ${error.message}`);
   }
 
-  return ((data as unknown as MaterialJoinedRow[]) ?? []).map(mapRowToMaterialItem);
+  return ((data as unknown as MaterialJoinedRow[]) ?? [])
+    .filter((row) => row.publication_status === "published")
+    .map(mapRowToMaterialItem);
 }
 
 /**
@@ -238,7 +251,7 @@ export async function getPublishedMaterialBySlug(
     );
   }
 
-  if (!data) {
+  if (!data || data.publication_status !== "published") {
     return null;
   }
 
@@ -262,7 +275,9 @@ export async function listPublishedCourses(): Promise<CourseItem[]> {
     throw new Error(`Failed to list published courses: ${error.message}`);
   }
 
-  return ((data as unknown as CourseJoinedRow[]) ?? []).map(mapRowToCourseItem);
+  return ((data as unknown as CourseJoinedRow[]) ?? [])
+    .filter((row) => row.publication_status === "published")
+    .map(mapRowToCourseItem);
 }
 
 /**
@@ -288,7 +303,7 @@ export async function getPublishedCourseBySlug(
     );
   }
 
-  if (!data) {
+  if (!data || data.publication_status !== "published") {
     return null;
   }
 
@@ -314,7 +329,9 @@ export async function listPublishedTutors(): Promise<TutorItem[]> {
     throw new Error(`Failed to list published tutors: ${error.message}`);
   }
 
-  return ((data as unknown as TutorJoinedRow[]) ?? []).map(mapRowToTutorItem);
+  return ((data as unknown as TutorJoinedRow[]) ?? [])
+    .filter((row) => row.publication_status === "published")
+    .map(mapRowToTutorItem);
 }
 
 /**
@@ -342,7 +359,7 @@ export async function getPublishedTutorBySlug(
     );
   }
 
-  if (!data) {
+  if (!data || data.publication_status !== "published") {
     return null;
   }
 

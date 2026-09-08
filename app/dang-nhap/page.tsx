@@ -10,7 +10,7 @@ import { FloatingActions } from "@/components/site/floating-actions";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login, isLoggedIn, loading: authLoading, isDemoMode } = useDemoAuth();
+  const { login, isLoggedIn, loading: authLoading, isDemoMode, demoEmail } = useDemoAuth();
   
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -39,12 +39,6 @@ export default function LoginPage() {
     } else {
       setError(result.error || "Email hoặc mật khẩu không chính xác. Vui lòng kiểm tra lại.");
     }
-  };
-
-  const handleFillDemo = () => {
-    setEmail("demo@lefthand.vn");
-    setPassword("123456");
-    setError(null);
   };
 
   return (
@@ -168,7 +162,7 @@ export default function LoginPage() {
             </form>
 
             {/* Demo Account Box (Only visible in Demo Mode) */}
-            {isDemoMode && (
+            {isDemoMode && demoEmail && (
               <div className="mt-6 rounded-2xl border border-dashed border-[#1b2e7430] bg-[#fcf9f2] p-4 text-center">
                 <div className="flex items-center justify-center gap-1.5 text-xs font-extrabold text-accent">
                   <Sparkles className="h-4 w-4" />
@@ -177,20 +171,13 @@ export default function LoginPage() {
                 <div className="mt-2 text-left space-y-1 text-xs text-[#5f6d8f] font-semibold">
                   <div className="flex justify-between">
                     <span>Email:</span>
-                    <span className="font-mono text-ink">demo@lefthand.vn</span>
+                    <span className="font-mono text-ink">{demoEmail}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Mật khẩu:</span>
-                    <span className="font-mono text-ink">123456</span>
+                    <span className="font-mono text-ink">Được cấu hình cục bộ</span>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleFillDemo}
-                  className="mt-3 text-[11px] font-bold text-blue-600 hover:underline transition"
-                >
-                  Tự động nhập thông tin demo
-                </button>
               </div>
             )}
           </div>

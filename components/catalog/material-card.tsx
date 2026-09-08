@@ -4,7 +4,7 @@ import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
 import { Eye, FileText, Sparkles, Star } from "lucide-react";
 import { coverThemes } from "./theme";
-import type { MaterialItem } from "@/data/catalog";
+import type { MaterialItem } from "@/lib/domain/catalog";
 
 interface MaterialCardProps {
   item: MaterialItem;

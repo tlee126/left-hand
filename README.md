@@ -2,98 +2,61 @@
 
 LEFT HAND - Onthidithoi là hệ sinh thái hỗ trợ sinh viên UFM học tập và ôn thi.
 
-Dự án hiện đang được phát triển từ prototype frontend thành ứng dụng web hoàn chỉnh.
+## Stack
 
-## Công nghệ
+- Next.js App Router
+- React và TypeScript
+- Tailwind CSS và Framer Motion
+- Supabase (Auth, database, RLS và private storage)
 
-- Next.js
-- React
-- TypeScript
-- Tailwind CSS
-- Framer Motion
+## Chạy local
 
-## Yêu cầu môi trường
-
-- Node.js: v24.15.0
-- npm: 11.12.1
-
-## Cài đặt
-
-Cài đặt dependency:
+Yêu cầu Node.js `v24.15.0` và npm `11.12.1`.
 
 ```bash
 npm ci
-```
-
-Tạo file biến môi trường local:
-
-```bash
 cp .env.example .env.local
-```
-
-## Chạy development
-
-```bash
 npm run dev
 ```
 
-Mở website tại:
+Mở `http://localhost:3000`. Điền các biến Supabase phù hợp vào `.env.local`; không commit file env local.
 
-```text
-http://localhost:3000
-```
+Demo auth chỉ dành cho development/test và cần đồng thời `NEXT_PUBLIC_DEMO_MODE=true`, `NEXT_PUBLIC_DEMO_EMAIL` và `NEXT_PUBLIC_DEMO_PASSWORD`. Các biến này không được cấu hình trong production.
 
-## Các lệnh kiểm tra
-
-Kiểm tra TypeScript:
+## Scripts
 
 ```bash
-npm run typecheck
-```
-
-Build production:
-
-```bash
+npm run dev
 npm run build
-```
-
-Chạy bản production:
-
-```bash
 npm run start
+npm run typecheck
+npm test
+npm run test:integration
+npm run verify:db
 ```
 
 ## Trạng thái hiện tại
 
-- Giao diện chính đang chạy bằng Next.js.
-- Catalog hiện vẫn sử dụng dữ liệu tĩnh trong thư mục `data/`.
-- Authentication hiện vẫn là demo.
-- Chưa có database production.
-- Chưa có payment production.
-- Chưa có backend hoàn chỉnh.
-- Một số file prototype cũ sẽ được xử lý ở Phase 0 — Task 0.2.
+- Public catalog chạy từ dữ liệu published trong Supabase qua server repository; không dùng catalog static làm nguồn production.
+- Auth, signup, profile và account approval đã có.
+- Admin shell, consultation và catalog CRUD đã có.
+- Private storage, upload metadata và signed URL đã có.
+- Product entitlement, student workspace, learning progress và study plans đã có.
+- Schema repository hiện có migration từ `0001` đến `0017`.
 
-## Quy trình phát triển
+`npm run verify:db` kiểm tra tĩnh migration, seed và RLS contract. Đây không phải live database verification; việc xác nhận Supabase instance thực tế cần credentials và môi trường database tương ứng.
 
-Mỗi thay đổi được thực hiện theo các bước:
+## Chưa làm
 
-1. Chọn một task nhỏ.
-2. Sửa code trong VS Code.
-3. Chạy các lệnh kiểm tra liên quan.
-4. Xem lại thay đổi bằng Git.
-5. Commit với message rõ ràng.
-6. Push lên GitHub.
-7. Tiếp tục task kế tiếp từ commit mới nhất.
+- Order/cart.
+- Checkout, payment và webhook.
+- Tutor booking/room.
+- Notifications/email.
+- CI/E2E production.
+- Staging/production runbook.
 
-## Quy tắc bảo mật
+Các mục trên chưa được coi là production-ready.
 
-Không commit các file hoặc thông tin sau:
+## Bảo mật
 
-- `.env`
-- `.env.local`
-- API key
-- Password
-- Access token
-- Secret của dịch vụ bên thứ ba
-
-Chỉ commit `.env.example` với tên biến môi trường, không chứa secret thật.
+Không commit `.env`, `.env.local`, API key, password, access token hoặc secret dịch vụ bên thứ ba. Chỉ commit `.env.example` với tên biến và placeholder rỗng.
