@@ -6,7 +6,7 @@ import { TutorCard } from "@/components/catalog/tutor-card";
 import { EmptyState } from "@/components/catalog/empty-state";
 import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
-import type { TutorItem } from "@/data/catalog";
+import type { TutorItem } from "@/lib/domain/catalog";
 
 type TutorFilter =
   | "Tất cả"

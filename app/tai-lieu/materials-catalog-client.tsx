@@ -6,7 +6,7 @@ import { MaterialCard } from "@/components/catalog/material-card";
 import { EmptyState } from "@/components/catalog/empty-state";
 import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
-import type { MaterialItem } from "@/data/catalog";
+import type { MaterialItem } from "@/lib/domain/catalog";
 
 type CategoryFilter =
   | "Tất cả"

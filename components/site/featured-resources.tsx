@@ -19,7 +19,7 @@ import type {
   ResourceCategory,
   ResourceColorTheme
 } from "@/data/site";
-import { materials, courses } from "@/data/catalog";
+import type { CourseItem, MaterialItem } from "@/lib/domain/catalog";
 
 type ResourceItem = {
   id: string;
@@ -119,7 +119,124 @@ function matchesFilter(item: ResourceItem, filter: FilterKey) {
   return item.category === filter;
 }
 
-export function FeaturedResources() {
+export interface FeaturedResourcesProps {
+  materials: MaterialItem[];
+  courses: CourseItem[];
+  loadError?: boolean;
+}
+
+type CatalogResource =
+  | { item: MaterialItem; type: "TÀI LIỆU" }
+  | { item: CourseItem; type: "KHÓA HỌC" };
+
+function toResource({ item, type }: CatalogResource): ResourceItem {
+  if (type === "TÀI LIỆU") {
+    return {
+      id: item.id,
+      slug: item.slug,
+      title: item.title,
+      subject: item.subject,
+      category: item.category as ResourceCategory,
+      type,
+      description: item.description,
+      price: item.price,
+      oldPrice: item.oldPrice,
+      meta: `${item.pages} trang`,
+      bonus: item.tags[0],
+      rating: item.rating,
+      isHot: item.isHot,
+      colorTheme: item.colorTheme as ResourceColorTheme,
+      tags: item.tags
+    };
+  }
+
+  return {
+    id: item.id,
+    slug: item.slug,
+    title: item.title,
+    subject: item.subject,
+    category: item.category as ResourceCategory,
+    type,
+    description: item.description,
+    price: item.price,
+    oldPrice: item.oldPrice,
+    meta: `${item.sessions} buổi`,
+    bonus: item.tags[0],
+    rating: item.rating,
+    isHot: item.status === "open",
+    colorTheme: item.colorTheme as ResourceColorTheme,
+    tags: item.tags,
+    status: item.status
+  };
+}
+
+export function buildFeaturedResources(
+  materials: readonly MaterialItem[],
+  courses: readonly CourseItem[]
+): ResourceItem[] {
+  const categories: ResourceCategory[] = [
+    "Kế toán",
+    "Kinh tế",
+    "Thống kê",
+    "Marketing",
+    "Quản trị",
+    "Tài chính",
+    "MIS",
+    "Luật",
+    "Ngoại ngữ"
+  ];
+
+  const bestByCategory: Partial<Record<ResourceCategory, CatalogResource>> = {};
+
+  categories.forEach((category) => {
+    const categoryMaterials = materials.filter((item) => item.category === category);
+    const categoryCourses = courses.filter((item) => item.category === category);
+    const hotMaterial = categoryMaterials.find((item) => item.isHot);
+    const openCourse = categoryCourses.find((item) => item.status === "open");
+
+    if (hotMaterial) {
+      bestByCategory[category] = { item: hotMaterial, type: "TÀI LIỆU" };
+    } else if (openCourse) {
+      bestByCategory[category] = { item: openCourse, type: "KHÓA HỌC" };
+    } else if (categoryMaterials[0]) {
+      bestByCategory[category] = { item: categoryMaterials[0], type: "TÀI LIỆU" };
+    } else if (categoryCourses[0]) {
+      bestByCategory[category] = { item: categoryCourses[0], type: "KHÓA HỌC" };
+    }
+  });
+
+  const selectedKeys = new Set<string>();
+  const selectedItems: CatalogResource[] = [];
+
+  categories.forEach((category) => {
+    const representation = bestByCategory[category];
+    if (representation) {
+      selectedItems.push(representation);
+      selectedKeys.add(representation.item.id);
+    }
+  });
+
+  const remainingHotMaterials: CatalogResource[] = materials
+    .filter((item) => item.isHot && !selectedKeys.has(item.id))
+    .map((item) => ({ item, type: "TÀI LIỆU" }));
+  const remainingOpenCourses: CatalogResource[] = courses
+    .filter((item) => item.status === "open" && !selectedKeys.has(item.id))
+    .map((item) => ({ item, type: "KHÓA HỌC" }));
+  const remainingOthers: CatalogResource[] = [
+    ...materials
+      .filter((item) => !selectedKeys.has(item.id))
+      .map((item) => ({ item, type: "TÀI LIỆU" as const })),
+    ...courses
+      .filter((item) => !selectedKeys.has(item.id))
+      .map((item) => ({ item, type: "KHÓA HỌC" as const }))
+  ];
+
+  return [...selectedItems, ...remainingHotMaterials, ...remainingOpenCourses, ...remainingOthers]
+    .slice(0, 12)
+    .map(toResource);
+}
+
+export function FeaturedResources({ materials, courses, loadError = false }: FeaturedResourcesProps) {
   const [activeFilter, setActiveFilter] = useState<FilterKey>("Tất cả");
   const [query, setQuery] = useState("");
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -129,117 +246,10 @@ export function FeaturedResources() {
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(true);
 
-  // Dynamic resources compilation from catalog data (materials & courses)
-  const resources = useMemo<ResourceItem[]>(() => {
-    const categories: ResourceCategory[] = [
-      "Kế toán",
-      "Kinh tế",
-      "Thống kê",
-      "Marketing",
-      "Quản trị",
-      "Tài chính",
-      "MIS",
-      "Luật",
-      "Ngoại ngữ"
-    ];
-
-    const bestByCategory: Record<string, { item: any; type: "TÀI LIỆU" | "KHÓA HỌC" }> = {};
-
-    categories.forEach((cat) => {
-      const catMaterials = materials.filter((m) => m.category === cat);
-      const catCourses = courses.filter((c) => c.category === cat);
-
-      const hotMat = catMaterials.find((m) => m.isHot);
-      if (hotMat) {
-        bestByCategory[cat] = { item: hotMat, type: "TÀI LIỆU" };
-        return;
-      }
-
-      const openCourse = catCourses.find((c) => c.status === "open");
-      if (openCourse) {
-        bestByCategory[cat] = { item: openCourse, type: "KHÓA HỌC" };
-        return;
-      }
-
-      if (catMaterials.length > 0) {
-        bestByCategory[cat] = { item: catMaterials[0], type: "TÀI LIỆU" };
-        return;
-      }
-
-      if (catCourses.length > 0) {
-        bestByCategory[cat] = { item: catCourses[0], type: "KHÓA HỌC" };
-        return;
-      }
-    });
-
-    const selectedKeys = new Set<string>();
-    const selectedItems: Array<{ item: any; type: "TÀI LIỆU" | "KHÓA HỌC" }> = [];
-
-    categories.forEach((cat) => {
-      const representation = bestByCategory[cat];
-      if (representation) {
-        selectedItems.push(representation);
-        selectedKeys.add(representation.item.id);
-      }
-    });
-
-    const remainingHotMaterials = materials
-      .filter((m) => m.isHot && !selectedKeys.has(m.id))
-      .map((m) => ({ item: m, type: "TÀI LIỆU" as const }));
-
-    const remainingOpenCourses = courses
-      .filter((c) => c.status === "open" && !selectedKeys.has(c.id))
-      .map((c) => ({ item: c, type: "KHÓA HỌC" as const }));
-
-    const remainingOthers = [
-      ...materials.filter((m) => !selectedKeys.has(m.id)).map((m) => ({ item: m, type: "TÀI LIỆU" as const })),
-      ...courses.filter((c) => !selectedKeys.has(c.id)).map((c) => ({ item: c, type: "KHÓA HỌC" as const }))
-    ];
-
-    const pool = [...selectedItems, ...remainingHotMaterials, ...remainingOpenCourses, ...remainingOthers];
-    const finalPool = pool.slice(0, 12);
-
-    return finalPool.map(({ item, type }) => {
-      if (type === "TÀI LIỆU") {
-        return {
-          id: item.id,
-          slug: item.slug,
-          title: item.title,
-          subject: item.subject,
-          category: item.category as ResourceCategory,
-          type: "TÀI LIỆU",
-          description: item.description,
-          price: item.price,
-          oldPrice: item.oldPrice,
-          meta: `${item.pages} trang`,
-          bonus: item.tags[0],
-          rating: item.rating,
-          isHot: item.isHot,
-          colorTheme: item.colorTheme as ResourceColorTheme,
-          tags: item.tags
-        };
-      } else {
-        return {
-          id: item.id,
-          slug: item.slug,
-          title: item.title,
-          subject: item.subject,
-          category: item.category as ResourceCategory,
-          type: "KHÓA HỌC",
-          description: item.description,
-          price: item.price,
-          oldPrice: item.oldPrice,
-          meta: `${item.sessions} buổi`,
-          bonus: item.tags[0],
-          rating: item.rating,
-          isHot: item.status === "open",
-          colorTheme: item.colorTheme as ResourceColorTheme,
-          tags: item.tags,
-          status: item.status
-        };
-      }
-    });
-  }, []);
+  const resources = useMemo(
+    () => buildFeaturedResources(materials, courses),
+    [materials, courses]
+  );
 
   useEffect(() => {
     if (!filterContainerRef.current) return;
@@ -562,7 +572,9 @@ export function FeaturedResources() {
             animate={{ opacity: 1, y: 0 }}
             className="mt-6 rounded-[22px] border border-dashed border-[#1b2e7435] bg-white/72 px-5 py-8 text-center text-sm font-medium text-[#617092]"
           >
-            Chưa tìm thấy tài liệu phù hợp.
+            {loadError
+              ? "Kho catalog tạm thời chưa khả dụng. Vui lòng thử lại sau."
+              : "Chưa tìm thấy tài liệu phù hợp."}
           </motion.div>
         ) : null}
       </div>

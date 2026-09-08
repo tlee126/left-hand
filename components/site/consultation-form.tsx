@@ -6,10 +6,89 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { MotionReveal } from "@/components/site/motion-reveal";
 import { SectionHeading } from "@/components/site/section-heading";
-import { faculties, majors, courseGroups, needs } from "@/data/site";
-import { materials, courses, tutors } from "@/data/catalog";
-import { findSubjectByName, findSubjectBySlug } from "@/lib/domain/subjects";
+import { faculties, majors, needs } from "@/data/site";
+import type { CourseItem, MaterialItem, TutorItem } from "@/lib/domain/catalog";
 import { validateConsultationInput, type ConsultationInput } from "@/lib/validation/consultation";
+
+export interface ConsultationCatalog {
+  materials: MaterialItem[];
+  courses: CourseItem[];
+  tutors: TutorItem[];
+}
+
+export interface ConsultationFormProps {
+  catalog: ConsultationCatalog;
+  loadError?: boolean;
+}
+
+type CatalogInterestItem = {
+  category: string;
+  subject: string;
+  subjectSlug?: string;
+  subjectSlugs?: string[];
+  slug: string;
+  kind: "material" | "course" | "tutor";
+};
+
+export interface ConsultationInterestGroup {
+  label: string;
+  items: Array<{ value: string; label: string }>;
+}
+
+function getCatalogInterestItems(catalog: ConsultationCatalog): CatalogInterestItem[] {
+  return [
+    ...catalog.materials.map((item) => ({
+      category: item.category,
+      subject: item.subject,
+      subjectSlug: item.subjectSlug,
+      slug: item.slug,
+      kind: "material" as const
+    })),
+    ...catalog.courses.map((item) => ({
+      category: item.category,
+      subject: item.subject,
+      subjectSlug: item.subjectSlug,
+      slug: item.slug,
+      kind: "course" as const
+    })),
+    ...catalog.tutors.flatMap((item) =>
+      item.subjects.map((subject, index) => ({
+        category: "Tutor",
+        subject,
+        subjectSlug: item.subjectSlugs?.[index] ?? item.subjectSlug,
+        slug: item.slug,
+        kind: "tutor" as const
+      }))
+    )
+  ];
+}
+
+export function getInterestGroups(catalog: ConsultationCatalog): ConsultationInterestGroup[] {
+  const groups = new Map<string, Map<string, { value: string; label: string }>>();
+
+  getCatalogInterestItems(catalog).forEach((item) => {
+    const group = groups.get(item.category) ?? new Map();
+    if (!group.has(item.subject)) {
+      group.set(item.subject, { value: item.subject, label: item.subject });
+    }
+    groups.set(item.category, group);
+  });
+
+  return [...groups.entries()].map(([label, items]) => ({
+    label,
+    items: [...items.values()]
+  }));
+}
+
+function findSubjectSlugInCatalog(interest: string, catalog: ConsultationCatalog): string | null {
+  const normalizedInterest = interest.trim().toLowerCase();
+  const match = getCatalogInterestItems(catalog).find((item) =>
+    item.subject.toLowerCase() === normalizedInterest ||
+    item.subjectSlug?.toLowerCase() === normalizedInterest ||
+    item.subjectSlugs?.some((slug) => slug.toLowerCase() === normalizedInterest)
+  );
+  return match?.subjectSlug ?? match?.subjectSlugs?.[0] ?? null;
+}
 
 export type FormValues = {
   fullName: string;
@@ -54,7 +133,8 @@ export function generateIdempotencyKey(): string {
 
 export function resolveCtaMetadata(
   search: string,
-  pathname: string = "/"
+  pathname: string = "/",
+  catalog: ConsultationCatalog
 ): CtaMetadataResult {
   const normalizedSearch = search.startsWith("?") || search === "" ? search : `?${search}`;
   const params = new URLSearchParams(normalizedSearch);
@@ -76,33 +156,25 @@ export function resolveCtaMetadata(
   let resolvedInterest = interestParam;
   let resolvedNeed = "";
 
-  const mat = materials.find((m) => m.slug === interestParam);
-  if (mat) {
-    selectedProductSlug = mat.slug;
-    resolvedInterest = mat.subject;
-    const matchedSubject = findSubjectByName(mat.subject);
-    selectedSubjectSlug = matchedSubject?.slug || null;
+  const typeMatches = (kind: CatalogInterestItem["kind"]) =>
+    !typeParam || typeParam === kind;
+  const selected = getCatalogInterestItems(catalog).find(
+    (item) => item.slug === interestParam && typeMatches(item.kind)
+  );
+
+  if (selected) {
+    selectedProductSlug = selected.slug;
+    resolvedInterest = selected.subject;
+    selectedSubjectSlug = selected.subjectSlug ?? selected.subjectSlugs?.[0] ?? null;
   } else {
-    const crs = courses.find((c) => c.slug === interestParam);
-    if (crs) {
-      selectedProductSlug = crs.slug;
-      resolvedInterest = crs.subject;
-      const matchedSubject = findSubjectByName(crs.subject);
-      selectedSubjectSlug = matchedSubject?.slug || null;
-    } else {
-      const tut = tutors.find((t) => t.slug === interestParam);
-      if (tut) {
-        selectedProductSlug = tut.slug;
-        resolvedInterest = tut.subjects[0] || interestParam;
-        const matchedSubject = findSubjectByName(tut.subjects[0]);
-        selectedSubjectSlug = matchedSubject?.slug || null;
-      } else {
-        const subj = findSubjectBySlug(interestParam) || findSubjectByName(interestParam);
-        if (subj) {
-          selectedSubjectSlug = subj.slug;
-          resolvedInterest = subj.name;
-        }
-      }
+    const subjectItem = getCatalogInterestItems(catalog).find(
+      (item) =>
+        item.subjectSlug === interestParam ||
+        item.subjectSlugs?.includes(interestParam)
+    );
+    if (subjectItem) {
+      selectedSubjectSlug = interestParam;
+      resolvedInterest = subjectItem.subject;
     }
   }
 
@@ -129,13 +201,11 @@ export function buildConsultationPayload(
     sourcePath?: string | null;
     selectedProductSlug?: string | null;
     selectedSubjectSlug?: string | null;
-  }
+  },
+  catalog: ConsultationCatalog
 ): ConsultationInput {
   const subjectSlug =
-    findSubjectByName(values.interest)?.slug ||
-    findSubjectBySlug(values.interest)?.slug ||
-    ctaMeta.selectedSubjectSlug ||
-    null;
+    ctaMeta.selectedSubjectSlug || findSubjectSlugInCatalog(values.interest, catalog);
 
   return {
     fullName: values.fullName.trim(),
@@ -230,7 +300,7 @@ export async function submitConsultation(
   }
 }
 
-export function ConsultationForm() {
+export function ConsultationForm({ catalog, loadError = false }: ConsultationFormProps) {
   const [values, setValues] = useState<FormValues>(initialValues);
   const [errors, setErrors] = useState<FormErrors>({});
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
@@ -261,12 +331,22 @@ export function ConsultationForm() {
       return "Vui lòng kiểm tra lại các trường bắt buộc.";
     }
 
+    if (loadError) {
+      return "Danh mục đang tạm thời chưa khả dụng. Vui lòng thử lại sau.";
+    }
+
+    if (getInterestGroups(catalog).length === 0) {
+      return "Hiện chưa có catalog đã xuất bản để chọn. Vui lòng thử lại sau.";
+    }
+
     return "Điền nhanh nhu cầu hiện tại để team gợi ý tài liệu, tutor hoặc lớp ôn đúng môn.";
-  }, [errors, feedback, status]);
+  }, [catalog, errors, feedback, loadError, status]);
+
+  const interestGroups = useMemo(() => getInterestGroups(catalog), [catalog]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const meta = resolveCtaMetadata(window.location.search, window.location.pathname);
+      const meta = resolveCtaMetadata(window.location.search, window.location.pathname, catalog);
       setCtaMeta({
         sourcePath: meta.sourcePath,
         selectedProductSlug: meta.selectedProductSlug,
@@ -284,7 +364,7 @@ export function ConsultationForm() {
         return next;
       });
     }
-  }, []);
+  }, [catalog]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -300,7 +380,7 @@ export function ConsultationForm() {
       sourcePath: currentSourcePath,
       selectedProductSlug: ctaMeta.selectedProductSlug,
       selectedSubjectSlug: ctaMeta.selectedSubjectSlug
-    });
+    }, catalog);
 
     const validation = validateConsultationInput(payload);
     if (!validation.isValid) {
@@ -472,6 +552,7 @@ export function ConsultationForm() {
                   input={
                     <select
                       value={values.interest}
+                      disabled={loadError || interestGroups.length === 0}
                       onChange={(event) =>
                         setValues((current) => ({
                           ...current,
@@ -481,11 +562,11 @@ export function ConsultationForm() {
                       className={inputClass("select", Boolean(errors.interest))}
                     >
                       <option value="">Chọn môn học hoặc học phần</option>
-                      {courseGroups.map((group) => (
+                      {interestGroups.map((group) => (
                         <optgroup key={group.label} label={group.label}>
-                          {group.items.map((course) => (
-                            <option key={course} value={course}>
-                              {course}
+                          {group.items.map((interest) => (
+                            <option key={`${group.label}:${interest.value}`} value={interest.value}>
+                              {interest.label}
                             </option>
                           ))}
                         </optgroup>

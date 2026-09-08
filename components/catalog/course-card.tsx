@@ -4,7 +4,7 @@ import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
 import { Calendar, Clock, PlayCircle, Star, User, Video } from "lucide-react";
 import { coverThemes } from "./theme";
-import type { CourseItem } from "@/data/catalog";
+import type { CourseItem } from "@/lib/domain/catalog";
 
 interface CourseCardProps {
   item: CourseItem;

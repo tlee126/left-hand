@@ -1,7 +1,5 @@
 export interface DemoStudent {
   name: string;
-  email: string;
-  password?: string;
   faculty: string;
   major: string;
   gpaGoal: number;
@@ -91,8 +89,6 @@ export interface PurchasedSubject {
 
 export const demoStudent: DemoStudent = {
   name: "Minh Anh",
-  email: "demo@lefthand.vn",
-  password: "123456",
   faculty: "Kế toán - Kiểm toán",
   major: "Kế toán",
   gpaGoal: 3.6,

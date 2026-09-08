@@ -3,7 +3,6 @@
 import { useEffect, useState, useTransition } from "react";
 import type { User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/browser";
-import { demoStudent, DemoStudent } from "@/data/student-demo";
 import {
   performSignup,
   mapSignupError,
@@ -46,7 +45,18 @@ function getInitialsFromEmailOrName(nameOrEmail: string): string {
 }
 
 export function useDemoAuth() {
-  const isDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+  const isDemoMode =
+    process.env.NODE_ENV !== "production" &&
+    process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+  const demoEmail = isDemoMode ? process.env.NEXT_PUBLIC_DEMO_EMAIL?.trim() ?? "" : "";
+  const demoPassword = isDemoMode ? process.env.NEXT_PUBLIC_DEMO_PASSWORD ?? "" : "";
+  const hasDemoCredentials = Boolean(demoEmail && demoPassword);
+  const demoUser: AuthStateUser = {
+    name: "Demo Student",
+    email: demoEmail,
+    avatarInitials: "DS",
+    isDemo: true
+  };
   const [user, setUser] = useState<AuthStateUser | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [isPending, startTransition] = useTransition();
@@ -75,13 +85,10 @@ export function useDemoAuth() {
             email: email,
             avatarInitials: getInitialsFromEmailOrName(fullName)
           });
-        } else if (isDemoMode && typeof window !== "undefined") {
+        } else if (hasDemoCredentials && typeof window !== "undefined") {
           const stored = localStorage.getItem("left-hand-demo-auth");
           if (stored === "true") {
-            setUser({
-              ...demoStudent,
-              isDemo: true
-            });
+            setUser(demoUser);
           } else {
             setUser(null);
           }
@@ -91,13 +98,10 @@ export function useDemoAuth() {
         setLoading(false);
       }).catch(() => {
         if (isMounted) {
-          if (isDemoMode && typeof window !== "undefined") {
+          if (hasDemoCredentials && typeof window !== "undefined") {
             const stored = localStorage.getItem("left-hand-demo-auth");
             if (stored === "true") {
-              setUser({
-                ...demoStudent,
-                isDemo: true
-              });
+              setUser(demoUser);
             } else {
               setUser(null);
             }
@@ -128,13 +132,10 @@ export function useDemoAuth() {
             email: email,
             avatarInitials: getInitialsFromEmailOrName(fullName)
           });
-        } else if (isDemoMode && typeof window !== "undefined") {
+        } else if (hasDemoCredentials && typeof window !== "undefined") {
           const stored = localStorage.getItem("left-hand-demo-auth");
           if (stored === "true") {
-            setUser({
-              ...demoStudent,
-              isDemo: true
-            });
+            setUser(demoUser);
           } else {
             setUser(null);
           }
@@ -150,13 +151,10 @@ export function useDemoAuth() {
       };
     } catch {
       if (isMounted) {
-        if (isDemoMode && typeof window !== "undefined") {
+        if (hasDemoCredentials && typeof window !== "undefined") {
           const stored = localStorage.getItem("left-hand-demo-auth");
           if (stored === "true") {
-            setUser({
-              ...demoStudent,
-              isDemo: true
-            });
+            setUser(demoUser);
           } else {
             setUser(null);
           }
@@ -171,17 +169,14 @@ export function useDemoAuth() {
   const login = async (email: string, password?: string): Promise<{ success: boolean; error?: string }> => {
     // If in demo mode and user submitted demo credentials
     if (
-      isDemoMode &&
-      email.trim().toLowerCase() === demoStudent.email.toLowerCase() &&
-      password === demoStudent.password
+      hasDemoCredentials &&
+      email.trim().toLowerCase() === demoEmail.toLowerCase() &&
+      password === demoPassword
     ) {
       if (typeof window !== "undefined") {
         localStorage.setItem("left-hand-demo-auth", "true");
       }
-      setUser({
-        ...demoStudent,
-        isDemo: true
-      });
+      setUser(demoUser);
       return { success: true };
     }
 
@@ -283,7 +278,7 @@ export function useDemoAuth() {
       // Ignore signOut network errors in local dev
     }
 
-    if (typeof window !== "undefined") {
+    if (hasDemoCredentials && typeof window !== "undefined") {
       localStorage.removeItem("left-hand-demo-auth");
     }
     setUser(null);
@@ -294,6 +289,7 @@ export function useDemoAuth() {
     user,
     loading,
     isDemoMode,
+    demoEmail,
     login,
     signup,
     logout

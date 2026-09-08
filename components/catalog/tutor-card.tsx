@@ -4,7 +4,7 @@ import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
 import { Check, Star, Users } from "lucide-react";
 import { coverThemes } from "./theme";
-import type { TutorItem } from "@/data/catalog";
+import type { TutorItem } from "@/lib/domain/catalog";
 
 interface TutorCardProps {
   item: TutorItem;

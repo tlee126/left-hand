@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { test, describe } from "node:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -11,13 +11,32 @@ import {
   type FormValues
 } from "../../components/site/consultation-form";
 import { validateConsultationInput } from "../../lib/validation/consultation";
+import { materials, courses, tutors } from "../../data/catalog";
+import { findSubjectByName } from "../../lib/domain/subjects";
+
+const consultationCatalog = {
+  materials: materials.map((item) => ({
+    ...item,
+    subjectSlug: findSubjectByName(item.subject)?.slug
+  })),
+  courses: courses.map((item) => ({
+    ...item,
+    subjectSlug: findSubjectByName(item.subject)?.slug
+  })),
+  tutors: tutors.map((item) => ({
+    ...item,
+    subjectSlug: findSubjectByName(item.subjects[0])?.slug,
+    subjectSlugs: item.subjects.map((subject) => findSubjectByName(subject)?.slug).filter(Boolean) as string[]
+  }))
+};
 
 describe("Phase 4.1-D: Consultation Form and API Integration", () => {
   describe("1. CTA Metadata Resolution", () => {
     test("resolves material CTA parameters correctly", () => {
       const result = resolveCtaMetadata(
         "?interest=ke-toan-tai-chinh-1&type=material",
-        "/tai-lieu/ke-toan-tai-chinh-1"
+        "/tai-lieu/ke-toan-tai-chinh-1",
+        consultationCatalog
       );
       assert.strictEqual(result.selectedProductSlug, "ke-toan-tai-chinh-1");
       assert.strictEqual(result.selectedSubjectSlug, "ke-toan-tai-chinh-1");
@@ -32,7 +51,8 @@ describe("Phase 4.1-D: Consultation Form and API Integration", () => {
     test("resolves course CTA parameters correctly", () => {
       const result = resolveCtaMetadata(
         "?interest=lop-on-thi-cuoi-ky-marketing&type=course",
-        "/"
+        "/",
+        consultationCatalog
       );
       assert.strictEqual(result.selectedProductSlug, "lop-on-thi-cuoi-ky-marketing");
       assert.strictEqual(result.selectedSubjectSlug, "marketing-can-ban");
@@ -47,7 +67,8 @@ describe("Phase 4.1-D: Consultation Form and API Integration", () => {
     test("resolves tutor CTA parameters correctly", () => {
       const result = resolveCtaMetadata(
         "?interest=tutor-ke-toan-tai-chinh-1&type=tutor",
-        "/"
+        "/",
+        consultationCatalog
       );
       assert.strictEqual(result.selectedProductSlug, "tutor-ke-toan-tai-chinh-1");
       assert.strictEqual(result.selectedSubjectSlug, "ke-toan-tai-chinh-1");
@@ -56,14 +77,14 @@ describe("Phase 4.1-D: Consultation Form and API Integration", () => {
     });
 
     test("resolves direct subject slug CTA parameters correctly", () => {
-      const result = resolveCtaMetadata("?interest=toan-cao-cap", "/");
+      const result = resolveCtaMetadata("?interest=toan-cao-cap", "/", consultationCatalog);
       assert.strictEqual(result.selectedProductSlug, null);
       assert.strictEqual(result.selectedSubjectSlug, "toan-cao-cap");
       assert.strictEqual(result.resolvedInterest, "Toán cao cấp");
     });
 
     test("handles empty query parameters cleanly", () => {
-      const result = resolveCtaMetadata("", "/");
+      const result = resolveCtaMetadata("", "/", consultationCatalog);
       assert.strictEqual(result.selectedProductSlug, null);
       assert.strictEqual(result.selectedSubjectSlug, null);
       assert.strictEqual(result.resolvedInterest, undefined);
@@ -87,7 +108,7 @@ describe("Phase 4.1-D: Consultation Form and API Integration", () => {
       const payload = buildConsultationPayload(sampleValues, {
         sourcePath: "/?interest=ke-toan-tai-chinh-1",
         selectedProductSlug: "ke-toan-tai-chinh-1"
-      });
+      }, consultationCatalog);
 
       assert.strictEqual(payload.fullName, "Nguyễn Văn An");
       assert.strictEqual(payload.phone, "0901234567");
@@ -111,7 +132,8 @@ describe("Phase 4.1-D: Consultation Form and API Integration", () => {
           major: "   ",
           note: ""
         },
-        {}
+        {},
+        consultationCatalog
       );
 
       assert.strictEqual(payload.major, null);
@@ -126,7 +148,8 @@ describe("Phase 4.1-D: Consultation Form and API Integration", () => {
           ...sampleValues,
           interest: "Kinh tế vi mô"
         },
-        {}
+        {},
+        consultationCatalog
       );
 
       assert.strictEqual(payload.selectedSubjectSlug, "kinh-te-vi-mo");
@@ -138,14 +161,15 @@ describe("Phase 4.1-D: Consultation Form and API Integration", () => {
           ...sampleValues,
           interest: "Môn khác / mình sẽ ghi rõ ở ghi chú"
         },
-        {}
+        {},
+        consultationCatalog
       );
 
       assert.strictEqual(payload.selectedSubjectSlug, null);
     });
 
     test("never includes server-managed database fields in payload", () => {
-      const payload = buildConsultationPayload(sampleValues, {}) as any;
+      const payload = buildConsultationPayload(sampleValues, {}, consultationCatalog) as any;
 
       assert.strictEqual(payload.id, undefined);
       assert.strictEqual(payload.status, undefined);
@@ -184,7 +208,8 @@ describe("Phase 4.1-D: Consultation Form and API Integration", () => {
         need: "Khóa học / lớp ôn",
         note: ""
       },
-      { sourcePath: "/" }
+      { sourcePath: "/" },
+      consultationCatalog
     );
 
     test("handles 201 Created successfully", async () => {
