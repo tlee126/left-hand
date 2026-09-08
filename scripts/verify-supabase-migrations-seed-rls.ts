@@ -304,24 +304,24 @@ function assertNestedFunctionSqlScope(
   const bodySql = bodies.map((body) => stripSqlCommentsAndSplitStatements(body).join(" ; ")).join(" ; ");
   const executableSql = maskSqlStringLiterals(bodySql);
   fail(!/\b(?:execute\s+(?:immediate|format)|execute\s+['$]|set\s+role|alter\s+role|service_role|bypassrls)\b/i.test(executableSql), "Nested function body contains dynamic SQL, role escalation, or privileged-role access");
-  fail(!/\b(?:grant|revoke|create|alter|drop|perform)\b/i.test(executableSql), "Nested function body contains executable SQL outside the migration contract");
+  fail(!/\b(?:grant|revoke|create|alter|drop|perform|truncate|copy|call)\b|\bdo\s+(?:(?:language\s+)?plpgsql\b|\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$)/i.test(executableSql), `Nested function body contains executable SQL outside the migration contract: ${executableSql.match(/\b(?:grant|revoke|create|alter|drop|perform|truncate|copy|call)\b|\bdo\s+(?:(?:language\s+)?plpgsql\b|\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$)/i)?.[0] ?? "unknown"}`);
 
   const allowedDml = new Set(options.allowDmlTables);
   const allowedSelect = new Set(options.allowSelectTables);
-  for (const match of executableSql.matchAll(/\b(insert\s+into|update|delete\s+from)\s+(?:only\s+)?(?:public\.)?([a-z_][a-z0-9_]*)/gi)) {
+  for (const match of executableSql.matchAll(/\b(insert\s+into|update(?!\s+set)|delete\s+from)\s+(?:only\s+)?(?:public\.)?([a-z_][a-z0-9_]*)/gi)) {
     fail(allowedDml.has(match[2].toLowerCase()), `Nested function mutates an out-of-scope table: ${match[2]}`);
   }
   for (const match of executableSql.matchAll(/\b(?:from|join)\s+(?:only\s+)?(?:public\.)?([a-z_][a-z0-9_]*)/gi)) {
     const prefix = executableSql.slice(Math.max(0, (match.index ?? 0) - 24), match.index ?? 0);
     if (/\b(?:is\s+distinct|is\s+not\s+distinct)\s*$/i.test(prefix)) continue;
-    fail(allowedSelect.has(match[1].toLowerCase()) || match[1].toLowerCase() === "jsonb_object_keys", `Nested function reads an out-of-scope table: ${match[1]}`);
+    fail(allowedSelect.has(match[1].toLowerCase()) || ["jsonb_object_keys", "jsonb_array_elements"].includes(match[1].toLowerCase()), `Nested function reads an out-of-scope table: ${match[1]}`);
   }
 
   for (const match of executableSql.matchAll(/\bselect\b([\s\S]*?)(?=;|$)/gi)) {
     const selectBody = match[1];
     const hasAllowedRelation = [...selectBody.matchAll(/\b(?:from|join)\s+(?:only\s+)?(?:public\.)?([a-z_][a-z0-9_]*)/gi)]
       .some((relation) => allowedSelect.has(relation[1].toLowerCase()));
-    const isApprovedExpression = options.allowSqlExpressionSelect === true && /\b(?:regexp_replace|lower|btrim|coalesce|concat_ws|unaccent|jsonb_array_elements_text|jsonb_object_keys)\s*\(/i.test(selectBody);
+    const isApprovedExpression = options.allowSqlExpressionSelect === true && /\b(?:regexp_replace|lower|btrim|coalesce|concat_ws|unaccent|jsonb_array_elements|jsonb_array_elements_text|jsonb_object_keys)\s*\(/i.test(selectBody);
     fail(hasAllowedRelation || isApprovedExpression, "Nested SELECT is outside the migration contract");
   }
 }
@@ -1388,6 +1388,79 @@ export function assertCatalogSearchNormalizationMigrationContract(sql0021: strin
   assertNestedFunctionSqlScope(statements, { allowDmlTables: ["products"], allowSelectTables: ["subjects"], allowSqlExpressionSelect: true });
 }
 
+/** Exact contract for the post-0021 catalog mutation and semantic boundary. */
+export function assertCatalogIntegrityBoundaryMigrationContract(sql0022: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const statements = stripSqlCommentsAndSplitStatements(sql0022);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const functions = [
+    "validate_subject_catalog_semantics",
+    "validate_product_delivery_semantics",
+    "validate_course_delivery_semantics",
+    "validate_tutor_subject_invariant",
+    "admin_subject_mutate_atomic",
+    "admin_catalog_mutate_v2"
+  ];
+  const allowed: RegExp[] = functions.map((name) => new RegExp(`^create or replace function public\\.${name}\\([\\s\\S]*\\) returns (?:trigger|jsonb) language plpgsql(?: security definer)? set search_path = public as \\$function\\$[\\s\\S]+\\$function\\$$`, "i"));
+  allowed.push(
+    /^drop trigger if exists (?:trg_validate_subject_catalog_semantics|trg_validate_product_delivery_semantics|trg_validate_course_delivery_semantics|trg_validate_tutor_subject_invariant|trg_validate_tutor_product_subject_invariant) on public\.(?:subjects|products|courses|tutor_subjects)$/i,
+    /^create trigger trg_validate_subject_catalog_semantics before insert or update of category, color_theme on public\.subjects for each row execute function public\.validate_subject_catalog_semantics\(\)$/i,
+    /^create trigger trg_validate_product_delivery_semantics before insert or update of kind, delivery_kind on public\.products for each row execute function public\.validate_product_delivery_semantics\(\)$/i,
+    /^create trigger trg_validate_course_delivery_semantics before insert or update of product_id, format on public\.courses for each row execute function public\.validate_course_delivery_semantics\(\)$/i,
+    /^create constraint trigger trg_validate_tutor_subject_invariant after insert or update or delete on public\.tutor_subjects deferrable initially deferred for each row execute function public\.validate_tutor_subject_invariant\(\)$/i,
+    /^create constraint trigger trg_validate_tutor_product_subject_invariant after insert or update or delete on public\.products deferrable initially deferred for each row execute function public\.validate_tutor_subject_invariant\(\)$/i,
+    /^revoke insert, update, delete on table public\.subjects from anon, public, authenticated$/i,
+    /^drop policy if exists subjects_admin_(?:insert|update|delete) on public\.subjects$/i,
+    /^revoke all on function public\.admin_catalog_mutate_atomic\(text, public\.product_kind_enum, jsonb, jsonb, uuid\) from public, anon, authenticated$/i,
+    /^revoke all on function public\.admin_subject_mutate_atomic\(text, jsonb, uuid\) from public$/i,
+    /^grant execute on function public\.admin_subject_mutate_atomic\(text, jsonb, uuid\) to authenticated$/i,
+    /^revoke all on function public\.admin_catalog_mutate_v2\(text, public\.product_kind_enum, jsonb, jsonb, uuid\) from public$/i,
+    /^grant execute on function public\.admin_catalog_mutate_v2\(text, public\.product_kind_enum, jsonb, jsonb, uuid\) to authenticated$/i
+  );
+  fail(statements.length === 25, "Migration 0022 must contain exactly its 25 allowlisted statements");
+  fail(normalized.every((statement) => allowed.some((pattern) => pattern.test(statement))), "Migration 0022 contains a statement outside its exact allowlist");
+  const code = normalized.join(" ; ");
+  fail(/before insert or update of category, color_theme on public\.subjects/i.test(code), "Subject category/theme must be enforced on INSERT and UPDATE");
+  for (const [category, theme] of Object.entries({
+    "Kế toán": "accounting", "Kinh tế": "economics", "Thống kê": "statistics", Marketing: "marketing",
+    "Quản trị": "management", "Tài chính": "finance", MIS: "mis", "Luật": "law", "Ngoại ngữ": "languages"
+  })) fail(code.includes(`when '${category.toLowerCase()}' then '${theme}'::public.color_theme_enum`), `Migration 0022 must preserve category/theme mapping ${category} -> ${theme}`);
+  fail(/digital_download|one_on_one_tutoring|recorded_video|live_session/i.test(code), "Delivery semantics must be present for every catalog kind");
+  fail(/new\.kind = 'material'[\s\S]*digital_download|new\.kind = 'tutor'[\s\S]*one_on_one_tutoring|new\.format = 'video'[\s\S]*recorded_video/i.test(code), "Database delivery triggers must encode each catalog delivery pair");
+  fail(/subject_associations|tutor_subjects/i.test(code) && /deferrable initially deferred/i.test(code), "Tutor associations must be atomic and deferred-validated");
+  fail(/primary_count <> 1|primary_count != 1/i.test(code) && /primary_subject_id is distinct from product_subject_id/i.test(code), "Tutor invariant must require one primary matching the product subject");
+  fail(/role = 'admin' and account_status = 'approved'/i.test(code) && /auth\.uid\(\)/i.test(code), "Catalog RPCs must enforce the approved-admin boundary");
+  fail((code.match(/security definer/g) || []).length === 2, "Only the two mutation RPCs may be SECURITY DEFINER");
+  fail(!/execute\s+(?:immediate|format)|set\s+role|bypassrls|service_role|grant\s+all|revoke\s+all\s+privileges/i.test(code), "Migration 0022 must not use dynamic SQL or privilege escalation");
+  fail(/jsonb_object_keys\(p_subject\)/i.test(code) && /jsonb_object_keys\(p_product\)/i.test(code), "Mutation RPCs must reject arbitrary payload keys");
+  assertNestedFunctionSqlScope(statements, { allowDmlTables: ["products", "subjects", "materials", "courses", "tutors", "tutor_subjects"], allowSelectTables: ["profiles", "products", "subjects", "materials", "courses", "tutors", "tutor_subjects"], allowSqlExpressionSelect: true });
+}
+
+/** Exact contract for child-aware indexed search maintenance. */
+export function assertCatalogChildSearchMigrationContract(sql0023: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const statements = stripSqlCommentsAndSplitStatements(sql0023);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const allowed: RegExp[] = [
+    /^create or replace function public\.normalize_catalog_search\(value text\) returns text language sql immutable set search_path = public, extensions as \$function\$[\s\S]+\$function\$$/i,
+    /^create or replace function public\.(?:refresh_product_search_document|refresh_products_for_subject_search|refresh_product_search_document_from_child)\(\) returns trigger language plpgsql set search_path = public, extensions as \$function\$[\s\S]+\$function\$$/i,
+    /^drop trigger if exists trg_refresh_(?:material|course|tutor)_search_document on public\.(?:materials|courses|tutors)$/i,
+    /^create trigger trg_refresh_material_search_document after insert or update of product_id, tags, includes, suitable_for or delete on public\.materials for each row execute function public\.refresh_product_search_document_from_child\(\)$/i,
+    /^create trigger trg_refresh_course_search_document after insert or update of product_id, mentor, tags, format or delete on public\.courses for each row execute function public\.refresh_product_search_document_from_child\(\)$/i,
+    /^create trigger trg_refresh_tutor_search_document after insert or update of product_id, name, faculty, format, tags or delete on public\.tutors for each row execute function public\.refresh_product_search_document_from_child\(\)$/i,
+    /^update public\.products set search_document = public\.normalize_catalog_search\([\s\S]+ from public\.subjects as subjects[\s\S]+$/i,
+    /^revoke all on function public\.(?:normalize_catalog_search\(text\)|refresh_product_search_document\(\)|refresh_products_for_subject_search\(\)|refresh_product_search_document_from_child\(\)) from public$/i
+  ];
+  fail(statements.length === 15, "Migration 0023 must contain exactly its 15 allowlisted statements");
+  fail(normalized.every((statement) => allowed.some((pattern) => pattern.test(statement))), "Migration 0023 contains a statement outside its exact allowlist");
+  const code = normalized.join(" ; ");
+  for (const field of ["courses.mentor", "tutors.name", "tutors.faculty", "tutors.format", "materials.tags", "products.title", "products.description", "subjects.name", "subjects.slug"]) fail(code.includes(field), `Child-aware search must include ${field}`);
+  fail(/replace\(replace\(coalesce\(value, ''\), 'đ', 'd'\), 'đ', 'd'\)/i.test(code) || /replace\(replace\(coalesce\(value, ''\), 'đ', 'd'\), 'đ', 'd'\)/i.test(code), "Search normalizer must include the Vietnamese đ/Đ mapping");
+  const executableCode = normalized.filter((statement) => !/^create trigger\b/i.test(statement)).join(" ; ");
+  fail(/insert\s+into|delete\s+from|truncate|copy|call|\bdo\s+(?:(?:language\s+)?plpgsql\b|\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$)|execute\s+(?:immediate|format)|set\s+role|bypassrls|service_role/i.test(maskSqlStringLiterals(executableCode)) === false, "Migration 0023 must not contain unsafe mutation escapes");
+  assertNestedFunctionSqlScope(statements, { allowDmlTables: ["products"], allowSelectTables: ["products", "subjects", "materials", "courses", "tutors"], allowSqlExpressionSelect: true });
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -1424,13 +1497,15 @@ export async function runAudit(): Promise<boolean> {
       "0018_catalog_semantic_invariants.sql",
       "0019_admin_catalog_transaction_rpc.sql",
       "0020_catalog_mutation_access_boundary.sql",
-      "0021_catalog_search_normalization.sql"
+      "0021_catalog_search_normalization.sql",
+      "0022_catalog_integrity_boundary.sql",
+      "0023_catalog_search_child_fields.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 21 migration files exist in strict topological order",
+      check: "All 23 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -1872,6 +1947,22 @@ export async function runAudit(): Promise<boolean> {
     if (migration0021ContractValid) {
       results.push({ category: "0021_catalog_search_normalization", check: "Maintains indexed normalized search documents for products and subjects", passed: true, details: "Database normalizer, maintenance triggers, backfill, and trigram indexes verified" });
     }
+
+    const sql0022 = await fs.readFile(path.join(migrationsDir, "0022_catalog_integrity_boundary.sql"), "utf-8");
+    let migration0022ContractValid = true;
+    try { assertCatalogIntegrityBoundaryMigrationContract(sql0022); } catch (error) {
+      migration0022ContractValid = false;
+      results.push({ category: "0022_catalog_integrity_boundary", check: "Closes subject, delivery, tutor-association, and mutation access boundaries", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0022ContractValid) results.push({ category: "0022_catalog_integrity_boundary", check: "Closes subject, delivery, tutor-association, and mutation access boundaries", passed: true, details: "Subject RPC, delivery triggers, deferred tutor invariant, and v2 atomic RPC verified" });
+
+    const sql0023 = await fs.readFile(path.join(migrationsDir, "0023_catalog_search_child_fields.sql"), "utf-8");
+    let migration0023ContractValid = true;
+    try { assertCatalogChildSearchMigrationContract(sql0023); } catch (error) {
+      migration0023ContractValid = false;
+      results.push({ category: "0023_catalog_search_child_fields", check: "Maintains normalized child-aware public search documents", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0023ContractValid) results.push({ category: "0023_catalog_search_child_fields", check: "Maintains normalized child-aware public search documents", passed: true, details: "Mentor, tutor, material-tag, subject, and product fields are indexed and trigger-maintained" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

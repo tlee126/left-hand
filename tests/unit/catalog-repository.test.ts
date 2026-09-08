@@ -30,7 +30,7 @@ const timestamps = { created_at: "2026-08-25T00:00:00Z", updated_at: "2026-08-25
 
 function subject(overrides: object = {}) {
   return {
-    id: "subj-123", slug: "ke-toan-tai-chinh-1", name: "Kế toán tài chính 1",
+    id: "550e8400-e29b-41d4-a716-446655440000", slug: "ke-toan-tai-chinh-1", name: "Kế toán tài chính 1",
     category: "Kế toán" as const, faculty_group: "Kế toán - Kiểm toán", color_theme: "accounting" as const,
     ...timestamps, ...overrides
   };
@@ -38,8 +38,8 @@ function subject(overrides: object = {}) {
 
 function product(overrides: object = {}) {
   return {
-    id: "prod-123", slug: "ke-toan-tai-chinh-1", kind: "material" as const,
-    title: "Tóm tắt Kế toán tài chính 1", description: "Mô tả tài liệu", subject_id: "subj-123",
+    id: "650e8400-e29b-41d4-a716-446655440000", slug: "ke-toan-tai-chinh-1", kind: "material" as const,
+    title: "Tóm tắt Kế toán tài chính 1", description: "Mô tả tài liệu", subject_id: "550e8400-e29b-41d4-a716-446655440000",
     category: "Kế toán" as const, delivery_kind: "digital_download" as const,
     publication_status: "published" as const, price_vnd: 29000, old_price_vnd: 59000,
     is_contact_for_price: false, rating: 4.9, is_hot: true, color_theme: "accounting" as const,
@@ -50,16 +50,16 @@ function product(overrides: object = {}) {
 function materialRow(overrides: object = {}) {
   return {
     ...product(overrides),
-    materials: { product_id: "prod-123", pages: 48, tags: ["Lý thuyết", "Bài tập"], includes: ["48 trang PDF"], suitable_for: ["Sinh viên UFM"], ...timestamps },
+    materials: { product_id: "650e8400-e29b-41d4-a716-446655440000", pages: 48, tags: ["Lý thuyết", "Bài tập"], includes: ["48 trang PDF"], suitable_for: ["Sinh viên UFM"], ...timestamps },
     subjects: subject(), ...overrides
   };
 }
 
 function courseRow(overrides: object = {}) {
   return {
-    ...product({ id: "crs-123", slug: "lop-on-thi-cuoi-ky-marketing", kind: "course" as const, title: "Lớp ôn Marketing", description: "Mô tả khóa học", subject_id: "subj-mkt", category: "Marketing" as const, delivery_kind: "live_session" as const, color_theme: "marketing" as const, price_vnd: 129000, old_price_vnd: 250000, is_hot: false }),
-    courses: { product_id: "crs-123", format: "zoom" as const, sessions: 4, duration: "8 giờ học", schedule: "Tối Thứ 4", enrollment_status: "open" as const, mentor: "Chị Minh Thư", tags: ["Live Zoom"], curriculum: ["Buổi 1"], suitable_for: ["Sinh viên UFM"], preparation: ["Đề cương"], ...timestamps },
-    subjects: subject({ id: "subj-mkt", slug: "marketing-can-ban", name: "Marketing căn bản", category: "Marketing", color_theme: "marketing" }),
+    ...product({ id: "750e8400-e29b-41d4-a716-446655440000", slug: "lop-on-thi-cuoi-ky-marketing", kind: "course" as const, title: "Lớp ôn Marketing", description: "Mô tả khóa học", subject_id: "950e8400-e29b-41d4-a716-446655440000", category: "Marketing" as const, delivery_kind: "live_session" as const, color_theme: "marketing" as const, price_vnd: 129000, old_price_vnd: 250000, is_hot: false }),
+    courses: { product_id: "750e8400-e29b-41d4-a716-446655440000", format: "zoom" as const, sessions: 4, duration: "8 giờ học", schedule: "Tối Thứ 4", enrollment_status: "open" as const, mentor: "Chị Minh Thư", tags: ["Live Zoom"], curriculum: ["Buổi 1"], suitable_for: ["Sinh viên UFM"], preparation: ["Đề cương"], ...timestamps },
+    subjects: subject({ id: "950e8400-e29b-41d4-a716-446655440000", slug: "marketing-can-ban", name: "Marketing căn bản", category: "Marketing", color_theme: "marketing" }),
     ...overrides
   };
 }
@@ -67,8 +67,8 @@ function courseRow(overrides: object = {}) {
 function tutorRow(overrides: object = {}) {
   const primary = subject();
   return {
-    ...product({ id: "tut-123", slug: "tutor-ke-toan-tai-chinh-1", kind: "tutor" as const, title: "Tutor Minh Thư", description: "Giới thiệu tutor", delivery_kind: "one_on_one_tutoring" as const, is_hot: false }),
-    tutors: { product_id: "tut-123", name: "Tutor Minh Thư", faculty: "Kế toán - Kiểm toán", format: "1:1 & Nhóm nhỏ (Online/Offline)", availability: "Còn slot tối Thứ 3", short_bio: "Giới thiệu tutor", strengths: ["Kiên nhẫn"], tags: ["GPA 9.2"], suitable_for: ["Sinh viên mất gốc"], support_methods: ["Zoom"], ...timestamps, tutor_subjects: [{ is_primary: true, subjects: primary }] },
+    ...product({ id: "850e8400-e29b-41d4-a716-446655440000", slug: "tutor-ke-toan-tai-chinh-1", kind: "tutor" as const, title: "Tutor Minh Thư", description: "Giới thiệu tutor", delivery_kind: "one_on_one_tutoring" as const, is_hot: false }),
+    tutors: { product_id: "850e8400-e29b-41d4-a716-446655440000", name: "Tutor Minh Thư", faculty: "Kế toán - Kiểm toán", format: "1:1 & Nhóm nhỏ (Online/Offline)", availability: "Còn slot tối Thứ 3", short_bio: "Giới thiệu tutor", strengths: ["Kiên nhẫn"], tags: ["GPA 9.2"], suitable_for: ["Sinh viên mất gốc"], support_methods: ["Zoom"], ...timestamps, tutor_subjects: [{ is_primary: true, subjects: primary }] },
     subjects: primary,
     tutor_subjects: [{ is_primary: true, subjects: primary }],
     ...overrides
@@ -82,6 +82,10 @@ function field(value: unknown, key: string): unknown {
   return Object.getOwnPropertyDescriptor(value, key)?.value;
 }
 
+function fieldPath(value: unknown, path: string): unknown {
+  return path.split(".").reduce<unknown>((current, key) => field(current, key), value);
+}
+
 function mockClient(rows: MockRows = {}, error: unknown = null, calls: string[] = [], countOverride?: number | null): CatalogClient {
   return {
     products() {
@@ -92,14 +96,14 @@ function mockClient(rows: MockRows = {}, error: unknown = null, calls: string[] 
         select() { calls.push("select"); return query; },
         eq(column: string, value: unknown) {
           calls.push(`eq:${column}=${String(value)}`);
-          if (Array.isArray(data)) data = data.filter((row) => field(row, column) === value);
-          else if (data && typeof data === "object" && field(data, column) !== value) data = [];
+          if (Array.isArray(data)) data = data.filter((row) => fieldPath(row, column) === value);
+          else if (data && typeof data === "object" && fieldPath(data, column) !== value) data = [];
           return query;
         },
-        gte(column: string, value: unknown) { calls.push(`gte:${column}=${String(value)}`); return query; },
-        lte(column: string, value: unknown) { calls.push(`lte:${column}=${String(value)}`); return query; },
-        in(column: string, values: readonly unknown[]) { calls.push(`in:${column}=${values.join(",")}`); return query; },
-        ilike(column: string, value: unknown) { calls.push(`ilike:${column}=${String(value)}`); return query; },
+        gte(column: string, value: unknown) { calls.push(`gte:${column}=${String(value)}`); if (Array.isArray(data)) data = data.filter((row) => Number(fieldPath(row, column)) >= Number(value)); return query; },
+        lte(column: string, value: unknown) { calls.push(`lte:${column}=${String(value)}`); if (Array.isArray(data)) data = data.filter((row) => Number(fieldPath(row, column)) <= Number(value)); return query; },
+        in(column: string, values: readonly unknown[]) { calls.push(`in:${column}=${values.join(",")}`); if (Array.isArray(data)) data = data.filter((row) => values.includes(fieldPath(row, column))); return query; },
+        ilike(column: string, value: unknown) { calls.push(`ilike:${column}=${String(value)}`); const pattern = String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*").replace(/_/g, "."); if (Array.isArray(data)) data = data.filter((row) => new RegExp(`^${pattern}$`, "i").test(String(fieldPath(row, column) ?? ""))); return query; },
         or(value: string) { calls.push(`or:${value}`); return query; },
         order(column: string, options: { ascending: boolean }) { calls.push(`order:${column}:${options.ascending ? "asc" : "desc"}`); return query; },
         range(from: number, to: number) { calls.push(`range:${from}-${to}`); data = (Array.isArray(data) ? data : allRows).slice(from, to + 1); return query; },
@@ -124,7 +128,7 @@ describe("Canonical catalog repository DTO mapper", () => {
   test("maps a material to exact numeric canonical DTO", () => {
     const mapped = mapRowToMaterialItem(materialRow());
     assert.deepStrictEqual(mapped.pricing, { amountVND: 29000, originalAmountVND: 59000, isContactForPrice: false });
-    assert.deepStrictEqual(mapped.subject, { id: "subj-123", slug: "ke-toan-tai-chinh-1", name: "Kế toán tài chính 1", category: "Kế toán", facultyGroup: "Kế toán - Kiểm toán", colorTheme: "accounting" });
+    assert.deepStrictEqual(mapped.subject, { id: "550e8400-e29b-41d4-a716-446655440000", slug: "ke-toan-tai-chinh-1", name: "Kế toán tài chính 1", category: "Kế toán", facultyGroup: "Kế toán - Kiểm toán", colorTheme: "accounting" });
     assert.deepStrictEqual(mapped.material, { pages: 48, tags: ["Lý thuyết", "Bài tập"], includes: ["48 trang PDF"], suitableFor: ["Sinh viên UFM"] });
     assert.strictEqual(mapped.kind, "material");
   });
@@ -165,11 +169,30 @@ describe("Canonical catalog repository DTO mapper", () => {
     assert.strictEqual(mapped.pricing.amountVND, 29000);
   });
 
+  test("accepts uppercase UUIDs and fails closed for malformed related identities", () => {
+    const uppercase = materialRow({
+      id: "650E8400-E29B-41D4-A716-446655440000",
+      subject_id: "550E8400-E29B-41D4-A716-446655440000",
+      materials: { ...materialRow().materials, product_id: "650E8400-E29B-41D4-A716-446655440000" },
+      subjects: subject({ id: "550E8400-E29B-41D4-A716-446655440000" })
+    });
+    assert.equal(mapRowToMaterialItem(uppercase).id, "650e8400-e29b-41d4-a716-446655440000");
+    for (const row of [
+      materialRow({ id: "not-a-uuid" }),
+      materialRow({ subject_id: "not-a-uuid" }),
+      materialRow({ materials: { ...materialRow().materials, product_id: "not-a-uuid" } }),
+      materialRow({ materials: { ...materialRow().materials, product_id: "550e8400-e29b-41d4-a716-446655440000" } }),
+      materialRow({ subjects: subject({ id: "not-a-uuid" }) })
+    ]) assert.throws(() => mapRowToMaterialItem(row), CatalogDataError);
+  });
+
   test("rejects invalid tutor format and duplicate/missing primary subject", () => {
     assert.throws(() => mapRowToTutorItem(tutorRow({ tutors: { ...tutorRow().tutors, format: "1:1 & Online" } })), CatalogDataError);
     assert.throws(() => mapRowToTutorItem(tutorRow({ tutors: { ...tutorRow().tutors, tutor_subjects: [] }, tutor_subjects: [] })), CatalogDataError);
-    const duplicatePrimary = [{ is_primary: true, subjects: subject() }, { is_primary: true, subjects: subject({ id: "subj-2", slug: "nguyen-ly-ke-toan", name: "Nguyên lý kế toán" }) }];
+    const duplicatePrimary = [{ is_primary: true, subjects: subject() }, { is_primary: true, subjects: subject({ id: "550e8400-e29b-41d4-a716-446655440002", slug: "nguyen-ly-ke-toan", name: "Nguyên lý kế toán" }) }];
     assert.throws(() => mapRowToTutorItem(tutorRow({ tutors: { ...tutorRow().tutors, tutor_subjects: duplicatePrimary }, tutor_subjects: duplicatePrimary })), CatalogDataError);
+    const duplicateSecondary = [{ is_primary: true, subjects: subject() }, { is_primary: false, subjects: subject() }];
+    assert.throws(() => mapRowToTutorItem(tutorRow({ tutors: { ...tutorRow().tutors, tutor_subjects: duplicateSecondary }, tutor_subjects: duplicateSecondary })), CatalogDataError);
   });
 });
 
@@ -187,6 +210,16 @@ describe("Catalog repository runtime data flow", () => {
       await list({ search: "  ĐẶNG   KẾ toán  " }, mockClient({ products: [] }, null, calls));
       assert.ok(calls.includes("ilike:search_document=%dang ke toan%"));
     }
+  });
+
+  test("matches child-only search terms at the repository boundary after database normalization", async () => {
+    const row = materialRow({ search_document: "tom tat ke toan tai chinh tai lieu pdf on thi" });
+    const result = await listMaterials({ search: "  TÀI   LIỆU  " }, mockClient({ products: [row] }));
+    assert.equal(result.items.length, 1);
+    assert.equal(result.items[0]?.material.tags[0], "Lý thuyết");
+    const tutor = tutorRow({ search_document: "tutor minh thu khoa ke toan online" });
+    const tutorResult = await listTutors({ search: "KHOA" }, mockClient({ products: [tutor] }));
+    assert.equal(tutorResult.items.length, 1);
   });
 
   test("runs filters, bounded range, and deterministic secondary ordering in the repository", async () => {
@@ -215,7 +248,7 @@ describe("Catalog repository runtime data flow", () => {
   });
 
   test("keeps exact pagination metadata for normal counts, zero counts, null counts, and final pages", async () => {
-    const normal = await listMaterials({ limit: 2, offset: 1 }, mockClient({ products: [materialRow(), materialRow({ id: "prod-2", slug: "ke-toan-2", materials: { ...materialRow().materials, product_id: "prod-2" } }), materialRow({ id: "prod-3", slug: "ke-toan-3", materials: { ...materialRow().materials, product_id: "prod-3" } })] }, null, [], 3));
+    const normal = await listMaterials({ limit: 2, offset: 1 }, mockClient({ products: [materialRow(), materialRow({ id: "650e8400-e29b-41d4-a716-446655440002", slug: "ke-toan-2", materials: { ...materialRow().materials, product_id: "650e8400-e29b-41d4-a716-446655440002" } }), materialRow({ id: "650e8400-e29b-41d4-a716-446655440003", slug: "ke-toan-3", materials: { ...materialRow().materials, product_id: "650e8400-e29b-41d4-a716-446655440003" } })] }, null, [], 3));
     assert.deepStrictEqual({ total: normal.total, page: normal.page, hasNext: normal.hasNext }, { total: 3, page: 1, hasNext: false });
 
     const empty = await listMaterials({ limit: 12 }, mockClient({ products: [] }, null, [], 0));
@@ -229,7 +262,7 @@ describe("Catalog repository runtime data flow", () => {
 
   test("fails closed for duplicate detail rows and malformed child joins", async () => {
     await assert.rejects(
-      () => getProductBySlug("material", "ke-toan-tai-chinh-1", mockClient({ products: [materialRow(), materialRow({ id: "prod-duplicate" })] })),
+      () => getProductBySlug("material", "ke-toan-tai-chinh-1", mockClient({ products: [materialRow(), materialRow({ id: "650e8400-e29b-41d4-a716-446655440004" })] })),
       { message: "Failed to get published catalog product." }
     );
     await assert.rejects(
@@ -242,7 +275,7 @@ describe("Catalog repository runtime data flow", () => {
     const client = mockClient({ products: [materialRow(), materialRow({ id: "draft", slug: "draft", publication_status: "draft" })] });
     const materials = await listPublishedMaterials(client);
     assert.strictEqual(materials.length, 1);
-    assert.strictEqual(materials[0].id, "prod-123");
+    assert.strictEqual(materials[0].id, "650e8400-e29b-41d4-a716-446655440000");
     assert.deepStrictEqual(await listPublishedMaterials(mockClient({ products: [] })), []);
   });
 

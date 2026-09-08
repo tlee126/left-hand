@@ -16,6 +16,25 @@ export const DELIVERY_KINDS = [
 ] as const;
 export type DeliveryKind = (typeof DELIVERY_KINDS)[number];
 
+export function expectedDeliveryKind(
+  kind: ProductKind,
+  format?: CourseFormat
+): DeliveryKind {
+  if (kind === "material") return "digital_download";
+  if (kind === "tutor") return "one_on_one_tutoring";
+  return format === "video" ? "recorded_video" : "live_session";
+}
+
+export function isDeliveryCompatible(
+  kind: ProductKind,
+  delivery: unknown,
+  format?: unknown
+): delivery is DeliveryKind {
+  if (!isDeliveryKind(delivery)) return false;
+  if (kind === "course" && format !== undefined && !isCourseFormat(format)) return false;
+  return delivery === expectedDeliveryKind(kind, kind === "course" ? format as CourseFormat : undefined);
+}
+
 /**
  * Publication lifecycle status of a product in the system
  */
@@ -239,4 +258,3 @@ export function isCourseFormat(value: unknown): value is CourseFormat {
 export function isTutorFormat(value: unknown): value is TutorFormat {
   return typeof value === "string" && TUTOR_FORMATS.includes(value as TutorFormat);
 }
-

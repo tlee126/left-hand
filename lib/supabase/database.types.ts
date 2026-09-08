@@ -15,6 +15,7 @@ export type AdminCatalogTutorFormat =
   | "1:1 & Nhóm nhỏ (Offline/Online)"
   | "1:1 (Online)"
   | "1:1 & Nhóm nhỏ (Online/Offline Q7)"
+export type AdminCatalogTutorSubjectAssociation = { subject_id: string; is_primary: boolean }
 type AdminCatalogProductFields = {
   slug?: string
   title?: string
@@ -50,8 +51,8 @@ export type AdminCatalogMaterialPayload = { pages?: number; tags?: string[]; inc
 export type AdminCatalogCreateMaterialPayload = { pages: number; tags?: string[]; includes?: string[]; suitable_for?: string[] }
 export type AdminCatalogCoursePayload = { format?: Database["public"]["Enums"]["course_format_enum"]; sessions?: number; duration?: string; schedule?: string; enrollment_status?: Database["public"]["Enums"]["enrollment_status_enum"]; mentor?: string; tags?: string[]; curriculum?: string[]; suitable_for?: string[]; preparation?: string[] }
 export type AdminCatalogCreateCoursePayload = { format: Database["public"]["Enums"]["course_format_enum"]; sessions: number; duration: string; schedule: string; enrollment_status?: Database["public"]["Enums"]["enrollment_status_enum"]; mentor: string; tags?: string[]; curriculum?: string[]; suitable_for?: string[]; preparation?: string[] }
-export type AdminCatalogTutorPayload = { name?: string; faculty?: string; format?: AdminCatalogTutorFormat; availability?: string; short_bio?: string; strengths?: string[]; tags?: string[]; suitable_for?: string[]; support_methods?: string[] }
-export type AdminCatalogCreateTutorPayload = { name: string; faculty: string; format: AdminCatalogTutorFormat; availability: string; short_bio: string; strengths?: string[]; tags?: string[]; suitable_for?: string[]; support_methods?: string[] }
+export type AdminCatalogTutorPayload = { name?: string; faculty?: string; format?: AdminCatalogTutorFormat; availability?: string; short_bio?: string; strengths?: string[]; tags?: string[]; suitable_for?: string[]; support_methods?: string[]; subject_associations?: AdminCatalogTutorSubjectAssociation[] }
+export type AdminCatalogCreateTutorPayload = { name: string; faculty: string; format: AdminCatalogTutorFormat; availability: string; short_bio: string; strengths?: string[]; tags?: string[]; suitable_for?: string[]; support_methods?: string[]; subject_associations: AdminCatalogTutorSubjectAssociation[] }
 export type AdminCatalogChildPayload = AdminCatalogMaterialPayload | AdminCatalogCoursePayload | AdminCatalogTutorPayload
 export type AdminCatalogMutateArgs =
   | { p_operation: "create"; p_kind: "material"; p_product: AdminCatalogCreateProductPayload; p_child: AdminCatalogCreateMaterialPayload; p_product_id?: never }
@@ -727,6 +728,18 @@ export type Database = {
       }
       admin_catalog_mutate_atomic: {
         Args: AdminCatalogMutateArgs
+        Returns: Json
+      }
+      admin_catalog_mutate_v2: {
+        Args: AdminCatalogMutateArgs
+        Returns: Json
+      }
+      admin_subject_mutate_atomic: {
+        Args: {
+          p_operation: AdminCatalogMutationOperation
+          p_subject?: Json
+          p_subject_id?: string
+        }
         Returns: Json
       }
     }

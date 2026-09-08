@@ -4,13 +4,11 @@ import type {
   AdminCatalogCreateMaterialPayload,
   AdminCatalogCreateProductPayload,
   AdminCatalogCreateTutorPayload,
+  AdminCatalogTutorSubjectAssociation,
   AdminCatalogMutateArgs,
   Database
 } from "@/lib/supabase/database.types";
-import {
-  CATEGORIES,
-  COLOR_THEMES,
-} from "@/lib/domain/subjects";
+import { CATEGORIES, COLOR_THEMES, CATEGORY_THEME_MAP } from "@/lib/domain/subjects";
 import {
   COURSE_FORMATS,
   DELIVERY_KINDS,
@@ -27,6 +25,8 @@ import {
   TUTOR_FORMATS,
   isValidVND
 } from "@/lib/domain/product-types";
+import { isUuid } from "@/lib/domain/identifiers";
+import { expectedDeliveryKind } from "@/lib/domain/product-types";
 
 type Tables = Database["public"]["Tables"];
 type SubjectRow = Tables["subjects"]["Row"];
@@ -93,6 +93,7 @@ type TutorMutationPayload = {
   tags?: string[];
   suitable_for?: string[];
   support_methods?: string[];
+  subject_associations?: AdminCatalogTutorSubjectAssociation[];
 };
 
 type ChildMutationPayload =
@@ -169,6 +170,7 @@ export interface CreateAdminTutorInput extends ProductInput {
   tags?: string[];
   suitable_for?: string[];
   support_methods?: string[];
+  subject_associations?: AdminCatalogTutorSubjectAssociation[];
 }
 
 export type UpdateAdminMaterialInput = Partial<CreateAdminMaterialInput>;
@@ -278,8 +280,6 @@ export class AdminCatalogRepositoryError extends Error {
   }
 }
 
-const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SLUG_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PRODUCT_INPUT_KEYS = [
   "slug",
@@ -300,7 +300,7 @@ const PRODUCT_INPUT_KEYS = [
 type QueryResult = { data: unknown; error: unknown };
 
 export function isValidUuid(value: unknown): value is string {
-  return typeof value === "string" && UUID_REGEX.test(value);
+  return isUuid(value);
 }
 
 export function isValidCatalogSlug(value: unknown): value is string {
@@ -417,6 +417,41 @@ function arrayField(record: InputObject, key: string): string[] | undefined {
   });
 }
 
+function subjectAssociationsField(record: InputObject, key: string, required: boolean): AdminCatalogTutorSubjectAssociation[] | undefined {
+  if (!hasField(record, key)) {
+    if (required) throw new AdminCatalogInputError("Tutor subject associations are required.");
+    return undefined;
+  }
+  const value = fieldValue(record, key);
+  if (!Array.isArray(value) || value.length === 0) throw new AdminCatalogInputError("Tutor subject associations are invalid.");
+  const seen = new Set<string>();
+  const associations = value.map((item) => {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) throw new AdminCatalogInputError("Tutor subject associations are invalid.");
+    const keys = Object.keys(item);
+    if (keys.length !== 2 || !keys.includes("subject_id") || !keys.includes("is_primary")) throw new AdminCatalogInputError("Tutor subject associations are invalid.");
+    const subjectId = Object.getOwnPropertyDescriptor(item, "subject_id")?.value;
+    const isPrimary = Object.getOwnPropertyDescriptor(item, "is_primary")?.value;
+    if (!isUuid(subjectId) || typeof isPrimary !== "boolean" || seen.has(subjectId.toLowerCase())) throw new AdminCatalogInputError("Tutor subject associations are invalid.");
+    seen.add(subjectId.toLowerCase());
+    return { subject_id: subjectId, is_primary: isPrimary };
+  });
+  if (associations.filter((item) => item.is_primary).length !== 1) throw new AdminCatalogInputError("Exactly one tutor subject must be primary.");
+  return associations;
+}
+
+function validateCategoryTheme(category: CatalogCategory | undefined, colorTheme: CatalogColorTheme | undefined, required: boolean): void {
+  if (required && (category === undefined || colorTheme === undefined)) throw new AdminCatalogInputError("Category and color theme are required together.");
+  if (category !== undefined || colorTheme !== undefined) {
+    if (category === undefined || colorTheme === undefined || CATEGORY_THEME_MAP[category] !== colorTheme) throw new AdminCatalogInputError("Category and color theme are inconsistent.");
+  }
+}
+
+function validateDelivery(kind: "material" | "course" | "tutor", product: ProductMutationPayload, format?: CourseFormat): void {
+  if (product.delivery_kind === undefined) return;
+  if (kind === "course" && format === undefined) throw new AdminCatalogInputError("Course delivery requires its format.");
+  if (product.delivery_kind !== expectedDeliveryKind(kind, format)) throw new AdminCatalogInputError("Product delivery is inconsistent with its catalog kind.");
+}
+
 function validateSubjectInput(input: unknown, update: boolean): SubjectMutationPayload {
   const record = inputRecord(input);
   assertAllowedKeys(record, ["slug", "name", "category", "faculty_group", "color_theme"]);
@@ -435,6 +470,8 @@ function validateSubjectInput(input: unknown, update: boolean): SubjectMutationP
   if (hasField(record, "faculty_group")) payload.faculty_group = requiredString(record, "faculty_group", 150);
   const colorTheme = enumString(record, "color_theme", COLOR_THEMES, false);
   if (colorTheme !== undefined) payload.color_theme = colorTheme;
+  validateCategoryTheme(category, colorTheme, !update);
+  if (update && (hasField(record, "category") !== hasField(record, "color_theme"))) throw new AdminCatalogInputError("Category and color theme must be updated together.");
   if (update && Object.keys(payload).length === 0) throw new AdminCatalogInputError("At least one subject field is required.");
   return payload;
 }
@@ -529,6 +566,7 @@ function validateMaterialInput(input: unknown, update: boolean): { product: Prod
   const record = inputRecord(input);
   assertAllowedKeys(record, [...PRODUCT_INPUT_KEYS, "pages", "tags", "includes", "suitable_for"]);
   const product = validateProductInput(productOnlyRecord(record), update, true);
+  validateDelivery("material", product);
   const child: MaterialMutationPayload = {};
   if (!update && !hasField(record, "pages")) throw new AdminCatalogInputError("Field pages is required.");
   const pages = numberField(record, "pages", !update, 1);
@@ -551,6 +589,10 @@ function validateCourseInput(input: unknown, update: boolean): { product: Produc
   }
   const format = enumString(record, "format", COURSE_FORMATS, !update);
   if (format !== undefined) child.format = format;
+  if (product.delivery_kind !== undefined || format !== undefined) {
+    if (product.delivery_kind === undefined || format === undefined) throw new AdminCatalogInputError("Course delivery and format must be updated together.");
+    validateDelivery("course", product, format);
+  }
   const sessions = numberField(record, "sessions", !update, 1);
   if (sessions !== undefined) child.sessions = sessions;
   for (const key of ["duration", "schedule", "mentor"] as const) {
@@ -569,11 +611,12 @@ function validateCourseInput(input: unknown, update: boolean): { product: Produc
 
 function validateTutorInput(input: unknown, update: boolean): { product: ProductMutationPayload; child: ChildMutationPayload } {
   const record = inputRecord(input);
-  assertAllowedKeys(record, [...PRODUCT_INPUT_KEYS, "name", "faculty", "format", "availability", "short_bio", "strengths", "tags", "suitable_for", "support_methods"]);
+  assertAllowedKeys(record, [...PRODUCT_INPUT_KEYS, "name", "faculty", "format", "availability", "short_bio", "strengths", "tags", "suitable_for", "support_methods", "subject_associations"]);
   const product = validateProductInput(productOnlyRecord(record), update, true);
   const child: TutorMutationPayload = {};
   const format = enumString(record, "format", TUTOR_FORMATS, !update);
   if (format !== undefined) child.format = format;
+  validateDelivery("tutor", product);
   for (const key of ["name", "faculty", "availability", "short_bio"] as const) {
     if (!update && !hasField(record, key)) throw new AdminCatalogInputError(`Field ${key} is required.`);
     const value = optionalString(record, key, key === "short_bio" ? 5000 : 500);
@@ -582,6 +625,16 @@ function validateTutorInput(input: unknown, update: boolean): { product: Product
   for (const key of ["strengths", "tags", "suitable_for", "support_methods"] as const) {
     const values = arrayField(record, key);
     if (values !== undefined) child[key] = values;
+  }
+  const associations = subjectAssociationsField(record, "subject_associations", false);
+  if (associations !== undefined) {
+    if (product.subject_id !== undefined && associations.find((item) => item.is_primary)?.subject_id.toLowerCase() !== product.subject_id.toLowerCase()) {
+      throw new AdminCatalogInputError("Tutor primary subject must match the product subject.");
+    }
+    child.subject_associations = associations;
+  } else if (!update) {
+    if (product.subject_id === undefined) throw new AdminCatalogInputError("Tutor subject is required.");
+    child.subject_associations = [{ subject_id: product.subject_id, is_primary: true }];
   }
   if (update && Object.keys(product).length === 0 && Object.keys(child).length === 0) throw new AdminCatalogInputError("At least one tutor field is required.");
   return { product, child: { kind: "tutor", value: child } };
@@ -633,6 +686,10 @@ function objectValue(value: unknown, key: string): unknown {
   return Object.getOwnPropertyDescriptor(value, key)?.value;
 }
 
+function compactPayload<T extends object>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as T;
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0 && item.trim() === item);
 }
@@ -665,7 +722,7 @@ function isAdminProduct(value: unknown): value is ProductProjection {
     && isProductKind(objectValue(value, "kind"))
     && typeof objectValue(value, "title") === "string"
     && typeof objectValue(value, "description") === "string"
-    && typeof objectValue(value, "subject_id") === "string"
+    && isValidUuid(objectValue(value, "subject_id"))
     && isCategory(objectValue(value, "category"))
     && isDeliveryKind(objectValue(value, "delivery_kind"))
     && isPublicationStatus(objectValue(value, "publication_status"))
@@ -796,7 +853,7 @@ async function callAtomicRpc(client: AdminCatalogClient, operation: AdminCatalog
     if (product.slug === undefined || product.title === undefined || product.description === undefined || product.subject_id === undefined || product.category === undefined || product.delivery_kind === undefined || product.price_vnd === undefined || product.old_price_vnd === undefined || product.is_contact_for_price === undefined || product.color_theme === undefined) {
       throw new AdminCatalogInputError("Required product fields are missing.");
     }
-    const createProduct: AdminCatalogCreateProductPayload = {
+    const createProduct: AdminCatalogCreateProductPayload = compactPayload({
       slug: product.slug,
       title: product.title,
       description: product.description,
@@ -810,37 +867,37 @@ async function callAtomicRpc(client: AdminCatalogClient, operation: AdminCatalog
       rating: product.rating,
       is_hot: product.is_hot,
       color_theme: product.color_theme
-    };
+    });
     if (child.kind === "material") {
       if (child.value.pages === undefined) throw new AdminCatalogInputError("Field pages is required.");
-      const createChild: AdminCatalogCreateMaterialPayload = { pages: child.value.pages, tags: child.value.tags, includes: child.value.includes, suitable_for: child.value.suitable_for };
+      const createChild: AdminCatalogCreateMaterialPayload = compactPayload({ pages: child.value.pages, tags: child.value.tags, includes: child.value.includes, suitable_for: child.value.suitable_for });
       const args: AdminCatalogMutateArgs = { p_operation: "create", p_kind: "material", p_product: createProduct, p_child: createChild };
-      return client.rpc("admin_catalog_mutate_atomic", args);
+      return client.rpc("admin_catalog_mutate_v2", args);
     }
     if (child.kind === "course") {
       if (child.value.format === undefined || child.value.sessions === undefined || child.value.duration === undefined || child.value.schedule === undefined || child.value.mentor === undefined) throw new AdminCatalogInputError("Required course fields are missing.");
-      const createChild: AdminCatalogCreateCoursePayload = { format: child.value.format, sessions: child.value.sessions, duration: child.value.duration, schedule: child.value.schedule, enrollment_status: child.value.enrollment_status, mentor: child.value.mentor, tags: child.value.tags, curriculum: child.value.curriculum, suitable_for: child.value.suitable_for, preparation: child.value.preparation };
+      const createChild: AdminCatalogCreateCoursePayload = compactPayload({ format: child.value.format, sessions: child.value.sessions, duration: child.value.duration, schedule: child.value.schedule, enrollment_status: child.value.enrollment_status, mentor: child.value.mentor, tags: child.value.tags, curriculum: child.value.curriculum, suitable_for: child.value.suitable_for, preparation: child.value.preparation });
       const args: AdminCatalogMutateArgs = { p_operation: "create", p_kind: "course", p_product: createProduct, p_child: createChild };
-      return client.rpc("admin_catalog_mutate_atomic", args);
+      return client.rpc("admin_catalog_mutate_v2", args);
     }
     if (child.value.name === undefined || child.value.faculty === undefined || child.value.format === undefined || child.value.availability === undefined || child.value.short_bio === undefined) throw new AdminCatalogInputError("Required tutor fields are missing.");
-    const createChild: AdminCatalogCreateTutorPayload = { name: child.value.name, faculty: child.value.faculty, format: child.value.format, availability: child.value.availability, short_bio: child.value.short_bio, strengths: child.value.strengths, tags: child.value.tags, suitable_for: child.value.suitable_for, support_methods: child.value.support_methods };
+    const createChild: AdminCatalogCreateTutorPayload = compactPayload({ name: child.value.name, faculty: child.value.faculty, format: child.value.format, availability: child.value.availability, short_bio: child.value.short_bio, strengths: child.value.strengths, tags: child.value.tags, suitable_for: child.value.suitable_for, support_methods: child.value.support_methods, subject_associations: child.value.subject_associations ?? [{ subject_id: createProduct.subject_id, is_primary: true }] });
     const args: AdminCatalogMutateArgs = { p_operation: "create", p_kind: "tutor", p_product: createProduct, p_child: createChild };
-    return client.rpc("admin_catalog_mutate_atomic", args);
+    return client.rpc("admin_catalog_mutate_v2", args);
   }
   if (child.kind === "material") {
     if (id === undefined) throw new AdminCatalogInputError("Catalog ID must be a valid UUID.");
     const args: AdminCatalogMutateArgs = { p_operation: "update", p_kind: "material", p_product: product, p_child: child.value, p_product_id: id };
-    return client.rpc("admin_catalog_mutate_atomic", args);
+    return client.rpc("admin_catalog_mutate_v2", args);
   }
   if (child.kind === "course") {
     if (id === undefined) throw new AdminCatalogInputError("Catalog ID must be a valid UUID.");
     const args: AdminCatalogMutateArgs = { p_operation: "update", p_kind: "course", p_product: product, p_child: child.value, p_product_id: id };
-    return client.rpc("admin_catalog_mutate_atomic", args);
+    return client.rpc("admin_catalog_mutate_v2", args);
   }
   if (id === undefined) throw new AdminCatalogInputError("Catalog ID must be a valid UUID.");
   const args: AdminCatalogMutateArgs = { p_operation: "update", p_kind: "tutor", p_product: product, p_child: child.value, p_product_id: id };
-  return client.rpc("admin_catalog_mutate_atomic", args);
+  return client.rpc("admin_catalog_mutate_v2", args);
 }
 
 async function mutateProduct<T>(operation: AdminCatalogMutationOperation, id: string | undefined, kind: ProductRow["kind"], product: ProductMutationPayload, child: ChildMutationPayload, selectColumns: string, guard: (value: unknown) => value is T, message: string): Promise<T> {
@@ -873,7 +930,7 @@ async function deleteProduct(id: string, kind: ProductRow["kind"], message: stri
       p_child: {},
       p_product_id: id
     };
-    const result = await client.rpc("admin_catalog_mutate_atomic", args);
+    const result = await client.rpc("admin_catalog_mutate_v2", args);
     if (result.error) repositoryFailure(message);
     if (result.data === null) return false;
     if (objectValue(result.data, "deleted") !== true || objectValue(result.data, "id") !== id) repositoryFailure(message);
@@ -917,7 +974,7 @@ export async function createAdminSubject(input: CreateAdminSubjectInput): Promis
   if (validated.slug === undefined || validated.name === undefined || validated.category === undefined || validated.faculty_group === undefined || validated.color_theme === undefined) {
     throw new AdminCatalogInputError("All subject fields are required.");
   }
-  const payload: Tables["subjects"]["Insert"] = {
+  const payload: SubjectMutationPayload = {
     slug: validated.slug,
     name: validated.name,
     category: validated.category,
@@ -926,10 +983,10 @@ export async function createAdminSubject(input: CreateAdminSubjectInput): Promis
   };
   try {
     const client = await adminClient();
-    const result: QueryResult = await client.from("subjects").insert(payload).select(SUBJECT_SELECT_COLUMNS).maybeSingle();
-    if (result.error || !result.data) repositoryFailure("Failed to create admin subject.");
-    if (!isAdminSubject(result.data)) repositoryFailure("Failed to create admin subject.");
-    return result.data;
+    const result: QueryResult = await client.rpc("admin_subject_mutate_atomic", { p_operation: "create", p_subject: payload });
+    const subject = objectValue(result.data, "subject");
+    if (result.error || !isAdminSubject(subject)) repositoryFailure("Failed to create admin subject.");
+    return subject;
   } catch (error) {
     if (error instanceof AdminCatalogInputError || error instanceof AdminCatalogRepositoryError) throw error;
     throw new AdminCatalogRepositoryError("Failed to create admin subject.");
@@ -941,9 +998,10 @@ export async function updateAdminSubject(id: string, input: UpdateAdminSubjectIn
   const payload: Tables["subjects"]["Update"] = validateSubjectInput(input, true);
   try {
     const client = await adminClient();
-    const result = await client.from("subjects").update(payload).eq("id", id).select(SUBJECT_SELECT_COLUMNS).maybeSingle();
+    const result: QueryResult = await client.rpc("admin_subject_mutate_atomic", { p_operation: "update", p_subject: payload, p_subject_id: id });
     if (result.error) repositoryFailure("Failed to update admin subject.");
-    return result.data === null || result.data === undefined ? null : isAdminSubject(result.data) ? result.data : repositoryFailure("Failed to update admin subject.");
+    const subject = objectValue(result.data, "subject");
+    return subject === null || subject === undefined ? null : isAdminSubject(subject) ? subject : repositoryFailure("Failed to update admin subject.");
   } catch (error) {
     if (error instanceof AdminCatalogInputError || error instanceof AdminCatalogRepositoryError) throw error;
     throw new AdminCatalogRepositoryError("Failed to update admin subject.");
@@ -954,9 +1012,9 @@ export async function deleteAdminSubject(id: string): Promise<boolean> {
   if (!isValidUuid(id)) throw new AdminCatalogInputError("Subject ID must be a valid UUID.");
   try {
     const client = await adminClient();
-    const result = await client.from("subjects").delete().eq("id", id).select("id").maybeSingle();
+    const result: QueryResult = await client.rpc("admin_subject_mutate_atomic", { p_operation: "delete", p_subject: {}, p_subject_id: id });
     if (result.error) repositoryFailure("Failed to delete admin subject.");
-    return Boolean(result.data);
+    return objectValue(result.data, "deleted") === true && objectValue(result.data, "id") === id;
   } catch (error) {
     if (error instanceof AdminCatalogInputError || error instanceof AdminCatalogRepositoryError) throw error;
     throw new AdminCatalogRepositoryError("Failed to delete admin subject.");
