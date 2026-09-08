@@ -29,6 +29,8 @@ import {
   assertAdminCatalogTransactionMigrationContract,
   assertCatalogMutationAccessBoundaryMigrationContract,
   assertCatalogSearchNormalizationMigrationContract,
+  assertCatalogIntegrityBoundaryMigrationContract,
+  assertCatalogChildSearchMigrationContract,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
 } from "../../scripts/verify-supabase-migrations-seed-rls";
@@ -243,7 +245,9 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       "0018_catalog_semantic_invariants.sql",
       "0019_admin_catalog_transaction_rpc.sql",
       "0020_catalog_mutation_access_boundary.sql",
-      "0021_catalog_search_normalization.sql"
+      "0021_catalog_search_normalization.sql",
+      "0022_catalog_integrity_boundary.sql",
+      "0023_catalog_search_child_fields.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -1592,5 +1596,65 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       const fixture = sql.replace("BEGIN\n    NEW.search_document", "BEGIN\n    DROP TABLE public.profiles;\n    NEW.search_document");
       assert.throws(() => assertCatalogSearchNormalizationMigrationContract(fixture), /./);
     });
+  });
+
+  describe("18. Migration 0022 Catalog Integrity Boundary", () => {
+    const migrationPath = path.resolve(process.cwd(), "supabase/migrations/0022_catalog_integrity_boundary.sql");
+
+    test("accepts the subject RPC, delivery, and deferred tutor invariant contract", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      assert.doesNotThrow(() => assertCatalogIntegrityBoundaryMigrationContract(sql));
+      assert.match(sql, /BEFORE INSERT OR UPDATE OF category, color_theme/i);
+      assert.match(sql, /DEFERRABLE INITIALLY DEFERRED/i);
+      assert.match(sql, /subject_associations/i);
+      assert.match(sql, /NEW\.kind = 'material'[\s\S]*digital_download/i);
+      assert.match(sql, /NEW\.kind = 'tutor'[\s\S]*one_on_one_tutoring/i);
+      assert.match(sql, /NEW\.format = 'video'[\s\S]*recorded_video/i);
+    });
+
+    test("rejects nested TRUNCATE, COPY, CALL, DO, and appended privilege fixtures", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      assert.throws(() => assertCatalogIntegrityBoundaryMigrationContract(sql.replace("WHEN 'Marketing' THEN 'marketing'::public.color_theme_enum", "WHEN 'Marketing' THEN 'economics'::public.color_theme_enum")), /./);
+      for (const statement of [
+        "TRUNCATE TABLE public.products;",
+        "COPY public.products FROM STDIN;",
+        "CALL public.leaked_proc();",
+        "DO $$ BEGIN DELETE FROM public.products; END $$;",
+        "GRANT INSERT ON TABLE public.subjects TO authenticated;"
+      ]) assert.throws(() => assertCatalogIntegrityBoundaryMigrationContract(`${sql}\n${statement}`), /./, statement);
+      const commented = sql.replace("RETURN NEW;", "-- TRUNCATE TABLE public.products;\n    /* COPY public.products FROM STDIN; */\n    RETURN NEW;");
+      assert.doesNotThrow(() => assertCatalogIntegrityBoundaryMigrationContract(commented));
+    });
+  });
+
+  describe("19. Migration 0023 Child-aware Search", () => {
+    const migrationPath = path.resolve(process.cwd(), "supabase/migrations/0023_catalog_search_child_fields.sql");
+
+    test("accepts child fields and trigger maintenance", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      assert.doesNotThrow(() => assertCatalogChildSearchMigrationContract(sql));
+      for (const field of ["courses.mentor", "tutors.name", "tutors.faculty", "tutors.format", "materials.tags"]) assert.match(sql, new RegExp(field.replace(".", "\\."), "i"));
+    });
+
+    test("rejects hostile nested and appended statements while ignoring literals", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      for (const statement of ["TRUNCATE TABLE public.products;", "DO $$ BEGIN EXECUTE 'SELECT 1'; END $$;", "GRANT SELECT ON TABLE public.products TO anon;"]) {
+        assert.throws(() => assertCatalogChildSearchMigrationContract(`${sql}\n${statement}`), /./);
+      }
+      assert.doesNotThrow(() => assertCatalogChildSearchMigrationContract(sql.replace("'[^[:alnum:]\\s-]'", "'[^[:alnum:]\\s-] DELETE FROM public.products'")));
+    });
+  });
+
+  test("rejects nested executable hostile statements in every catalog migration contract", async () => {
+    const fixtures = [
+      ["supabase/migrations/0018_catalog_semantic_invariants.sql", assertCatalogSemanticMigrationContract],
+      ["supabase/migrations/0019_admin_catalog_transaction_rpc.sql", assertAdminCatalogTransactionMigrationContract],
+      ["supabase/migrations/0021_catalog_search_normalization.sql", assertCatalogSearchNormalizationMigrationContract]
+    ] as const;
+    for (const [file, contract] of fixtures) {
+      const sql = await fs.readFile(path.resolve(process.cwd(), file), "utf8");
+      const nested = sql.replace("BEGIN", "BEGIN\n    TRUNCATE TABLE public.products;\n    COPY public.products FROM STDIN;\n    CALL public.leaked_proc();\n    DO $$ BEGIN DELETE FROM public.products; END $$;");
+      assert.throws(() => contract(nested), /./, file);
+    }
   });
 });

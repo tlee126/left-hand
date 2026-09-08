@@ -27,6 +27,8 @@ import {
   type TutorFormat
 } from "@/lib/domain/product-types";
 import { CATEGORY_THEME_MAP, isValidSlug, normalizeSlug } from "@/lib/domain/subjects";
+import { isUuid } from "@/lib/domain/identifiers";
+import { expectedDeliveryKind } from "@/lib/domain/product-types";
 
 export type { CatalogFilters, CatalogPage } from "@/lib/domain/catalog";
 
@@ -116,6 +118,11 @@ function cleanString(input: object, key: string): string {
   return value;
 }
 
+function cleanUuid(input: object, key: string): string {
+  const value = cleanString(input, key);
+  return isUuid(value) ? value.toLowerCase() : invalid(`Invalid catalog identity: ${key}`);
+}
+
 function stringArray(value: unknown, field: string): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.length === 0 || item.trim() !== item)) return invalid(`Invalid catalog field: ${field}`);
   return value.map((item) => item);
@@ -149,8 +156,8 @@ function readProductProjection(value: unknown): ProductProjection {
   if (!isProductKind(kind) || !isCategory(category) || !isDeliveryKind(deliveryKind) || !isPublicationStatus(publicationStatus) || !isColorTheme(colorTheme)) return invalid("Published product enum fields are invalid.");
   if (typeof rating !== "number" || typeof isContactForPrice !== "boolean" || typeof isHot !== "boolean") return invalid("Published product scalar fields are invalid.");
   return {
-    id: cleanString(input, "product.id"), slug: cleanString(input, "product.slug"), kind,
-    title: cleanString(input, "product.title"), description: cleanString(input, "product.description"), subject_id: cleanString(input, "product.subject_id"),
+    id: cleanUuid(input, "product.id"), slug: cleanString(input, "product.slug"), kind,
+    title: cleanString(input, "product.title"), description: cleanString(input, "product.description"), subject_id: cleanUuid(input, "product.subject_id"),
     category, delivery_kind: deliveryKind, publication_status: publicationStatus,
     price_vnd: nullableNumber(input, "product.price_vnd"), old_price_vnd: nullableNumber(input, "product.old_price_vnd"),
     is_contact_for_price: isContactForPrice, rating, is_hot: isHot, color_theme: colorTheme,
@@ -164,13 +171,13 @@ function readSubjectProjection(value: unknown): SubjectProjection | null {
   const category = valueOf(input, "category");
   const colorTheme = valueOf(input, "color_theme");
   if (!isCategory(category) || !isColorTheme(colorTheme)) return invalid("Published subject metadata is invalid.");
-  return { id: cleanString(input, "subject.id"), slug: cleanString(input, "subject.slug"), name: cleanString(input, "subject.name"), category, faculty_group: cleanString(input, "subject.faculty_group"), color_theme: colorTheme };
+  return { id: cleanUuid(input, "subject.id"), slug: cleanString(input, "subject.slug"), name: cleanString(input, "subject.name"), category, faculty_group: cleanString(input, "subject.faculty_group"), color_theme: colorTheme };
 }
 
 function readMaterialProjection(value: unknown): MaterialProjection | null {
   const input = asObject(value);
   if (!input) return null;
-  return { product_id: cleanString(input, "material.product_id"), pages: integerValue(input, "pages"), tags: stringArray(valueOf(input, "tags"), "material.tags"), includes: stringArray(valueOf(input, "includes"), "material.includes"), suitable_for: stringArray(valueOf(input, "suitable_for"), "material.suitable_for") };
+  return { product_id: cleanUuid(input, "material.product_id"), pages: integerValue(input, "pages"), tags: stringArray(valueOf(input, "tags"), "material.tags"), includes: stringArray(valueOf(input, "includes"), "material.includes"), suitable_for: stringArray(valueOf(input, "suitable_for"), "material.suitable_for") };
 }
 
 function readCourseProjection(value: unknown): CourseProjection | null {
@@ -179,7 +186,7 @@ function readCourseProjection(value: unknown): CourseProjection | null {
   const format = valueOf(input, "format");
   const enrollmentStatus = valueOf(input, "enrollment_status");
   if (!isCourseFormat(format) || !isEnrollmentStatus(enrollmentStatus)) return invalid("Published course metadata is invalid.");
-  return { product_id: cleanString(input, "course.product_id"), format, sessions: integerValue(input, "sessions"), duration: cleanString(input, "course.duration"), schedule: cleanString(input, "course.schedule"), enrollment_status: enrollmentStatus, mentor: cleanString(input, "course.mentor"), tags: stringArray(valueOf(input, "tags"), "course.tags"), curriculum: stringArray(valueOf(input, "curriculum"), "course.curriculum"), suitable_for: stringArray(valueOf(input, "suitable_for"), "course.suitable_for"), preparation: stringArray(valueOf(input, "preparation"), "course.preparation") };
+  return { product_id: cleanUuid(input, "course.product_id"), format, sessions: integerValue(input, "sessions"), duration: cleanString(input, "course.duration"), schedule: cleanString(input, "course.schedule"), enrollment_status: enrollmentStatus, mentor: cleanString(input, "course.mentor"), tags: stringArray(valueOf(input, "tags"), "course.tags"), curriculum: stringArray(valueOf(input, "curriculum"), "course.curriculum"), suitable_for: stringArray(valueOf(input, "suitable_for"), "course.suitable_for"), preparation: stringArray(valueOf(input, "preparation"), "course.preparation") };
 }
 
 function readTutorProjection(value: unknown): TutorProjection | null {
@@ -187,7 +194,7 @@ function readTutorProjection(value: unknown): TutorProjection | null {
   if (!input) return null;
   const format = valueOf(input, "format");
   if (!isTutorFormat(format)) return invalid("Published tutor metadata is invalid.");
-  return { product_id: cleanString(input, "tutor.product_id"), name: cleanString(input, "tutor.name"), faculty: cleanString(input, "tutor.faculty"), format, availability: cleanString(input, "tutor.availability"), short_bio: cleanString(input, "tutor.short_bio"), strengths: stringArray(valueOf(input, "strengths"), "tutor.strengths"), tags: stringArray(valueOf(input, "tags"), "tutor.tags"), suitable_for: stringArray(valueOf(input, "suitable_for"), "tutor.suitable_for"), support_methods: stringArray(valueOf(input, "support_methods"), "tutor.support_methods") };
+  return { product_id: cleanUuid(input, "tutor.product_id"), name: cleanString(input, "tutor.name"), faculty: cleanString(input, "tutor.faculty"), format, availability: cleanString(input, "tutor.availability"), short_bio: cleanString(input, "tutor.short_bio"), strengths: stringArray(valueOf(input, "strengths"), "tutor.strengths"), tags: stringArray(valueOf(input, "tags"), "tutor.tags"), suitable_for: stringArray(valueOf(input, "suitable_for"), "tutor.suitable_for"), support_methods: stringArray(valueOf(input, "support_methods"), "tutor.support_methods") };
 }
 
 function readTutorSubjects(value: unknown): TutorSubjectProjection[] {
@@ -260,6 +267,7 @@ function mapTutorRow(row: unknown): PublishedTutor {
   const subjectRows = readTutorSubjects(tutorObject ? valueOf(tutorObject, "tutor_subjects") : input ? valueOf(input, "tutor_subjects") : null);
   if (!tutor || !tutorObject || subjectRows.length === 0 || subjectRows.filter((item) => item.is_primary).length !== 1 || tutor.product_id !== product.id) return invalid("Published tutor metadata is invalid.");
   const subjects = subjectRows.map((item) => ({ subject: validateSubject(item.subjects), isPrimary: item.is_primary })).sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || a.subject.slug.localeCompare(b.subject.slug)).map((item) => item.subject);
+  if (new Set(subjects.map((item) => item.id)).size !== subjects.length) return invalid("Published tutor subjects contain duplicate identities.");
   if (!subjects[0] || subjects[0].id !== product.subject_id) return invalid("Published tutor primary subject is inconsistent.");
   const base = validateBase(product, readSubjectProjection(input ? valueOf(input, "subjects") : null), "tutor", "one_on_one_tutoring");
   return { ...base, kind: "tutor", deliveryKind: "one_on_one_tutoring", tutor: { name: tutor.name, faculty: tutor.faculty, format: tutor.format, availability: tutor.availability, shortBio: tutor.short_bio, strengths: tutor.strengths, tags: tutor.tags, suitableFor: tutor.suitable_for, supportMethods: tutor.support_methods, subjects } };

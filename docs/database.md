@@ -3,7 +3,7 @@
 This document outlines the PostgreSQL database schema for the LEFT HAND learning platform, designed for Supabase.
 
 > [!NOTE]
-> **Status:** Migrations `0001_core_schema.sql` through `0017_profile_on_auth_signup.sql` are already applied and content-locked. Migrations `0018_catalog_semantic_invariants.sql` through `0021_catalog_search_normalization.sql` are prepared locally and verified via automated contract checks; neither has been applied to the hosted Supabase project.
+> **Status:** Migrations `0001_core_schema.sql` through `0017_profile_on_auth_signup.sql` are already applied and content-locked. Migrations `0018_catalog_semantic_invariants.sql` through `0023_catalog_search_child_fields.sql` are prepared locally and verified via automated contract checks; none of these Phase 2 migrations has been applied to the hosted Supabase project.
 
 ---
 

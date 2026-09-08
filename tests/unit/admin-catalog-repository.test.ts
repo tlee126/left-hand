@@ -213,9 +213,10 @@ describe("Task 5.1-A: admin catalog repository", () => {
   });
 
   test("creates all four groups through one typed atomic RPC with restricted payloads", async () => {
-    mockClient = new MockClient([{ data: SUBJECT_ROW, error: null }]);
+    mockClient = new MockClient([{ data: { subject: SUBJECT_ROW }, error: null }]);
     await repository.createAdminSubject({ slug: "marketing", name: "Marketing", category: CATEGORY, faculty_group: "Business", color_theme: COLOR_THEME });
-    assert.deepEqual(mockClient.calls.find((call) => call.method === "insert")?.args, [{ slug: "marketing", name: "Marketing", category: "Marketing", faculty_group: "Business", color_theme: "marketing" }]);
+    assert.deepEqual(mockClient.calls.find((call) => call.method === "rpc")?.args, ["admin_subject_mutate_atomic", { p_operation: "create", p_subject: { slug: "marketing", name: "Marketing", category: "Marketing", faculty_group: "Business", color_theme: "marketing" } }]);
+    assert.equal(mockClient.calls.some((call) => ["insert", "update", "delete"].includes(call.method)), false);
 
     for (const [create, input, childTable, childRow, product] of [
       [repository.createAdminMaterial, { ...productInput(), pages: 20, tags: ["tag"] }, "materials", MATERIAL_ROW, MATERIAL_PRODUCT],
@@ -228,7 +229,7 @@ describe("Task 5.1-A: admin catalog repository", () => {
       ]);
       await create(input as never);
       const rpc = mockClient.calls.find((call) => call.method === "rpc");
-      assert.equal(rpc?.args[0], "admin_catalog_mutate_atomic");
+      assert.equal(rpc?.args[0], "admin_catalog_mutate_v2");
       const args = rpcArgs(rpc);
       assert.equal(args.p_operation, "create");
       assert.equal(args.p_kind, product.kind);
@@ -262,25 +263,17 @@ describe("Task 5.1-A: admin catalog repository", () => {
           ? { ...updated, courses: { product_id: PRODUCT_ID, format: "online", sessions: 1, duration: "1 week", schedule: "Saturday", enrollment_status: "open", mentor: "Mentor", tags: [], curriculum: [], suitable_for: [], preparation: [], created_at: "2026-09-05T00:00:00Z", updated_at: "2026-09-05T00:00:00Z" } }
           : { ...updated, tutors: { product_id: PRODUCT_ID, name: "Tutor", faculty: "Business", format: "1:1 (Online)", availability: "Weekends", short_bio: "Bio", strengths: [], tags: [], suitable_for: [], support_methods: [], created_at: "2026-09-05T00:00:00Z", updated_at: "2026-09-05T00:00:00Z" } };
       mockClient = new MockClient([
-        { data: update === repository.updateAdminSubject ? SUBJECT_ROW : { product: updated }, error: null },
+        { data: update === repository.updateAdminSubject ? { subject: SUBJECT_ROW } : { product: updated }, error: null },
         { data: updatedProduct, error: null }
       ]);
       await update(PRODUCT_ID, input as never);
-      if (update === repository.updateAdminSubject) {
-        assert.ok(mockClient.calls.some((call) => call.method === "update"));
-      } else {
-        assert.ok(mockClient.calls.some((call) => call.method === "rpc"));
-      }
-      mockClient = new MockClient(update === repository.updateAdminSubject
-        ? [{ data: { id: PRODUCT_ID }, error: null }]
-        : [{ data: { deleted: true, id: PRODUCT_ID }, error: null }]);
+      assert.ok(mockClient.calls.some((call) => call.method === "rpc"));
+      if (update === repository.updateAdminTutor) assert.deepEqual((rpcArgs(mockClient.calls.find((call) => call.method === "rpc"))).p_child, { availability: "Updated" });
+      if (update === repository.updateAdminSubject) assert.equal(mockClient.calls.find((call) => call.method === "rpc")?.args[0], "admin_subject_mutate_atomic");
+      mockClient = new MockClient([{ data: { deleted: true, id: PRODUCT_ID }, error: null }]);
       assert.equal(await del(PRODUCT_ID), true);
-      if (del === repository.deleteAdminSubject) {
-        assert.equal(mockClient.calls.some((call) => call.method === "delete"), true);
-      } else {
-        assert.equal(mockClient.calls.filter((call) => call.method === "rpc").length, 1);
-        assert.equal(mockClient.calls.some((call) => call.method === "delete"), false);
-      }
+      assert.equal(mockClient.calls.filter((call) => call.method === "rpc").length, 1);
+      assert.equal(mockClient.calls.some((call) => ["insert", "update", "delete"].includes(call.method)), false);
     }
   });
 
@@ -318,6 +311,34 @@ describe("Task 5.1-A: admin catalog repository", () => {
     }
   });
 
+  test("validates category/theme, delivery semantics, and atomic tutor associations before the RPC", async () => {
+    const tutorInput = { ...productInput({ delivery_kind: "one_on_one_tutoring" }), format: "1:1 (Online)", name: "Tutor", faculty: "Business", availability: "Weekends", short_bio: "Bio" };
+    const invalidInputs = [
+      () => repository.createAdminMaterial({ ...productInput({ delivery_kind: "live_session" }), pages: 20 } as never),
+      () => repository.createAdminCourse({ ...productInput({ delivery_kind: "recorded_video" }), format: "online", sessions: 1, duration: "1", schedule: "1", mentor: "M" } as never),
+      () => repository.createAdminTutor({ ...tutorInput, subject_associations: [{ subject_id: SUBJECT_ID, is_primary: true }, { subject_id: SUBJECT_ID, is_primary: false }] } as never),
+      () => repository.createAdminTutor({ ...tutorInput, subject_associations: [{ subject_id: PRODUCT_ID, is_primary: true }] } as never),
+      () => repository.createAdminSubject({ slug: "marketing", name: "Marketing", category: CATEGORY, faculty_group: "Business", color_theme: "economics" as never })
+    ];
+    for (const operation of invalidInputs) {
+      mockClient = new MockClient();
+      await assert.rejects(operation, repository.AdminCatalogInputError);
+      assert.equal(mockClient.calls.length, 0);
+    }
+
+    mockClient = new MockClient([
+      { data: { product: { ...MATERIAL_PRODUCT, kind: "tutor", delivery_kind: "one_on_one_tutoring" }, child: {} }, error: null },
+      { data: { ...MATERIAL_PRODUCT, kind: "tutor", delivery_kind: "one_on_one_tutoring", tutors: { product_id: PRODUCT_ID, name: "Tutor", faculty: "Business", format: "1:1 (Online)", availability: "Weekends", short_bio: "Bio", strengths: [], tags: [], suitable_for: [], support_methods: [], created_at: "2026-09-05T00:00:00Z", updated_at: "2026-09-05T00:00:00Z" } }, error: null }
+    ]);
+    await repository.createAdminTutor(tutorInput as never);
+    const rpc = mockClient.calls.find((call) => call.method === "rpc");
+    assert.equal(rpc?.args[0], "admin_catalog_mutate_v2");
+    assert.deepEqual((rpc?.args[1] as { p_child: unknown }).p_child, {
+      name: "Tutor", faculty: "Business", format: "1:1 (Online)", availability: "Weekends", short_bio: "Bio",
+      subject_associations: [{ subject_id: SUBJECT_ID, is_primary: true }]
+    });
+  });
+
   test("maps client factory and database failures to generic errors without leaking raw details", async () => {
     mockCreateClientError = new Error("secret=jwt PII@example.test");
     await assert.rejects(() => repository.listAdminSubjects(), (error: unknown) => {
@@ -353,11 +374,24 @@ describe("Task 5.1-A: admin catalog repository", () => {
     assert.equal(mockClient.calls.filter((call) => call.method === "rpc").length, 1);
   });
 
+  test("keeps tutor association failure inside the atomic RPC contract", async () => {
+    const tutorInput = { ...productInput({ delivery_kind: "one_on_one_tutoring" }), format: "1:1 (Online)", name: "Tutor", faculty: "Business", availability: "Weekends", short_bio: "Bio" };
+    mockClient = new MockClient([{ data: null, error: { message: "association constraint PII@example.test", code: "23514" } }]);
+    await assert.rejects(
+      () => repository.createAdminTutor(tutorInput as never),
+      (error: unknown) => error instanceof repository.AdminCatalogRepositoryError && !String(error).includes("association constraint") && !String(error).includes("PII@example.test")
+    );
+    const rpc = mockClient.calls.find((call) => call.method === "rpc");
+    assert.equal(rpc?.args[0], "admin_catalog_mutate_v2");
+    assert.equal(mockClient.calls.some((call) => ["insert", "update", "delete"].includes(call.method)), false);
+  });
+
   test("uses only the server client, explicit selects, and no unsafe dynamic types", async () => {
     const source = await fs.readFile("lib/repositories/admin-catalog-repository.ts", "utf8");
     assert.match(source, /@\/lib\/supabase\/server/);
     assert.doesNotMatch(source, /@\/lib\/supabase\/browser|service_role|SUPABASE_SERVICE_ROLE_KEY/i);
     assert.doesNotMatch(source, /\.select\("\*"\)/);
+    assert.doesNotMatch(source, /from\("subjects"\)[\s\S]*\.(?:insert|update|delete)\(/);
     assert.doesNotMatch(source, /\bany\b/);
   });
 });
