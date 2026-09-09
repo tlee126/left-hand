@@ -3,17 +3,24 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { createClient } from "@/lib/supabase/server";
 import { createServerAdminClient } from "@/lib/supabase/server-admin";
+import {
+  MATERIALS_BUCKET,
+  MATERIAL_SIGNED_URL_EXPIRES_IN_SECONDS,
+  MATERIAL_UPLOAD_EXPIRES_IN_SECONDS,
+  MAX_PDF_BYTES,
+  MAX_VIDEO_BYTES,
+  SUPPORTED_MATERIAL_MIME_TYPES
+} from "./material-upload-constants";
 
-export const MATERIALS_BUCKET = "materials";
-export const MATERIAL_SIGNED_URL_EXPIRES_IN_SECONDS = 300;
-export const MAX_PDF_BYTES = 20 * 1024 * 1024;
-export const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
-export const SUPPORTED_MATERIAL_MIME_TYPES = [
-  "application/pdf",
-  "video/mp4",
-  "video/webm",
-  "video/quicktime"
-] as const;
+export {
+  MATERIALS_BUCKET,
+  MATERIAL_SIGNED_URL_EXPIRES_IN_SECONDS,
+  MATERIAL_UPLOAD_EXPIRES_IN_SECONDS,
+  MAX_PDF_BYTES,
+  MAX_VIDEO_BYTES,
+  SUPPORTED_MATERIAL_MIME_TYPES
+} from "./material-upload-constants";
+
 
 export type SupportedMaterialMimeType = (typeof SUPPORTED_MATERIAL_MIME_TYPES)[number];
 
@@ -128,6 +135,54 @@ export interface MaterialUploadInput {
 export interface StoredMaterialObject {
   bucket: typeof MATERIALS_BUCKET;
   storagePath: string;
+}
+
+export interface MaterialUploadCapability {
+  bucket: typeof MATERIALS_BUCKET;
+  storagePath: string;
+  token: string;
+  signedUrl: string;
+}
+
+export interface MaterialObjectInfo {
+  storagePath: string;
+  byteSize: number;
+  mimeType: string;
+}
+
+/** Creates a one-object, non-upsert upload capability for a server-generated path. */
+export async function createMaterialUploadCapability(storagePath: unknown): Promise<MaterialUploadCapability> {
+  if (typeof storagePath !== "string" || !MATERIAL_STORAGE_PATH_PATTERN.test(storagePath)) {
+    throw new MaterialStorageInputError();
+  }
+  try {
+    const supabase = createServerAdminClient();
+    const { data, error } = await supabase.storage
+      .from(MATERIALS_BUCKET)
+      .createSignedUploadUrl(storagePath, { upsert: false });
+    if (error || !data?.token || data.path !== storagePath || !data.signedUrl) throw new Error();
+    return { bucket: MATERIALS_BUCKET, storagePath, token: data.token, signedUrl: data.signedUrl };
+  } catch (error) {
+    if (error instanceof MaterialStorageInputError) throw error;
+    throw new MaterialStorageError();
+  }
+}
+
+/** Reads provider metadata for the exact private object without downloading its bytes. */
+export async function getMaterialObjectInfo(storagePath: unknown): Promise<MaterialObjectInfo> {
+  if (typeof storagePath !== "string" || !MATERIAL_STORAGE_PATH_PATTERN.test(storagePath)) {
+    throw new MaterialStorageInputError();
+  }
+  try {
+    const supabase = createServerAdminClient();
+    const { data, error } = await supabase.storage.from(MATERIALS_BUCKET).info(storagePath);
+    if (error || !data || data.size === undefined || typeof data.contentType !== "string") throw new Error();
+    if (!Number.isSafeInteger(data.size) || data.size <= 0) throw new Error();
+    return { storagePath, byteSize: data.size, mimeType: data.contentType };
+  } catch (error) {
+    if (error instanceof MaterialStorageInputError) throw error;
+    throw new MaterialStorageError();
+  }
 }
 
 export async function uploadMaterialObject(input: MaterialUploadInput): Promise<StoredMaterialObject> {

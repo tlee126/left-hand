@@ -346,6 +346,7 @@ export type Database = {
           original_name: string
           product_id: string
           storage_path: string
+          upload_reservation_id: string | null
           updated_at: string
           uploaded_by: string | null
           version: number
@@ -359,6 +360,7 @@ export type Database = {
           original_name: string
           product_id: string
           storage_path: string
+          upload_reservation_id?: string | null
           updated_at?: string
           uploaded_by?: string | null
           version: number
@@ -372,6 +374,7 @@ export type Database = {
           original_name?: string
           product_id?: string
           storage_path?: string
+          upload_reservation_id?: string | null
           updated_at?: string
           uploaded_by?: string | null
           version?: number
@@ -398,6 +401,7 @@ export type Database = {
         Row: {
           byte_size: number
           created_at: string
+          expires_at: string
           id: string
           mime_type: string
           original_name: string
@@ -409,6 +413,7 @@ export type Database = {
         Insert: {
           byte_size: number
           created_at?: string
+          expires_at?: string
           id?: string
           mime_type: string
           original_name: string
@@ -420,6 +425,7 @@ export type Database = {
         Update: {
           byte_size?: number
           created_at?: string
+          expires_at?: string
           id?: string
           mime_type?: string
           original_name?: string

@@ -1106,6 +1106,22 @@ export function assertMaterialStorageIntegrityBoundaryMigrationContract(sql0029:
   fail(!/grant\s+(?:insert|update|delete|all)\s+on\s+(?:table\s+)?public\.(?:material_assets|material_asset_upload_reservations)/i.test(executableCode), "Migration 0029 must not grant direct material mutation");
 }
 
+/** Additive contract for direct upload session expiry and retry-safe finalization. */
+export function assertMaterialDirectUploadMigrationContract(sql0033: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const code = stripSqlCommentsAndSplitStatements(sql0033).join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  fail(/alter table public\.material_asset_upload_reservations[\s\S]*add column expires_at timestamptz not null default \(now\(\) \+ interval '2 hours'\)/i.test(code), "Migration 0033 must add a bounded reservation expiry");
+  fail(/alter table public\.material_assets[\s\S]*add column upload_reservation_id uuid/i.test(code), "Migration 0033 must link committed assets to their upload reservation");
+  fail(/create unique index material_assets_upload_reservation_id_unique[\s\S]*where upload_reservation_id is not null/i.test(code), "Migration 0033 must make reservation finalization idempotent");
+  fail(/create or replace function public\.finalize_material_asset_upload\(p_reservation_id uuid\)/i.test(code), "Migration 0033 must replace the finalization RPC");
+  fail(/expires_at <= now\(\)/i.test(executableCode) && /for update/i.test(executableCode), "Finalization must reject expired sessions under a row lock");
+  fail(/where upload_reservation_id = p_reservation_id[\s\S]*uploaded_by = v_user_id/i.test(executableCode) && /if found then return v_row/i.test(executableCode), "Finalization must return the existing asset on a duplicate request");
+  fail(/v_reservation\.id/i.test(executableCode) && /delete from public\.material_asset_upload_reservations/i.test(executableCode), "Finalization must bind and consume the reservation atomically");
+  fail((code.match(/set search_path = pg_catalog, public/gi) ?? []).length === 1, "Migration 0033 must use the fixed search_path");
+  fail(!/\b(?:execute\s+(?:immediate|format)|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role)\b/i.test(executableCode), "Migration 0033 must not use dynamic SQL or privilege escalation");
+}
+
 /** Canonical catalog search document contract for migration 0030. */
 export function assertCatalogCompleteSearchMigrationContract(sql0030: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -1737,13 +1753,14 @@ export async function runAudit(): Promise<boolean> {
       "0029_material_storage_integrity_boundary.sql",
       "0030_catalog_search_complete_fields.sql",
       "0031_learning_progress_concurrency.sql",
-      "0032_learning_progress_monotonicity.sql"
+      "0032_learning_progress_monotonicity.sql",
+      "0033_material_direct_upload_sessions.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 32 migration files exist in strict topological order",
+      check: "All 33 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -2280,6 +2297,15 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0032_learning_progress_monotonicity", check: "Rejects completed progress below 100% and watched-percent regressions", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0032ContractValid) results.push({ category: "0032_learning_progress_monotonicity", check: "Rejects completed progress below 100% and watched-percent regressions", passed: true, details: "Exact RPC signature, fixed boundary, completed=100 validation, monotonic CAS, and conflict contract verified" });
+
+    // 33. Audit 0033_material_direct_upload_sessions.sql
+    const sql0033 = await fs.readFile(path.join(migrationsDir, "0033_material_direct_upload_sessions.sql"), "utf-8");
+    let migration0033ContractValid = true;
+    try { assertMaterialDirectUploadMigrationContract(sql0033); } catch (error) {
+      migration0033ContractValid = false;
+      results.push({ category: "0033_material_direct_upload_sessions", check: "Adds expiring direct-upload sessions and retry-safe finalization", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0033ContractValid) results.push({ category: "0033_material_direct_upload_sessions", check: "Adds expiring direct-upload sessions and retry-safe finalization", passed: true, details: "Reservation expiry, reservation-linked asset identity, fixed-path finalization, and duplicate-finalize idempotency verified" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

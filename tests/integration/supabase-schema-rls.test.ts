@@ -37,6 +37,7 @@ import {
   assertConsultationRpcPrivateBoundaryMigrationContract,
   assertLearningProgressBoundaryMigrationContract,
   assertMaterialStorageIntegrityBoundaryMigrationContract,
+  assertMaterialDirectUploadMigrationContract,
   assertCatalogCompleteSearchMigrationContract,
   assertLearningProgressConcurrencyMigrationContract,
   assertLearningProgressMonotonicityMigrationContract,
@@ -267,6 +268,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       "0030_catalog_search_complete_fields.sql"
       ,"0031_learning_progress_concurrency.sql"
       ,"0032_learning_progress_monotonicity.sql"
+      ,"0033_material_direct_upload_sessions.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -342,6 +344,14 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       assert.throws(() => assertLearningProgressMonotonicityMigrationContract(sql.replace("p_watched_percent <> 100", "p_watched_percent <> 99")), /./);
       assert.throws(() => assertLearningProgressMonotonicityMigrationContract(sql.replace("p_watched_percent >= public.learning_progress.watched_percent", "p_watched_percent > public.learning_progress.watched_percent")), /./);
       assert.doesNotThrow(() => assertLearningProgressMonotonicityMigrationContract(`-- p_watched_percent <> 100\n${sql}`));
+    });
+
+    test("0033 adds expiring direct-upload sessions and retry-safe finalization", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0033_material_direct_upload_sessions.sql"), "utf-8");
+      assert.doesNotThrow(() => assertMaterialDirectUploadMigrationContract(sql));
+      assert.throws(() => assertMaterialDirectUploadMigrationContract(sql.replace("expires_at <= now()", "expires_at < now()")), /./);
+      assert.throws(() => assertMaterialDirectUploadMigrationContract(sql.replace("upload_reservation_id = p_reservation_id", "storage_path = p_reservation_id")), /./);
+      assert.doesNotThrow(() => assertMaterialDirectUploadMigrationContract(`-- service_role\n${sql}`));
     });
 
     test("0001_core_schema.sql creates all 8 application tables with primary keys and constraints", async () => {
