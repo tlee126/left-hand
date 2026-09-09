@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 test("application, local storage, and deployment documentation share the material upload ceiling", async () => {
-  const storage = await readFile("lib/storage/material-storage.ts", "utf8");
+  const storage = await readFile("lib/storage/material-upload-constants.ts", "utf8");
   const config = await readFile("supabase/config.toml", "utf8");
   const docs = await readFile("docs/database.md", "utf8");
   assert.match(storage, /MAX_VIDEO_BYTES\s*=\s*500\s*\*\s*1024\s*\*\s*1024/);

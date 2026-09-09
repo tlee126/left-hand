@@ -37,6 +37,11 @@ import {
   assertConsultationRpcPrivateBoundaryMigrationContract,
   assertLearningProgressBoundaryMigrationContract,
   assertMaterialStorageIntegrityBoundaryMigrationContract,
+  assertMaterialDirectUploadMigrationContract,
+  assertMaterialUploadCleanupMigrationContract,
+  assertMaterialUploadIdempotencyMigrationContract,
+  assertMaterialUploadRetryStateMigrationContract,
+  assertMaterialUploadCancelCleanupGuardMigrationContract,
   assertCatalogCompleteSearchMigrationContract,
   assertLearningProgressConcurrencyMigrationContract,
   assertLearningProgressMonotonicityMigrationContract,
@@ -267,6 +272,11 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       "0030_catalog_search_complete_fields.sql"
       ,"0031_learning_progress_concurrency.sql"
       ,"0032_learning_progress_monotonicity.sql"
+      ,"0033_material_direct_upload_sessions.sql"
+      ,"0034_material_upload_cleanup_hardening.sql"
+      ,"0035_material_upload_idempotency.sql"
+      ,"0036_material_upload_retry_state.sql"
+      ,"0037_material_upload_cancel_cleanup_guard.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -342,6 +352,131 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       assert.throws(() => assertLearningProgressMonotonicityMigrationContract(sql.replace("p_watched_percent <> 100", "p_watched_percent <> 99")), /./);
       assert.throws(() => assertLearningProgressMonotonicityMigrationContract(sql.replace("p_watched_percent >= public.learning_progress.watched_percent", "p_watched_percent > public.learning_progress.watched_percent")), /./);
       assert.doesNotThrow(() => assertLearningProgressMonotonicityMigrationContract(`-- p_watched_percent <> 100\n${sql}`));
+    });
+
+    test("0033 adds expiring direct-upload sessions and retry-safe finalization", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0033_material_direct_upload_sessions.sql"), "utf-8");
+      assert.doesNotThrow(() => assertMaterialDirectUploadMigrationContract(sql));
+      assert.throws(() => assertMaterialDirectUploadMigrationContract(sql.replace("expires_at <= now()", "expires_at < now()")), /./);
+      assert.throws(() => assertMaterialDirectUploadMigrationContract(sql.replace("upload_reservation_id = p_reservation_id", "storage_path = p_reservation_id")), /./);
+      assert.doesNotThrow(() => assertMaterialDirectUploadMigrationContract(`-- service_role\n${sql}`));
+    });
+
+    test("0034 adds lock-safe cleanup state and protects finalized assets", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0034_material_upload_cleanup_hardening.sql"), "utf-8");
+      assert.doesNotThrow(() => assertMaterialUploadCleanupMigrationContract(sql));
+      assert.throws(() => assertMaterialUploadCleanupMigrationContract(sql.replace("FOR UPDATE SKIP LOCKED", "FOR UPDATE")), /./);
+      assert.throws(() => assertMaterialUploadCleanupMigrationContract(sql.replace("AND NOT EXISTS (", "AND EXISTS (")), /./);
+    });
+
+    test("0035 binds prepare and finalize retries to one immutable upload attempt", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0035_material_upload_idempotency.sql"), "utf-8");
+      assert.doesNotThrow(() => assertMaterialUploadIdempotencyMigrationContract(sql));
+      assert.doesNotThrow(() => assertMaterialUploadIdempotencyMigrationContract(`-- GRANT EXECUTE TO anon;\n${sql}`));
+      assert.throws(() => assertMaterialUploadIdempotencyMigrationContract(sql.replaceAll("upload_idempotency_key uuid", "upload_idempotency_key text")), /./);
+      assert.throws(() => assertMaterialUploadIdempotencyMigrationContract(sql.replace("CREATE OR REPLACE FUNCTION public.finalize_material_asset_upload(p_reservation_id uuid, p_idempotency_key uuid)", "CREATE OR REPLACE FUNCTION public.finalize_material_asset_upload(p_reservation_id uuid, p_idempotency_key text)")), /./);
+      const dangerousMutations = [
+        `${sql}\nGRANT EXECUTE ON FUNCTION public.finalize_material_asset_upload(uuid, uuid) TO anon;`,
+        `${sql}\nGRANT EXECUTE ON FUNCTION public.finalize_material_asset_upload(uuid, uuid) TO public;`,
+        sql.replace(/REVOKE ALL ON FUNCTION public\.reserve_material_asset_upload\([^;]+;\s*/i, ""),
+        sql.replaceAll("uploaded_by = v_user_id", "uploaded_by = uploaded_by"),
+        sql.replace("p_idempotency_key uuid", "p_idempotency_key uuid, p_actor uuid"),
+        sql.replace("p_idempotency_key uuid", "p_idempotency_key uuid, p_timestamp timestamptz"),
+        sql.replace("material_asset_upload_reservations_idempotency_key_unique", "material_asset_upload_reservations_idempotency_key_unique_removed"),
+        sql.replace(/CREATE UNIQUE INDEX material_assets_upload_idempotency_key_unique[\s\S]*?WHERE uploaded_by IS NOT NULL AND upload_idempotency_key IS NOT NULL;\s*/i, ""),
+        sql.replace("v_reservation.product_id <> p_product_id", "v_reservation.product_id <> v_reservation.product_id"),
+        `${sql}\nALTER FUNCTION public.finalize_material_asset_upload(uuid, uuid) SECURITY DEFINER;\nBYPASSRLS;`,
+        `${sql}\nSET ROLE postgres;`,
+        `${sql}\nDO $$ BEGIN NULL; END $$;`,
+        `${sql}\nCOPY public.material_assets FROM STDIN;`,
+        `${sql}\nCALL public.finalize_material_asset_upload('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000000');`,
+        `${sql}\nDELETE FROM public.material_assets;`
+      ];
+      for (const [index, mutation] of dangerousMutations.entries()) assert.throws(() => assertMaterialUploadIdempotencyMigrationContract(mutation), /./, `0035 dangerous mutation ${index} must be rejected`);
+    });
+
+    test("0036 preserves retry state and rejects privilege/ownership mutations", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0036_material_upload_retry_state.sql"), "utf-8");
+      assert.doesNotThrow(() => assertMaterialUploadRetryStateMigrationContract(sql));
+      assert.doesNotThrow(() => assertMaterialUploadRetryStateMigrationContract(`-- GRANT EXECUTE TO anon;\n${sql}`));
+      assert.doesNotThrow(() => assertMaterialUploadRetryStateMigrationContract(sql.replace("DECLARE\n  v_user_id uuid := auth.uid();\nBEGIN", "DECLARE\n  p_actor uuid;\n  v_user_id uuid := auth.uid();\nBEGIN").replace("Material upload is not permitted", "p_actor BYPASSRLS EXECUTE format")));
+      const dangerousMutations = [
+        `${sql}\nGRANT EXECUTE ON FUNCTION public.mark_material_asset_upload_retryable(uuid) TO anon;`,
+        `${sql}\nGRANT EXECUTE ON FUNCTION public.mark_material_asset_upload_retryable(uuid) TO public;`,
+        sql.replace(/REVOKE ALL ON FUNCTION public\.mark_material_asset_upload_retryable\([^;]+;\s*/i, ""),
+        sql.replaceAll("uploaded_by = v_user_id", "uploaded_by = uploaded_by"),
+        sql.replace("public.mark_material_asset_upload_retryable(p_reservation_id uuid)", "public.mark_material_asset_upload_retryable(p_reservation_id uuid, p_actor uuid)"),
+        sql.replace("p_reservation_id uuid)", "p_reservation_id uuid, p_timestamp timestamptz)"),
+        sql.replaceAll("upload_idempotency_key = p_idempotency_key", "upload_idempotency_key = upload_idempotency_key"),
+        sql.replace("v_reservation.product_id <> p_product_id", "v_reservation.product_id = p_product_id"),
+        sql.replace("assets.upload_reservation_id = reservations.id", "assets.product_id = reservations.product_id"),
+        sql.replace("uploaded_by = v_user_id", "uploaded_by = v_user_id OR true"),
+        sql.replace("BEGIN\n  IF v_user_id IS NULL", "BEGIN\n  UPDATE public.material_asset_upload_reservations SET retryable_at = now();\n  IF v_user_id IS NULL"),
+        sql.replace("BEGIN\n  IF v_user_id IS NULL", "BEGIN\n  INSERT INTO public.material_assets (product_id, storage_path, original_name, mime_type, byte_size, version) VALUES (gen_random_uuid(), 'materials/x', 'x.pdf', 'application/pdf', 1, 1);\n  IF v_user_id IS NULL"),
+        sql.replace("BEGIN\n  IF v_user_id IS NULL", "BEGIN\n  DELETE FROM public.material_asset_upload_reservations;\n  IF v_user_id IS NULL"),
+        sql.replace("BEGIN\n  IF v_user_id IS NULL", "BEGIN\n  GRANT SELECT ON TABLE public.material_assets TO authenticated;\n  IF v_user_id IS NULL"),
+        sql.replace("v_user_id uuid := auth.uid()", "v_user_id uuid := gen_random_uuid()"),
+        `${sql}\nALTER TABLE public.material_assets ENABLE ROW LEVEL SECURITY;\nBYPASSRLS;`,
+        `${sql}\nSET ROLE postgres;`,
+        `${sql}\nEXECUTE 'SELECT 1';`,
+        `${sql}\nDO $$ BEGIN NULL; END $$;`,
+        `${sql}\nCOPY public.material_assets FROM STDIN;`,
+        `${sql}\nCALL public.finalize_material_asset_upload('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000000');`,
+        `${sql}\nUPDATE public.material_assets SET visibility = 'private';`
+      ];
+      for (const [index, mutation] of dangerousMutations.entries()) assert.throws(() => assertMaterialUploadRetryStateMigrationContract(mutation), /./, `0036 dangerous mutation ${index} must be rejected`);
+    });
+
+    test("0037 blocks cancellation during retry cleanup without widening RPC privileges", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0037_material_upload_cancel_cleanup_guard.sql"), "utf-8");
+      assert.doesNotThrow(() => assertMaterialUploadCancelCleanupGuardMigrationContract(sql));
+      for (const mutation of [
+        sql.replace("AND cleanup_pending_at IS NULL", ""),
+        sql.replace("uploaded_by = v_user_id", "uploaded_by = v_user_id OR true"),
+        sql.replace("v_user_id uuid := auth.uid()", "v_user_id uuid := gen_random_uuid()"),
+        sql.replace("TO authenticated", "TO anon"),
+        `${sql}\nGRANT EXECUTE ON FUNCTION public.cancel_material_asset_upload(uuid) TO public;`,
+        sql.replace("BEGIN\n  IF v_user_id IS NULL", "BEGIN\n  UPDATE public.material_asset_upload_reservations SET retryable_at = now();\n  IF v_user_id IS NULL")
+      ]) assert.throws(() => assertMaterialUploadCancelCleanupGuardMigrationContract(mutation), /./);
+    });
+
+    test("0036/0037 tokenize quoted identifiers without masking executable mutations", async () => {
+      const retrySql = await fs.readFile(path.join(migrationsDir, "0036_material_upload_retry_state.sql"), "utf-8");
+      const guardSql = await fs.readFile(path.join(migrationsDir, "0037_material_upload_cancel_cleanup_guard.sql"), "utf-8");
+      const injectAfterBegin = (sql: string, statement: string) => sql.replace("BEGIN\n  IF v_user_id IS NULL", `BEGIN\n  ${statement}\n  IF v_user_id IS NULL`);
+      const quotedDml = [
+        'DELETE FROM "public"."material_assets";',
+        'UPDATE "public"."material_asset_upload_reservations" SET "cancelled_at" = now();',
+        'INSERT INTO "public"."material_assets" ("product_id") VALUES (gen_random_uuid());',
+        'DELETE FROM public."material_assets";',
+        'UPDATE "public".material_asset_upload_reservations SET "cancelled_at" = now();',
+        'INSERT INTO public."material_assets" ("product_id") VALUES (gen_random_uuid());'
+      ];
+      for (const statement of quotedDml) {
+        assert.throws(() => assertMaterialUploadRetryStateMigrationContract(injectAfterBegin(retrySql, statement)), /./, `quoted DML must be rejected: ${statement}`);
+        assert.throws(() => assertMaterialUploadCancelCleanupGuardMigrationContract(injectAfterBegin(guardSql, statement)), /./, `quoted DML must be rejected in 0037: ${statement}`);
+      }
+      for (const statement of [
+        'DO $nested$ BEGIN DELETE FROM "public"."material_assets"; END $nested$;',
+        'EXECUTE $nested$DELETE FROM "public"."material_assets"$nested$;',
+        'GRANT SELECT ON TABLE "public"."material_assets" TO authenticated;'
+      ]) {
+        assert.throws(() => assertMaterialUploadRetryStateMigrationContract(injectAfterBegin(retrySql, statement)), /./, `nested or privileged quoted SQL must be rejected: ${statement}`);
+      }
+
+      const validQuotedIdentifiers = injectAfterBegin(retrySql, `
+  -- DELETE UPDATE INSERT are comments, not executable DML.
+  PERFORM 'DELETE UPDATE INSERT';
+  PERFORM $literal$DELETE FROM "public"."material_assets"$literal$;
+  "DELETE" := "UPDATE" || "INSERT" || "p_actor";`)
+        .replace("DECLARE\n  v_user_id uuid := auth.uid();", `DECLARE
+  "DELETE" text;
+  "UPDATE" text;
+  "INSERT" text;
+  "p_actor" text;
+  v_user_id uuid := auth.uid();`);
+      assert.doesNotThrow(() => assertMaterialUploadRetryStateMigrationContract(validQuotedIdentifiers));
+      assert.doesNotThrow(() => assertMaterialUploadCancelCleanupGuardMigrationContract(guardSql));
     });
 
     test("0001_core_schema.sql creates all 8 application tables with primary keys and constraints", async () => {

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getAccountAccess } from "@/lib/auth/session";
+import { BoundedJsonError, BoundedJsonErrorCode, readBoundedJson } from "@/lib/http/bounded-json";
 import { getActiveProductEntitlement } from "@/lib/repositories/product-entitlement-repository";
 import {
   getLearningProgressForProducts,
@@ -16,6 +17,7 @@ import { isValidMaterialUuid } from "@/lib/storage/material-storage";
 export const runtime = "nodejs";
 
 const CACHE_CONTROL = "private, no-store";
+const MAX_PROGRESS_JSON_BYTES = 8 * 1024;
 
 function progressResponse(progress: unknown): Response {
   return Response.json({ progress }, { headers: { "Cache-Control": CACHE_CONTROL } });
@@ -85,8 +87,11 @@ export async function POST(request: Request): Promise<Response> {
 
   let body: unknown;
   try {
-    body = await request.json();
-  } catch {
+    body = await readBoundedJson(request, MAX_PROGRESS_JSON_BYTES);
+  } catch (error) {
+    if (error instanceof BoundedJsonError && error.code === BoundedJsonErrorCode.TooLarge) {
+      return response({ error: "Progress request is too large." }, 413);
+    }
     return response({ error: "Invalid progress data." }, 400);
   }
 
