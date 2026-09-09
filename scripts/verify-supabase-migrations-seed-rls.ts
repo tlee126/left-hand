@@ -1080,6 +1080,28 @@ export function assertLearningProgressBoundaryMigrationContract(sql0028: string)
   fail(!/p_user_id|p_actor|p_uploaded_by/i.test(executableCode), "Migration 0028 must not accept caller-supplied identity");
 }
 
+/** Exact storage reservation, metadata binding, and private-object boundary contract for migration 0029. */
+export function assertMaterialStorageIntegrityBoundaryMigrationContract(sql0029: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const code = stripSqlCommentsAndSplitStatements(sql0029).join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  fail(/create table public\.material_asset_upload_reservations/i.test(code), "Migration 0029 must define upload reservations");
+  fail(/unique \(product_id, version\)/i.test(code), "Migration 0029 must enforce unique product versions for reservations");
+  fail(/material_assets_product_version_path_binding/i.test(code) && /lower\(product_id::text\).*version::text/i.test(code), "Migration 0029 must bind metadata paths to product and version");
+  fail(/revoke all on table public\.material_asset_upload_reservations from public, anon, authenticated/i.test(code), "Migration 0029 must deny direct reservation table DML");
+  fail(/revoke insert on table public\.material_assets from public, anon, authenticated/i.test(code), "Migration 0029 must deny direct metadata INSERT");
+  fail(/materials_approved_admin_insert[\s\S]*material_asset_upload_reservations\.storage_path = name[\s\S]*uploaded_by = auth\.uid\(\)/i.test(code), "Storage INSERT must require the caller's reservation");
+  fail(/drop policy if exists "materials_approved_admin_update"[\s\S]*drop policy if exists "materials_approved_admin_delete"/i.test(code), "Storage UPDATE and DELETE must not remain direct authenticated operations");
+  for (const functionName of ["reserve_material_asset_upload", "finalize_material_asset_upload", "release_material_asset_upload"]) {
+    fail(new RegExp(`create or replace function public\\.${functionName}\\(`, "i").test(code), `Migration 0029 must define ${functionName}`);
+  }
+  fail((code.match(/set search_path = pg_catalog, public/gi) ?? []).length === 3, "All storage boundary functions must use the fixed search_path");
+  fail(/auth\.uid\(\)/i.test(executableCode) && /pg_advisory_xact_lock/i.test(executableCode) && /max\(material_assets\.version\)/i.test(executableCode), "Version allocation must use caller identity, a transaction lock, and existing versions");
+  fail(/returning \*/i.test(executableCode) && /delete from public\.material_asset_upload_reservations/i.test(executableCode), "Finalization must return metadata and consume the reservation");
+  fail(!/\b(?:execute\s+immediate|format\s*\(|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role)\b/i.test(executableCode), "Migration 0029 must not use dynamic SQL or privilege escalation");
+  fail(!/grant\s+(?:insert|update|delete|all)\s+on\s+(?:table\s+)?public\.(?:material_assets|material_asset_upload_reservations)/i.test(executableCode), "Migration 0029 must not grant direct material mutation");
+}
+
 /** Pure contract used by the CLI audit and integration tests for migration 0016. */
 export function assertMigration0016Contract(sql0016: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -1655,14 +1677,15 @@ export async function runAudit(): Promise<boolean> {
       "0024_consultation_workflow_hardening.sql",
       "0025_consultation_workflow_trigger_order.sql",
       "0026_consultation_intake_access_boundary.sql",
-      "0027_consultation_rpc_private_boundary.sql"
-      ,"0028_learning_progress_entitlement_boundary.sql"
+      "0027_consultation_rpc_private_boundary.sql",
+      "0028_learning_progress_entitlement_boundary.sql",
+      "0029_material_storage_integrity_boundary.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 28 migration files exist in strict topological order",
+      check: "All 29 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -2163,6 +2186,15 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0028_learning_progress_entitlement_boundary", check: "Closes direct learning-progress DML and enforces entitlement/item binding", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0028ContractValid) results.push({ category: "0028_learning_progress_entitlement_boundary", check: "Closes direct learning-progress DML and enforces entitlement/item binding", passed: true, details: "Direct INSERT/UPDATE revoked; auth.uid(), active entitlement, material/lesson binding, idempotency, and fixed RPC privileges verified" });
+
+    // 29. Audit 0029_material_storage_integrity_boundary.sql
+    const sql0029 = await fs.readFile(path.join(migrationsDir, "0029_material_storage_integrity_boundary.sql"), "utf-8");
+    let migration0029ContractValid = true;
+    try { assertMaterialStorageIntegrityBoundaryMigrationContract(sql0029); } catch (error) {
+      migration0029ContractValid = false;
+      results.push({ category: "0029_material_storage_integrity_boundary", check: "Reserves material versions atomically and binds private storage to metadata", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0029ContractValid) results.push({ category: "0029_material_storage_integrity_boundary", check: "Reserves material versions atomically and binds private storage to metadata", passed: true, details: "Direct metadata DML revoked; reservation RPCs use auth.uid(), fixed search_path, path binding, and transaction-locked version allocation" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

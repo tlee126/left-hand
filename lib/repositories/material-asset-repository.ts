@@ -1,11 +1,16 @@
 import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
-import type { Database } from "@/lib/supabase/database.types";
-import { isSupportedMaterialMimeType, isValidMaterialUuid, sanitizeMaterialFilename } from "@/lib/storage/material-storage";
+import { createServerAdminClient } from "@/lib/supabase/server-admin";
+import type { Database, Json } from "@/lib/supabase/database.types";
+import {
+  isSupportedMaterialMimeType,
+  isValidMaterialStoragePathForProductAndVersion,
+  isValidMaterialUuid,
+  sanitizeMaterialFilename
+} from "@/lib/storage/material-storage";
 
 type MaterialAssetRow = Database["public"]["Tables"]["material_assets"]["Row"];
-type MaterialAssetInsert = Database["public"]["Tables"]["material_assets"]["Insert"];
 
 export const MATERIAL_ASSET_COLUMNS = [
   "id", "product_id", "uploaded_by", "storage_path", "original_name", "mime_type", "byte_size", "version", "visibility", "created_at", "updated_at"
@@ -29,13 +34,18 @@ export class MaterialAssetRepositoryError extends Error {
   }
 }
 
-export interface CreateMaterialAssetInput {
-  productId: string;
+export interface MaterialAssetUploadReservation {
+  reservationId: string;
+  version: number;
   storagePath: string;
+}
+
+export interface ReserveMaterialAssetUploadInput {
+  productId: string;
   originalName: string;
+  safeFilename: string;
   mimeType: string;
   byteSize: number;
-  version: number;
 }
 
 export interface CurrentMaterialAsset {
@@ -43,33 +53,23 @@ export interface CurrentMaterialAsset {
   storagePath: string;
 }
 
-function validateCreateInput(input: CreateMaterialAssetInput): void {
-  if (!isValidMaterialUuid(input.productId)) throw new MaterialAssetInputError();
-  const productId = input.productId.toLowerCase();
-  const pathSegments = typeof input.storagePath === "string" ? input.storagePath.split("/") : [];
-  const pathPart = pathSegments[3];
-  const generatedId = pathPart?.slice(0, 36);
-  const expectedPathPattern = new RegExp(`^materials/${productId}/v[1-9][0-9]*/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}-[a-z0-9][a-z0-9._-]*$`);
-  if (typeof input.storagePath !== "string" || pathSegments.length !== 4 || !expectedPathPattern.test(input.storagePath) || input.storagePath.includes("..") || !generatedId || !isValidMaterialUuid(generatedId) || sanitizeMaterialFilename(input.originalName) !== pathPart?.slice(37) || !isSupportedMaterialMimeType(input.mimeType) || !Number.isSafeInteger(input.byteSize) || input.byteSize <= 0 || !Number.isSafeInteger(input.version) || input.version < 1 || !input.storagePath.startsWith(`materials/${productId}/v${input.version}/`)) {
-    throw new MaterialAssetInputError();
-  }
-}
-
 function validateProductIds(productIds: readonly string[]): void {
   if (!Array.isArray(productIds) || productIds.some((productId) => !isValidMaterialUuid(productId))) throw new MaterialAssetInputError();
 }
 
-export async function getNextMaterialAssetVersion(productId: string): Promise<number> {
-  if (!isValidMaterialUuid(productId)) throw new MaterialAssetInputError();
-  const canonicalProductId = productId.toLowerCase();
-  try {
-    const supabase = await createClient();
-    const { data, error } = await supabase.from("material_assets").select("version").eq("product_id", canonicalProductId).order("version", { ascending: false }).limit(1).maybeSingle();
-    if (error) throw new Error();
-    return (data?.version ?? 0) + 1;
-  } catch {
-    throw new MaterialAssetRepositoryError();
-  }
+function asObject(value: Json | null): Record<string, Json | undefined> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new MaterialAssetRepositoryError();
+  return value as Record<string, Json | undefined>;
+}
+
+function asString(value: Json | undefined): string {
+  if (typeof value !== "string") throw new MaterialAssetRepositoryError();
+  return value;
+}
+
+function asPositiveInteger(value: Json | undefined): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) throw new MaterialAssetRepositoryError();
+  return value;
 }
 
 export async function isMaterialProduct(productId: string): Promise<boolean> {
@@ -85,27 +85,55 @@ export async function isMaterialProduct(productId: string): Promise<boolean> {
   }
 }
 
-export async function createMaterialAsset(input: CreateMaterialAssetInput): Promise<MaterialAsset> {
-  validateCreateInput(input);
-  const productId = input.productId.toLowerCase();
+export async function reserveMaterialAssetUpload(input: ReserveMaterialAssetUploadInput): Promise<MaterialAssetUploadReservation> {
+  if (!isValidMaterialUuid(input.productId) || !isSupportedMaterialMimeType(input.mimeType) || !Number.isSafeInteger(input.byteSize) || input.byteSize <= 0 || input.byteSize > (input.mimeType === "application/pdf" ? 20 * 1024 * 1024 : 500 * 1024 * 1024)) throw new MaterialAssetInputError();
+  if (sanitizeMaterialFilename(input.originalName) !== input.safeFilename) throw new MaterialAssetInputError();
+
   try {
     const supabase = await createClient();
-    const { data: authData, error: authError } = await supabase.auth.getUser();
-    if (authError || !authData.user || !isValidMaterialUuid(authData.user.id)) throw new Error();
-    const payload: MaterialAssetInsert = {
-      product_id: productId,
-      uploaded_by: authData.user.id,
-      storage_path: input.storagePath,
-      original_name: input.originalName,
-      mime_type: input.mimeType,
-      byte_size: input.byteSize,
-      version: input.version,
-      visibility: "private"
-    };
-    const { data, error } = await supabase.from("material_assets").insert(payload).select(MATERIAL_ASSET_SELECT).single();
-    if (error || !data) throw new Error();
-    return data as unknown as MaterialAsset;
-  } catch {
+    const { data, error } = await supabase.rpc("reserve_material_asset_upload", {
+      p_product_id: input.productId.toLowerCase(),
+      p_original_name: input.originalName,
+      p_safe_filename: input.safeFilename,
+      p_mime_type: input.mimeType,
+      p_byte_size: input.byteSize
+    });
+    if (error) throw new Error();
+    const row = asObject(data as Json | null);
+    const reservationId = asString(row.reservation_id);
+    const version = asPositiveInteger(row.version);
+    const storagePath = asString(row.storage_path);
+    if (!isValidMaterialUuid(reservationId) || !isValidMaterialStoragePathForProductAndVersion(storagePath, input.productId, version)) throw new Error();
+    return { reservationId, version, storagePath };
+  } catch (error) {
+    if (error instanceof MaterialAssetInputError) throw error;
+    throw new MaterialAssetRepositoryError();
+  }
+}
+
+export async function finalizeMaterialAssetUpload(reservationId: string): Promise<MaterialAsset> {
+  if (!isValidMaterialUuid(reservationId)) throw new MaterialAssetInputError();
+  try {
+    const supabase = await createClient();
+    const { data, error } = await supabase.rpc("finalize_material_asset_upload", { p_reservation_id: reservationId.toLowerCase() });
+    if (error || !data || typeof data !== "object" || Array.isArray(data)) throw new Error();
+    const row = data as unknown as MaterialAsset;
+    if (!isValidMaterialUuid(row.id) || !isValidMaterialUuid(row.product_id) || !isValidMaterialUuid(row.uploaded_by) || typeof row.storage_path !== "string" || !isSupportedMaterialMimeType(row.mime_type) || !Number.isSafeInteger(row.byte_size) || row.byte_size <= 0 || !Number.isSafeInteger(row.version) || row.version < 1 || row.visibility !== "private") throw new Error();
+    return row;
+  } catch (error) {
+    if (error instanceof MaterialAssetInputError) throw error;
+    throw new MaterialAssetRepositoryError();
+  }
+}
+
+export async function releaseMaterialAssetUpload(reservationId: string): Promise<void> {
+  if (!isValidMaterialUuid(reservationId)) throw new MaterialAssetInputError();
+  try {
+    const supabase = await createClient();
+    const { error } = await supabase.rpc("release_material_asset_upload", { p_reservation_id: reservationId.toLowerCase() });
+    if (error) throw new Error();
+  } catch (error) {
+    if (error instanceof MaterialAssetInputError) throw error;
     throw new MaterialAssetRepositoryError();
   }
 }
@@ -126,15 +154,15 @@ export async function listCurrentMaterialAssetVersions(productIds: readonly stri
   }
 }
 
-/** Returns the newest valid private asset for one material product. */
+/** Returns the newest valid private asset for one material product after route authorization. */
 export async function getCurrentMaterialAsset(productId: string): Promise<CurrentMaterialAsset | null> {
   if (!isValidMaterialUuid(productId)) throw new MaterialAssetInputError();
   const canonicalProductId = productId.toLowerCase();
   try {
-    const supabase = await createClient();
+    const supabase = createServerAdminClient();
     const { data, error } = await supabase
       .from("material_assets")
-      .select(CURRENT_MATERIAL_ASSET_SELECT)
+      .select("product_id, storage_path, version, visibility")
       .eq("product_id", canonicalProductId)
       .eq("visibility", "private")
       .order("version", { ascending: false })
@@ -143,7 +171,7 @@ export async function getCurrentMaterialAsset(productId: string): Promise<Curren
     if (error) throw new Error();
     if (!data) return null;
     const row = data as unknown as Pick<MaterialAssetRow, "product_id" | "storage_path" | "version" | "visibility">;
-    if (!isValidMaterialUuid(row.product_id) || row.product_id.toLowerCase() !== canonicalProductId || row.visibility !== "private" || !Number.isSafeInteger(row.version) || row.version < 1 || typeof row.storage_path !== "string") return null;
+    if (!isValidMaterialUuid(row.product_id) || row.product_id.toLowerCase() !== canonicalProductId || row.visibility !== "private" || !Number.isSafeInteger(row.version) || row.version < 1 || typeof row.storage_path !== "string" || !isValidMaterialStoragePathForProductAndVersion(row.storage_path, canonicalProductId, row.version)) return null;
     return { productId: row.product_id.toLowerCase(), storagePath: row.storage_path };
   } catch (error) {
     if (error instanceof MaterialAssetInputError) throw error;

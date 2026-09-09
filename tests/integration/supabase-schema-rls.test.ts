@@ -36,6 +36,7 @@ import {
   assertConsultationIntakeAccessBoundaryMigrationContract,
   assertConsultationRpcPrivateBoundaryMigrationContract,
   assertLearningProgressBoundaryMigrationContract,
+  assertMaterialStorageIntegrityBoundaryMigrationContract,
   stripSqlCommentsAndSplitStatements,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
@@ -258,7 +259,8 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       "0025_consultation_workflow_trigger_order.sql",
       "0026_consultation_intake_access_boundary.sql",
       "0027_consultation_rpc_private_boundary.sql",
-      "0028_learning_progress_entitlement_boundary.sql"
+      "0028_learning_progress_entitlement_boundary.sql",
+      "0029_material_storage_integrity_boundary.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -296,6 +298,16 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         () => assertLearningProgressBoundaryMigrationContract(sql.replace("auth.uid()", "p_user_id")),
         /./
       );
+    });
+
+    test("0029 closes direct material metadata DML and binds storage reservations", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0029_material_storage_integrity_boundary.sql"), "utf-8");
+      assert.doesNotThrow(() => assertMaterialStorageIntegrityBoundaryMigrationContract(sql));
+      assert.throws(
+        () => assertMaterialStorageIntegrityBoundaryMigrationContract(sql.replace("pg_advisory_xact_lock", "EXECUTE format")),
+        /./
+      );
+      assert.doesNotThrow(() => assertMaterialStorageIntegrityBoundaryMigrationContract(`-- EXECUTE format\n${sql}`));
     });
 
     test("0001_core_schema.sql creates all 8 application tables with primary keys and constraints", async () => {
