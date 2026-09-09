@@ -111,6 +111,7 @@ export function CoursesCatalogClient({
                   <button
                     key={opt.label}
                     type="button"
+                    aria-pressed={isActive}
                   onClick={() => {
                     if (opt.label === "Zoom") updateFilters([["courseFormat", "zoom"], ["enrollmentStatus", undefined]]);
                     else if (opt.label === "Video") updateFilters([["courseFormat", "video"], ["enrollmentStatus", undefined]]);
@@ -121,7 +122,7 @@ export function CoursesCatalogClient({
                   }}
                     data-filter-active={isActive ? "true" : "false"}
                     className={[
-                      "inline-flex h-10 items-center rounded-full px-4 text-xs font-semibold transition shrink-0",
+                      "inline-flex h-10 items-center rounded-full px-4 text-xs font-semibold transition shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2",
                       isActive
                         ? "bg-gradient-to-r from-blue-600 via-violet-600 to-fuchsia-600 text-white shadow-[0_8px_20px_rgba(37,99,235,0.2)]"
                         : "bg-slate-100 text-[#22325f] hover:bg-slate-200/80"
@@ -139,15 +140,18 @@ export function CoursesCatalogClient({
               <label className="relative block w-full sm:w-[260px]">
                 <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8091b8]" />
                 <input
+                  aria-label="Tìm khóa học, mentor"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   onKeyDown={(event) => { if (event.key === "Enter") updateQuery("search", query.trim() || undefined); }}
                   placeholder="Tìm khóa học, mentor..."
-                  className="h-10 w-full rounded-[16px] border border-[#d8deef] bg-slate-50/90 pl-10 pr-4 text-xs font-medium text-[#22325f] outline-none transition placeholder:text-[#98a4be] focus:border-accent/45 focus:bg-white focus:ring-4 focus:ring-accent/10"
+                  className="h-10 w-full rounded-[16px] border border-[#d8deef] bg-slate-50/90 pl-10 pr-10 text-xs font-medium text-[#22325f] outline-none transition placeholder:text-[#98a4be] focus:border-accent/45 focus:bg-white focus:ring-4 focus:ring-accent/10 focus-visible:ring-4"
                 />
+                <button type="button" aria-label="Xóa tìm kiếm" disabled={!query} onClick={() => { setQuery(""); updateQuery("search", undefined); }} className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full px-1 text-base leading-none text-[#8091b8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40" aria-hidden={query ? undefined : false}>×</button>
               </label>
 
               <select
+                aria-label="Sắp xếp khóa học"
                 value={sortBy}
                 onChange={(event) => updateQuery("sort", event.target.value === "newest" ? undefined : event.target.value)}
                 className="h-10 rounded-[16px] border border-[#d8deef] bg-slate-50/90 px-4 text-xs font-semibold text-[#22325f] outline-none transition focus:border-accent/45 focus:bg-white"

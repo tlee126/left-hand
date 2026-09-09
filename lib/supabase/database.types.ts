@@ -77,6 +77,17 @@ export type ConsultationIntakeRpcArgs = {
   p_selected_subject_slug: string | null
 }
 
+export type SaveLearningProgressRpcArgs = {
+  p_product_id: string
+  p_item_type: "material" | "lesson"
+  p_item_id: string
+  p_status: "not_started" | "in_progress" | "completed"
+  p_watched_percent: number
+  p_started_at: string | null
+  p_completed_at: string | null
+  p_expected_version: number
+}
+
 export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
@@ -383,6 +394,50 @@ export type Database = {
           },
         ]
       }
+      material_asset_upload_reservations: {
+        Row: {
+          byte_size: number
+          created_at: string
+          id: string
+          mime_type: string
+          original_name: string
+          product_id: string
+          storage_path: string
+          uploaded_by: string
+          version: number
+        }
+        Insert: {
+          byte_size: number
+          created_at?: string
+          id?: string
+          mime_type: string
+          original_name: string
+          product_id: string
+          storage_path: string
+          uploaded_by: string
+          version: number
+        }
+        Update: {
+          byte_size?: number
+          created_at?: string
+          id?: string
+          mime_type?: string
+          original_name?: string
+          product_id?: string
+          storage_path?: string
+          uploaded_by?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "material_asset_upload_reservations_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "materials"
+            referencedColumns: ["product_id"]
+          },
+        ]
+      }
       learning_progress: {
         Row: {
           completed_at: string | null
@@ -394,6 +449,7 @@ export type Database = {
           status: string
           updated_at: string
           user_id: string
+          version: number
           watched_percent: number
         }
         Insert: {
@@ -406,6 +462,7 @@ export type Database = {
           status?: string
           updated_at?: string
           user_id: string
+          version?: number
           watched_percent?: number
         }
         Update: {
@@ -418,6 +475,7 @@ export type Database = {
           status?: string
           updated_at?: string
           user_id?: string
+          version?: number
           watched_percent?: number
         }
         Relationships: [
@@ -808,6 +866,28 @@ export type Database = {
       submit_consultation_intake: {
         Args: ConsultationIntakeRpcArgs
         Returns: Json
+      }
+      save_learning_progress: {
+        Args: SaveLearningProgressRpcArgs
+        Returns: Json
+      }
+      reserve_material_asset_upload: {
+        Args: {
+          p_product_id: string
+          p_original_name: string
+          p_safe_filename: string
+          p_mime_type: string
+          p_byte_size: number
+        }
+        Returns: Json
+      }
+      finalize_material_asset_upload: {
+        Args: { p_reservation_id: string }
+        Returns: Json
+      }
+      release_material_asset_upload: {
+        Args: { p_reservation_id: string }
+        Returns: boolean
       }
     }
     Enums: {

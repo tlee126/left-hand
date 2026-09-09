@@ -44,6 +44,7 @@ function completedProgress(
     itemId,
     status: "completed",
     watchedPercent: 100,
+    expectedVersion: previous?.version ?? 0,
     startedAt: previous?.started_at ?? now,
     completedAt: previous?.completed_at ?? now
   };
@@ -57,6 +58,10 @@ function progressLabel(progress: ProgressMap, productId: string, itemType: Learn
   return progressPercent(progress, productId, itemType, itemId) >= 100 ? "Đã hoàn thành" : "Chưa hoàn thành";
 }
 
+function progressForItem(progress: LearningProgress[], input: UpsertLearningProgressInput): LearningProgress | undefined {
+  return progress.find((row) => progressKey(row.product_id, row.item_type, row.item_id) === progressKey(input.productId, input.itemType, input.itemId));
+}
+
 export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [openingProductId, setOpeningProductId] = useState<string | null>(null);
@@ -66,6 +71,20 @@ export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProp
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const pendingKeys = useRef(new Set<string>());
 
+  async function fetchLatestProgress(): Promise<LearningProgress[]> {
+    const productIds = [...new Set([
+      ...workspace.materials.map((material) => material.productId),
+      ...workspace.courses.map((course) => course.productId)
+    ])];
+    const params = new URLSearchParams();
+    productIds.forEach((productId) => params.append("productId", productId));
+    const response = await fetch(`/api/progress?${params.toString()}`, { method: "GET", cache: "no-store" });
+    if (!response.ok) throw new Error();
+    const body: unknown = await response.json();
+    if (!body || typeof body !== "object" || !Array.isArray((body as { progress?: unknown }).progress)) throw new Error();
+    return (body as { progress: LearningProgress[] }).progress;
+  }
+
   async function saveProgress(input: UpsertLearningProgressInput) {
     const key = progressKey(input.productId, input.itemType, input.itemId);
     if (pendingKeys.current.has(key)) return;
@@ -74,42 +93,65 @@ export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProp
     setNotice(null);
 
     const previous = progress[key];
-    const optimistic: LearningProgress = {
-      user_id: previous?.user_id ?? "",
-      product_id: input.productId,
-      item_type: input.itemType,
-      item_id: input.itemId,
-      status: input.status,
-      watched_percent: input.watchedPercent,
-      started_at: input.startedAt ?? null,
-      completed_at: input.completedAt ?? null,
-      created_at: previous?.created_at ?? new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    };
-    setProgress((current) => ({ ...current, [key]: optimistic }));
+    const optimisticFor = (mutation: UpsertLearningProgressInput, current: LearningProgress | undefined): LearningProgress => ({
+      user_id: current?.user_id ?? "",
+      product_id: mutation.productId,
+      item_type: mutation.itemType,
+      item_id: mutation.itemId,
+      status: mutation.status,
+      watched_percent: mutation.watchedPercent,
+      started_at: mutation.startedAt ?? null,
+      completed_at: mutation.completedAt ?? null,
+      created_at: current?.created_at ?? new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      version: (current?.version ?? 0) + 1
+    });
+    setProgress((current) => ({ ...current, [key]: optimisticFor(input, current[key]) }));
     setRetryItems((current) => {
       const next = { ...current };
       delete next[key];
       return next;
     });
 
+    let mutation = input;
+    let latest: LearningProgress[] | null = null;
     try {
-      const response = await fetch("/api/progress", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(input),
-        cache: "no-store"
-      });
-      if (!response.ok) throw new Error();
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const response = await fetch("/api/progress", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(mutation),
+          cache: "no-store"
+        });
+        if (response.ok) return;
+        if (response.status !== 409 || attempt === 1) throw new Error("PROGRESS_CONFLICT");
+
+        latest = await fetchLatestProgress();
+        const fresh = progressForItem(latest, mutation);
+        mutation = {
+          ...mutation,
+          expectedVersion: fresh?.version ?? 0,
+          watchedPercent: Math.max(mutation.watchedPercent, fresh?.watched_percent ?? 0),
+          status: fresh?.status === "completed" ? "completed" : mutation.status,
+          startedAt: fresh?.started_at ?? mutation.startedAt ?? null,
+          completedAt: fresh?.completed_at ?? mutation.completedAt ?? null
+        };
+        setProgress(() => {
+          const next = makeProgressMap(latest ?? []);
+          next[key] = optimisticFor(mutation, fresh);
+          return next;
+        });
+      }
     } catch {
-      setProgress((current) => {
+      if (latest) setProgress(makeProgressMap(latest));
+      else setProgress((current) => {
         const next = { ...current };
         if (previous) next[key] = previous;
         else delete next[key];
         return next;
       });
-      setRetryItems((current) => ({ ...current, [key]: input }));
-      setNotice("Tiến độ chưa được lưu. Vui lòng thử lại.");
+      setRetryItems((current) => ({ ...current, [key]: mutation }));
+      setNotice(latest ? "Tiến độ vừa được cập nhật ở nơi khác. Vui lòng thử lại." : "Tiến độ chưa được lưu. Vui lòng thử lại.");
     } finally {
       pendingKeys.current.delete(key);
       setPendingKey((current) => current === key ? null : current);

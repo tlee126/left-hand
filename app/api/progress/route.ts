@@ -3,8 +3,10 @@ import "server-only";
 import { getAccountAccess } from "@/lib/auth/session";
 import { getActiveProductEntitlement } from "@/lib/repositories/product-entitlement-repository";
 import {
+  getLearningProgressForProducts,
   isLearningProgressItemForProduct,
   LearningProgressInputError,
+  LearningProgressConflictError,
   LearningProgressRepositoryError,
   upsertLearningProgress,
   validateLearningProgressInput
@@ -15,12 +17,44 @@ export const runtime = "nodejs";
 
 const CACHE_CONTROL = "private, no-store";
 
+function progressResponse(progress: unknown): Response {
+  return Response.json({ progress }, { headers: { "Cache-Control": CACHE_CONTROL } });
+}
+
 function response(body: { error: string }, status: number): Response {
   return Response.json(body, { status, headers: { "Cache-Control": CACHE_CONTROL } });
 }
 
 function success(): Response {
   return Response.json({ success: true }, { headers: { "Cache-Control": CACHE_CONTROL } });
+}
+
+export async function GET(request: Request): Promise<Response> {
+  let access;
+  try {
+    access = await getAccountAccess();
+  } catch {
+    return response({ error: "Progress is unavailable." }, 401);
+  }
+  if (access.status === "unauthenticated") return response({ error: "Progress is unavailable." }, 401);
+  if (access.status !== "approved" || access.profile?.role === "admin" || !access.user || !isValidMaterialUuid(access.user.id)) {
+    return response({ error: "Progress is unavailable." }, 404);
+  }
+
+  const productIds = requestUrlProductIds(request);
+  if (!productIds || productIds.length === 0) return response({ error: "Progress is unavailable." }, 400);
+  try {
+    const progress = await getLearningProgressForProducts(access.user.id, productIds);
+    return progressResponse(progress);
+  } catch {
+    return response({ error: "Progress is unavailable." }, 500);
+  }
+}
+
+function requestUrlProductIds(request: Request): string[] | null {
+  const values = [...new URL(request.url).searchParams.getAll("productId")];
+  if (values.length === 0 || values.length > 100 || values.some((value) => !isValidMaterialUuid(value))) return null;
+  return [...new Set(values.map((value) => value.toLowerCase()))];
 }
 
 function matchingActiveEntitlement(value: unknown, userId: string, productId: string): boolean {
@@ -89,6 +123,7 @@ export async function POST(request: Request): Promise<Response> {
     return success();
   } catch (error) {
     if (error instanceof LearningProgressInputError) return response({ error: "Invalid progress data." }, 400);
+    if (error instanceof LearningProgressConflictError) return response({ error: "Progress conflict." }, 409);
     if (error instanceof LearningProgressRepositoryError) return response({ error: "Progress is unavailable." }, 500);
     return response({ error: "Progress is unavailable." }, 500);
   }

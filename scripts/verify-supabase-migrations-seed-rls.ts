@@ -43,7 +43,11 @@ const immutableMigrationHashes = {
   "0020_catalog_mutation_access_boundary.sql": "87d0666521f557f2e759afe9022f327b308040a1b068a513f2a02f8a6022699d",
   "0021_catalog_search_normalization.sql": "e4712ed14e58d2da24350c0bab1349f26845d5e4024eac635fee872a4cf15d09",
   "0022_catalog_integrity_boundary.sql": "060255c2e7e8649dab3f544ef6f8df6cf2abb850067bc38c95f1a98517b8b446",
-  "0023_catalog_search_child_fields.sql": "68a2aff1ac320bb76ba6bb7d0711e035ac67f4db1728fc3034a1a73dc8669786"
+  "0023_catalog_search_child_fields.sql": "68a2aff1ac320bb76ba6bb7d0711e035ac67f4db1728fc3034a1a73dc8669786",
+  "0024_consultation_workflow_hardening.sql": "622f9ba3a657f2f3bab31d8503b545a24e9502c2158bbf4b87a3e263dba28b10",
+  "0025_consultation_workflow_trigger_order.sql": "b9d970dff674bd05b7f27c0d3a8d04ced7d4ee738e7f524e7029e2aa0a58acb7",
+  "0026_consultation_intake_access_boundary.sql": "dc4121d4b7f61f4f765b529238bf747fb989cbd558b2d9fee267c9905d30330f",
+  "0027_consultation_rpc_private_boundary.sql": "774388ad8fdc272930e563657ae90ceafe64a997c44e23f40e0925d52aae478e"
 } as const;
 
 export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
@@ -1055,6 +1059,104 @@ export function assertMigration0015Contract(sql0015: string): void {
   fail(!/\b(?:grant|revoke)\s+[^;]*\bon\s+(?!table\s+public\.learning_progress\b)[a-z_][a-z0-9_.]*/i.test(code), "Migration 0015 must not alter cross-table privileges");
 }
 
+/** Exact entitlement, item-binding, and RPC privilege contract for migration 0028. */
+export function assertLearningProgressBoundaryMigrationContract(sql0028: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const statements = stripSqlCommentsAndSplitStatements(sql0028).map(normalizeMigrationStatement);
+  const signature = "uuid, text, uuid, text, numeric, timestamptz, timestamptz";
+  fail(statements.length === 4, "Migration 0028 must contain exactly its four boundary statements");
+  fail(statements[0] === "revoke insert, update on table public.learning_progress from anon, public, authenticated", "Migration 0028 must revoke direct progress INSERT and UPDATE");
+  fail(
+    /^create or replace function public\.save_learning_progress\(/i.test(statements[1])
+      && /p_product_id uuid, p_item_type text, p_item_id uuid, p_status text, p_watched_percent numeric, p_started_at timestamptz, p_completed_at timestamptz/i.test(statements[1])
+      && /returns public\.learning_progress language plpgsql security definer/i.test(statements[1])
+      && /set search_path = pg_catalog, public/i.test(statements[1])
+      && statements[1].endsWith("$function$"),
+    "Migration 0028 must define the exact fixed progress RPC"
+  );
+  fail(statements[2] === `revoke all on function public.save_learning_progress(${signature}) from public, anon`, "Migration 0028 must revoke public and anonymous RPC execution");
+  fail(statements[3] === `grant execute on function public.save_learning_progress(${signature}) to authenticated`, "Migration 0028 must grant RPC execution only to authenticated");
+  const executableCode = maskSqlStringLiterals(statements.join(" ; "));
+  fail(/auth\.uid\(\)|product_entitlements|materials|course_lessons|on conflict\s*\(/i.test(executableCode), "Migration 0028 must bind auth identity, entitlement, item ownership, and idempotency");
+  fail(!/\b(?:execute\s+(?:immediate|format)|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role)\b/i.test(executableCode), "Migration 0028 must not use dynamic SQL or privilege escalation");
+  fail(!/p_user_id|p_actor|p_uploaded_by/i.test(executableCode), "Migration 0028 must not accept caller-supplied identity");
+}
+
+/** Exact storage reservation, metadata binding, and private-object boundary contract for migration 0029. */
+export function assertMaterialStorageIntegrityBoundaryMigrationContract(sql0029: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const code = stripSqlCommentsAndSplitStatements(sql0029).join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  fail(/create table public\.material_asset_upload_reservations/i.test(code), "Migration 0029 must define upload reservations");
+  fail(/unique \(product_id, version\)/i.test(code), "Migration 0029 must enforce unique product versions for reservations");
+  fail(/material_assets_product_version_path_binding/i.test(code) && /lower\(product_id::text\).*version::text/i.test(code), "Migration 0029 must bind metadata paths to product and version");
+  fail(/revoke all on table public\.material_asset_upload_reservations from public, anon, authenticated/i.test(code), "Migration 0029 must deny direct reservation table DML");
+  fail(/revoke insert on table public\.material_assets from public, anon, authenticated/i.test(code), "Migration 0029 must deny direct metadata INSERT");
+  fail(/materials_approved_admin_insert[\s\S]*material_asset_upload_reservations\.storage_path = name[\s\S]*uploaded_by = auth\.uid\(\)/i.test(code), "Storage INSERT must require the caller's reservation");
+  fail(/drop policy if exists "materials_approved_admin_update"[\s\S]*drop policy if exists "materials_approved_admin_delete"/i.test(code), "Storage UPDATE and DELETE must not remain direct authenticated operations");
+  for (const functionName of ["reserve_material_asset_upload", "finalize_material_asset_upload", "release_material_asset_upload"]) {
+    fail(new RegExp(`create or replace function public\\.${functionName}\\(`, "i").test(code), `Migration 0029 must define ${functionName}`);
+  }
+  fail((code.match(/set search_path = pg_catalog, public/gi) ?? []).length === 3, "All storage boundary functions must use the fixed search_path");
+  fail(/auth\.uid\(\)/i.test(executableCode) && /pg_advisory_xact_lock/i.test(executableCode) && /max\(material_assets\.version\)/i.test(executableCode), "Version allocation must use caller identity, a transaction lock, and existing versions");
+  fail(/returning \*/i.test(executableCode) && /delete from public\.material_asset_upload_reservations/i.test(executableCode), "Finalization must return metadata and consume the reservation");
+  fail(!/\b(?:execute\s+immediate|format\s*\(|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role)\b/i.test(executableCode), "Migration 0029 must not use dynamic SQL or privilege escalation");
+  fail(!/grant\s+(?:insert|update|delete|all)\s+on\s+(?:table\s+)?public\.(?:material_assets|material_asset_upload_reservations)/i.test(executableCode), "Migration 0029 must not grant direct material mutation");
+}
+
+/** Canonical catalog search document contract for migration 0030. */
+export function assertCatalogCompleteSearchMigrationContract(sql0030: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const code = stripSqlCommentsAndSplitStatements(sql0030).join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  const requiredFields = [
+    "subjects.category", "subjects.faculty_group", "subjects.color_theme",
+    "materials.pages", "materials.tags", "materials.includes", "materials.suitable_for",
+    "courses.format", "courses.sessions", "courses.duration", "courses.schedule", "courses.enrollment_status", "courses.mentor", "courses.tags", "courses.curriculum", "courses.suitable_for", "courses.preparation",
+    "tutors.name", "tutors.faculty", "tutors.format", "tutors.availability", "tutors.short_bio", "tutors.strengths", "tutors.tags", "tutors.suitable_for", "tutors.support_methods"
+  ];
+  fail(/create or replace function public\.catalog_product_search_text\(p_product_id uuid\)/i.test(code), "Migration 0030 must define one canonical product search projection");
+  fail(requiredFields.every((field) => new RegExp(field.replace(".", "\\."), "i").test(code)), "Migration 0030 must include every subject and child searchable field");
+  fail(/normalize_catalog_search\(public\.catalog_product_search_text/i.test(code) && /update public\.products/i.test(code), "Migration 0030 must normalize and backfill product search documents");
+  for (const trigger of ["trg_refresh_product_search_document", "trg_refresh_products_for_subject_search", "trg_refresh_subject_search_document", "trg_refresh_material_search_document", "trg_refresh_course_search_document", "trg_refresh_tutor_search_document"]) {
+    fail(new RegExp(trigger, "i").test(code), `Migration 0030 must maintain ${trigger}`);
+  }
+  fail(/update of [^\n]*includes[^\n]*suitable_for/i.test(code) && /update of [^\n]*curriculum[^\n]*preparation/i.test(code), "Migration 0030 must refresh on child field changes");
+  fail(/extensions\.unaccent/i.test(code) || /normalize_catalog_search/i.test(code), "Migration 0030 must preserve Unicode normalization");
+  fail(!/\b(?:execute\s+immediate|format\s*\(|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role|truncate|copy\s+|call\s+|\bdo\s+)/i.test(executableCode), "Migration 0030 must not contain executable privilege escalation or unrelated DDL/DML");
+}
+
+/** Exact optimistic-concurrency and monotonic-progress contract for migration 0031. */
+export function assertLearningProgressConcurrencyMigrationContract(sql0031: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const code = stripSqlCommentsAndSplitStatements(sql0031).join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  fail(/alter table public\.learning_progress[\s\S]*add column if not exists version integer not null default 1/i.test(code), "Migration 0031 must add a database version token");
+  fail(/create or replace function public\.save_learning_progress\([\s\S]*p_expected_version integer/i.test(code), "Migration 0031 must require an expected version in the progress RPC");
+  fail(/set search_path = pg_catalog, public/i.test(code) && /auth\.uid\(\)/i.test(executableCode), "Progress concurrency RPC must use fixed search_path and auth.uid()");
+  fail(/on conflict\s*\(user_id, product_id, item_type, item_id\)/i.test(executableCode) && /version\s*=\s*public\.learning_progress\.version\s*\+\s*1/i.test(executableCode), "Progress writes must use a versioned upsert");
+  fail(/where public\.learning_progress\.version = p_expected_version/i.test(executableCode) && /using errcode = 'p0002'/i.test(code), "Stale writers must receive a conflict instead of silently overwriting");
+  fail(/status = 'completed'[\s\S]*p_watched_percent >= public\.learning_progress\.watched_percent/i.test(code), "Completed and watched progress must not move backward");
+  fail(!/\b(?:execute\s+immediate|format\s*\(|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role)\b/i.test(executableCode), "Migration 0031 must not use privilege escalation or dynamic SQL");
+}
+
+/** Exact monotonicity extension contract for migration 0032. */
+export function assertLearningProgressMonotonicityMigrationContract(sql0032: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const code = stripSqlCommentsAndSplitStatements(sql0032).join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  fail(/create or replace function public\.save_learning_progress\([\s\S]*p_expected_version integer/i.test(code), "Migration 0032 must replace the exact CAS progress RPC");
+  fail(/returns public\.learning_progress\s+language plpgsql\s+security definer\s+set search_path = pg_catalog, public/i.test(code), "Migration 0032 must preserve the fixed SECURITY DEFINER boundary");
+  fail(/p_status = 'completed'\s+and p_watched_percent <> 100/i.test(code), "Completed progress must require exactly 100 percent");
+  fail(/p_watched_percent >= public\.learning_progress\.watched_percent/i.test(executableCode), "Migration 0032 must reject watched-percent regressions");
+  fail(/where public\.learning_progress\.version = p_expected_version/i.test(executableCode), "Migration 0032 must preserve expected-version CAS");
+  fail(/version\s*=\s*public\.learning_progress\.version\s*\+\s*1/i.test(executableCode), "Migration 0032 must increment version exactly once");
+  fail(/using errcode = 'p0002'/i.test(code), "Migration 0032 must preserve the generic conflict code");
+  fail(!/\b(?:execute\s+immediate|format\s*\(|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role|grant\s+all|revoke\s+all)\b/i.test(executableCode), "Migration 0032 must not weaken privileges or use unsafe execution");
+}
+
 /** Pure contract used by the CLI audit and integration tests for migration 0016. */
 export function assertMigration0016Contract(sql0016: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -1630,13 +1732,18 @@ export async function runAudit(): Promise<boolean> {
       "0024_consultation_workflow_hardening.sql",
       "0025_consultation_workflow_trigger_order.sql",
       "0026_consultation_intake_access_boundary.sql",
-      "0027_consultation_rpc_private_boundary.sql"
+      "0027_consultation_rpc_private_boundary.sql",
+      "0028_learning_progress_entitlement_boundary.sql",
+      "0029_material_storage_integrity_boundary.sql",
+      "0030_catalog_search_complete_fields.sql",
+      "0031_learning_progress_concurrency.sql",
+      "0032_learning_progress_monotonicity.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 27 migration files exist in strict topological order",
+      check: "All 32 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -1656,7 +1763,7 @@ export async function runAudit(): Promise<boolean> {
       immutableHistoryValid = false;
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0023 match their canonical LF-normalized SHA-256 snapshots",
+      check: "Migrations 0001-0027 match their canonical LF-normalized SHA-256 snapshots",
         passed: false,
         details: error instanceof Error ? error.message : String(error)
       });
@@ -1664,9 +1771,9 @@ export async function runAudit(): Promise<boolean> {
     if (immutableHistoryValid) {
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0023 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0027 match their canonical LF-normalized SHA-256 snapshots",
         passed: true,
-        details: "Every immutable migration from 0001 through 0023 is content-locked"
+        details: "Every immutable migration from 0001 through 0027 is content-locked"
       });
     }
 
@@ -2128,6 +2235,51 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0027_consultation_rpc_private_boundary", check: "Removes public RPC execution and leaves only service_role execution", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0027ContractValid) results.push({ category: "0027_consultation_rpc_private_boundary", check: "Removes public RPC execution and leaves only service_role execution", passed: true, details: "anon and authenticated direct RPC access is revoked; only the server-only service role is granted" });
+
+    // 28. Audit 0028_learning_progress_entitlement_boundary.sql
+    const sql0028 = await fs.readFile(path.join(migrationsDir, "0028_learning_progress_entitlement_boundary.sql"), "utf-8");
+    let migration0028ContractValid = true;
+    try { assertLearningProgressBoundaryMigrationContract(sql0028); } catch (error) {
+      migration0028ContractValid = false;
+      results.push({ category: "0028_learning_progress_entitlement_boundary", check: "Closes direct learning-progress DML and enforces entitlement/item binding", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0028ContractValid) results.push({ category: "0028_learning_progress_entitlement_boundary", check: "Closes direct learning-progress DML and enforces entitlement/item binding", passed: true, details: "Direct INSERT/UPDATE revoked; auth.uid(), active entitlement, material/lesson binding, idempotency, and fixed RPC privileges verified" });
+
+    // 29. Audit 0029_material_storage_integrity_boundary.sql
+    const sql0029 = await fs.readFile(path.join(migrationsDir, "0029_material_storage_integrity_boundary.sql"), "utf-8");
+    let migration0029ContractValid = true;
+    try { assertMaterialStorageIntegrityBoundaryMigrationContract(sql0029); } catch (error) {
+      migration0029ContractValid = false;
+      results.push({ category: "0029_material_storage_integrity_boundary", check: "Reserves material versions atomically and binds private storage to metadata", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0029ContractValid) results.push({ category: "0029_material_storage_integrity_boundary", check: "Reserves material versions atomically and binds private storage to metadata", passed: true, details: "Direct metadata DML revoked; reservation RPCs use auth.uid(), fixed search_path, path binding, and transaction-locked version allocation" });
+
+    // 30. Audit 0030_catalog_search_complete_fields.sql
+    const sql0030 = await fs.readFile(path.join(migrationsDir, "0030_catalog_search_complete_fields.sql"), "utf-8");
+    let migration0030ContractValid = true;
+    try { assertCatalogCompleteSearchMigrationContract(sql0030); } catch (error) {
+      migration0030ContractValid = false;
+      results.push({ category: "0030_catalog_search_complete_fields", check: "Maintains complete normalized search documents across parent and child fields", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0030ContractValid) results.push({ category: "0030_catalog_search_complete_fields", check: "Maintains complete normalized search documents across parent and child fields", passed: true, details: "Canonical projection, Unicode normalization, field-complete triggers, tutor-subject refresh, and idempotent backfill verified" });
+
+    // 31. Audit 0031_learning_progress_concurrency.sql
+    const sql0031 = await fs.readFile(path.join(migrationsDir, "0031_learning_progress_concurrency.sql"), "utf-8");
+    let migration0031ContractValid = true;
+    try { assertLearningProgressConcurrencyMigrationContract(sql0031); } catch (error) {
+      migration0031ContractValid = false;
+      results.push({ category: "0031_learning_progress_concurrency", check: "Rejects stale progress writers and backward progress transitions", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0031ContractValid) results.push({ category: "0031_learning_progress_concurrency", check: "Rejects stale progress writers and backward progress transitions", passed: true, details: "Version token, expected-version CAS, conflict code, monotonic status/percentage rules, and entitlement-bound RPC preserved" });
+
+    // 32. Audit 0032_learning_progress_monotonicity.sql
+    const sql0032 = await fs.readFile(path.join(migrationsDir, "0032_learning_progress_monotonicity.sql"), "utf-8");
+    let migration0032ContractValid = true;
+    try { assertLearningProgressMonotonicityMigrationContract(sql0032); } catch (error) {
+      migration0032ContractValid = false;
+      results.push({ category: "0032_learning_progress_monotonicity", check: "Rejects completed progress below 100% and watched-percent regressions", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0032ContractValid) results.push({ category: "0032_learning_progress_monotonicity", check: "Rejects completed progress below 100% and watched-percent regressions", passed: true, details: "Exact RPC signature, fixed boundary, completed=100 validation, monotonic CAS, and conflict contract verified" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

@@ -2,6 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 import { createClient } from "@/lib/supabase/server";
+import { createServerAdminClient } from "@/lib/supabase/server-admin";
 
 export const MATERIALS_BUCKET = "materials";
 export const MATERIAL_SIGNED_URL_EXPIRES_IN_SECONDS = 300;
@@ -85,7 +86,7 @@ export function materialStoragePath(productId: unknown, version: unknown, origin
   return `${MATERIALS_BUCKET}/${canonicalProductId}/v${version}/${canonicalId}-${sanitizeMaterialFilename(originalName)}`;
 }
 
-function parseMaterialStoragePath(storagePath: unknown): { productId: string; filename: string } | null {
+function parseMaterialStoragePath(storagePath: unknown): { productId: string; version: number; filename: string } | null {
   if (typeof storagePath !== "string") return null;
   const match = MATERIAL_STORAGE_PATH_PATTERN.exec(storagePath);
   if (!match) return null;
@@ -96,7 +97,11 @@ function parseMaterialStoragePath(storagePath: unknown): { productId: string; fi
   } catch {
     return null;
   }
-  return { productId: productId.toLowerCase(), filename };
+  const versionMatch = /^v([1-9][0-9]*)$/i.exec(storagePath.split("/")[2] ?? "");
+  if (!versionMatch) return null;
+  const version = Number(versionMatch[1]);
+  if (!Number.isSafeInteger(version) || version < 1) return null;
+  return { productId: productId.toLowerCase(), version, filename };
 }
 
 export function isValidMaterialStoragePathForProduct(storagePath: unknown, expectedProductId: unknown): boolean {
@@ -105,12 +110,19 @@ export function isValidMaterialStoragePathForProduct(storagePath: unknown, expec
   return parsed !== null && parsed.productId === expectedProductId.toLowerCase();
 }
 
+export function isValidMaterialStoragePathForProductAndVersion(storagePath: unknown, expectedProductId: unknown, expectedVersion: unknown): boolean {
+  if (!Number.isSafeInteger(expectedVersion) || (expectedVersion as number) < 1 || !isValidMaterialUuid(expectedProductId)) return false;
+  const parsed = parseMaterialStoragePath(storagePath);
+  return parsed !== null && parsed.productId === expectedProductId.toLowerCase() && parsed.version === expectedVersion;
+}
+
 export interface MaterialUploadInput {
   productId: string;
   version: number;
   originalName: string;
   mimeType: SupportedMaterialMimeType;
   file: Blob;
+  storagePath: string;
 }
 
 export interface StoredMaterialObject {
@@ -123,7 +135,10 @@ export async function uploadMaterialObject(input: MaterialUploadInput): Promise<
   if (!Number.isSafeInteger(input.version) || input.version < 1 || !isSupportedMaterialMimeType(input.mimeType) || !(input.file instanceof Blob) || input.file.size <= 0 || input.file.size > materialSizeLimit(input.mimeType)) {
     throw new MaterialStorageInputError();
   }
-  const storagePath = materialStoragePath(productId, input.version, input.originalName);
+  if (!isValidMaterialStoragePathForProductAndVersion(input.storagePath, productId, input.version)) {
+    throw new MaterialStorageInputError();
+  }
+  const storagePath = input.storagePath;
   try {
     const supabase = await createClient();
     const { error } = await supabase.storage.from(MATERIALS_BUCKET).upload(storagePath, input.file, {
@@ -142,7 +157,7 @@ export async function removeNewMaterialObject(storagePath: unknown): Promise<voi
     throw new MaterialStorageInputError();
   }
   try {
-    const supabase = await createClient();
+    const supabase = createServerAdminClient();
     const { error } = await supabase.storage.from(MATERIALS_BUCKET).remove([storagePath]);
     if (error) throw new Error();
   } catch {
@@ -156,7 +171,7 @@ export async function createMaterialSignedUrl(storagePath: unknown, expectedProd
     throw new MaterialStorageInputError();
   }
   try {
-    const supabase = await createClient();
+    const supabase = createServerAdminClient();
     const { data, error } = await supabase.storage
       .from(MATERIALS_BUCKET)
       .createSignedUrl(storagePath, MATERIAL_SIGNED_URL_EXPIRES_IN_SECONDS);

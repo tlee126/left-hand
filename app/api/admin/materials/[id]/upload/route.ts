@@ -3,9 +3,10 @@ import "server-only";
 import { redirect } from "next/navigation";
 import { getAccountAccess } from "@/lib/auth/session";
 import {
-  createMaterialAsset,
-  getNextMaterialAssetVersion,
-  isMaterialProduct
+  finalizeMaterialAssetUpload,
+  isMaterialProduct,
+  releaseMaterialAssetUpload,
+  reserveMaterialAssetUpload
 } from "@/lib/repositories/material-asset-repository";
 import {
   isSupportedMaterialMimeType,
@@ -723,6 +724,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (access.status !== "approved" || access.profile?.role !== "admin") redirect(CATALOG_ERROR_PATH);
 
   let uploadedPath: string | null = null;
+  let reservationId: string | null = null;
   try {
     const { id: productIdInput } = await context.params;
     if (!isValidMaterialUuid(productIdInput)) redirect(CATALOG_ERROR_PATH);
@@ -741,28 +743,38 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
     if (!(await isMaterialProduct(productId))) redirect(CATALOG_ERROR_PATH);
 
-    const version = await getNextMaterialAssetVersion(productId);
+    const safeFilename = sanitizeMaterialFilename(file.name);
+    const reservation = await reserveMaterialAssetUpload({
+      productId,
+      originalName: file.name,
+      safeFilename,
+      mimeType: file.type,
+      byteSize: file.size
+    });
+    reservationId = reservation.reservationId;
     const stored = await uploadMaterialObject({
       productId,
-      version,
+      version: reservation.version,
       originalName: file.name,
       mimeType: file.type,
-      file
+      file,
+      storagePath: reservation.storagePath
     });
     uploadedPath = stored.storagePath;
-    await createMaterialAsset({
-      productId,
-      storagePath: stored.storagePath,
-      originalName: file.name,
-      mimeType: file.type,
-      byteSize: file.size,
-      version
-    });
+    await finalizeMaterialAssetUpload(reservation.reservationId);
+    reservationId = null;
   } catch (error) {
     if (isRedirectControlFlow(error)) throw error;
     if (uploadedPath) {
       try {
         await removeNewMaterialObject(uploadedPath);
+      } catch {
+        // The route intentionally does not disclose cleanup or storage details.
+      }
+    }
+    if (reservationId) {
+      try {
+        await releaseMaterialAssetUpload(reservationId);
       } catch {
         // The route intentionally does not disclose cleanup or storage details.
       }

@@ -26,12 +26,31 @@ const supabase = {
       maybeSingle: async () => {
         if (table === "profiles") { timeline.push("profile"); return { data: scenario.access === "admin" ? approvedProfile : scenario.access === "anonymous" ? null : { ...approvedProfile, role: scenario.access === "student" ? "student" : "admin", account_status: scenario.access || "pending" }, error: null }; }
         if (table === "materials") { timeline.push("material"); if (scenario.repoError) return { data: null, error: { message: "SQL PRIVATE_PATH private@example.test" } }; return { data: scenario.nonMaterial ? null : { product_id: lowerUuid }, error: null }; }
-        if (table === "material_assets") { timeline.push("version"); if (scenario.repoError) return { data: null, error: { message: "SQL PRIVATE_PATH private@example.test" } }; return { data: { version: 2 }, error: null }; }
         return { data: null, error: null };
       },
-      single: async () => { if (table !== "material_assets") return { data: insertedPayload || null, error: scenario.metadataError ? { message: "SQL PRIVATE_PATH private@example.test" } : null }; timeline.push("metadata"); if (scenario.metadataError) return { data: null, error: { message: "SQL PRIVATE_PATH private@example.test" } }; return { data: { ...insertedPayload, id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", uploaded_by: uploaderId, visibility: "private" }, error: null }; }
+      single: async () => ({ data: insertedPayload || null, error: null })
     };
     return chain;
+  },
+  rpc: async (name, args) => {
+    if (name === "reserve_material_asset_upload") {
+      timeline.push("reserve");
+      if (scenario.repoError) return { data: null, error: { message: "SQL PRIVATE_PATH private@example.test" } };
+      const reservation = { reservation_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", version: 3, storage_path: "materials/" + lowerUuid + "/v3/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa-" + args.p_safe_filename, original_name: args.p_original_name, mime_type: args.p_mime_type, byte_size: args.p_byte_size };
+      calls.push(["reserve", reservation]);
+      globalThis.__reservation = reservation;
+      return { data: reservation, error: null };
+    }
+    if (name === "finalize_material_asset_upload") {
+      timeline.push("metadata");
+      if (scenario.metadataError) return { data: null, error: { message: "SQL PRIVATE_PATH private@example.test" } };
+      const reservation = globalThis.__reservation;
+      const metadata = { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", product_id: lowerUuid, uploaded_by: uploaderId, storage_path: reservation.storage_path, original_name: reservation.original_name, mime_type: reservation.mime_type, byte_size: reservation.byte_size, version: reservation.version, visibility: "private", created_at: "", updated_at: "" };
+      calls.push(["metadata", metadata]);
+      return { data: metadata, error: null };
+    }
+    if (name === "release_material_asset_upload") { timeline.push("release"); return { data: true, error: null }; }
+    return { data: null, error: { message: "unknown rpc" } };
   },
   storage: { from: bucket => ({ upload: async (path, file, options) => { timeline.push("upload"); calls.push(["upload", { bucket, path, file, fileSize: file.size, options }]); if (scenario.storageError) return { data: null, error: { message: "storage /materials/private.pdf" } }; return { data: { path }, error: null }; }, remove: async paths => { timeline.push("cleanup"); calls.push(["cleanup", { bucket, paths }]); return { data: null, error: null }; }, createSignedUrl: async path => { signedUrls.push(path); return { data: null, error: null }; } }) }
 };
@@ -42,6 +61,7 @@ const profileModule = "data:text/javascript,material-upload-profile";
 const errorMapperModule = "data:text/javascript,material-upload-error-mapper";
 const repoModule = "data:text/javascript,material-upload-repo";
 const storageModule = "data:text/javascript,material-upload-storage";
+const serverAdminModule = "data:text/javascript,material-upload-server-admin";
 const reactModule = "data:text/javascript,material-upload-react";
 globalThis.__supabase = supabase;
 globalThis.__redirects = redirects;
@@ -50,18 +70,19 @@ async function load(file, replacements) { return import("data:text/javascript," 
 const errorMapperCode = await compile("lib/auth/error-mapper.ts", []);
 const profileCode = await compile("lib/repositories/profile-repository.ts", [["@/lib/supabase/server", supabaseModule], ["@/lib/auth/error-mapper", errorMapperModule]]);
 const authCode = await compile("lib/auth/session.ts", [["@/lib/supabase/server", supabaseModule], ["@/lib/repositories/profile-repository", profileModule], ["react", reactModule]]);
-const storageCode = await compile("lib/storage/material-storage.ts", [["@/lib/supabase/server", supabaseModule]]);
-const repoCode = await compile("lib/repositories/material-asset-repository.ts", [["@/lib/supabase/server", supabaseModule], ["@/lib/storage/material-storage", storageModule]]);
+const storageCode = await compile("lib/storage/material-storage.ts", [["@/lib/supabase/server-admin", serverAdminModule], ["@/lib/supabase/server", supabaseModule]]);
+const repoCode = await compile("lib/repositories/material-asset-repository.ts", [["@/lib/supabase/server-admin", serverAdminModule], ["@/lib/supabase/server", supabaseModule], ["@/lib/storage/material-storage", storageModule]]);
 const routeCode = await compile("app/api/admin/materials/[id]/upload/route.ts", [["@/lib/auth/session", authModule], ["@/lib/repositories/material-asset-repository", repoModule], ["@/lib/storage/material-storage", storageModule], ["next/navigation", navModule]]);
 const toUrl = code => "data:text/javascript," + encodeURIComponent(code);
 const supabaseUrl = toUrl("export const createClient = async () => globalThis.__supabase;");
+const serverAdminUrl = toUrl("export const createServerAdminClient = () => globalThis.__supabase;");
 const navUrl = toUrl("export const redirect = path => { globalThis.__redirects.push(path); const error = Error('REDIRECT:' + path); error.digest = 'NEXT_REDIRECT;'; throw error; };");
 const errorMapperUrl = toUrl(errorMapperCode);
 const reactUrl = toUrl("export const cache = fn => fn;");
 const profileUrl = toUrl(profileCode.replaceAll(supabaseModule, supabaseUrl).replaceAll(errorMapperModule, errorMapperUrl));
 const authUrl = toUrl(authCode.replaceAll(supabaseModule, supabaseUrl).replaceAll(profileModule, profileUrl).replaceAll(reactModule, reactUrl));
-const storageUrl = toUrl(storageCode.replaceAll(supabaseModule, supabaseUrl));
-const repoUrl = toUrl(repoCode.replaceAll(supabaseModule, supabaseUrl).replaceAll(storageModule, storageUrl));
+const storageUrl = toUrl(storageCode.replaceAll(supabaseModule, supabaseUrl).replaceAll(serverAdminModule, serverAdminUrl));
+const repoUrl = toUrl(repoCode.replaceAll(supabaseModule, supabaseUrl).replaceAll(serverAdminModule, serverAdminUrl).replaceAll(storageModule, storageUrl));
 const route = await import(toUrl(routeCode.replaceAll(authModule, authUrl).replaceAll(repoModule, repoUrl).replaceAll(storageModule, storageUrl).replaceAll(navModule, navUrl)));
 function concat(...parts) { return parts.flatMap(part => part); }
 function pdfBytes() { return new TextEncoder().encode("%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n"); }
@@ -196,9 +217,9 @@ test("approved admins execute the real route, repository, and storage modules", 
   for (const kind of ["pdf", "mp4", "webm", "quicktime"]) {
     const result = await run({ access: "admin", kind });
     assert.equal(result.error, "REDIRECT:/quan-tri/catalog?upload=success", JSON.stringify({ kind, result }));
-    assert.deepEqual(result.timeline, ["auth", "profile", "form", "file", "material", "version", "upload", "metadata"]);
+    assert.deepEqual(result.timeline, ["auth", "profile", "form", "file", "material", "reserve", "upload", "metadata"]);
     const upload = call(result, "upload");
-    const metadata = result.calls.find(([name]) => name === "metadata")?.[1] as Record<string, unknown>;
+    const metadata = call(result, "metadata");
     const options = upload.options as Record<string, unknown>;
     assert.equal(upload.bucket, "materials");
     assert.equal(upload.path, metadata.storage_path);
@@ -230,7 +251,7 @@ test("invalid multipart data, UUIDs, MIME/signatures, size, product, and unsafe 
     const mediaInvalid = Boolean(scenario.spoof || scenario.truncated || scenario.fabricated || scenario.ftypOnly || scenario.headerOnly || scenario.impossibleBox || scenario.missingAvcc || scenario.invalidAvcc || scenario.invalidTables || scenario.inconsistent || scenario.fakeVcl || scenario.randomVclTail || scenario.oneByte || scenario.fakeCodec || scenario.markerOnlyTrack || scenario.fiveByteBlock || scenario.emptyFrame || scenario.randomFrame || scenario.tokenPairMutation || scenario.tokenTailFF || scenario.tokenTailRandom);
     if (mediaInvalid) assert.equal(result.mediaValid, false, JSON.stringify({ scenario, result }));
     if (!scenario.nonMaterial) assert.ok(!result.timeline.includes("material"), JSON.stringify({ scenario, result }));
-    assert.ok(!result.timeline.includes("version"));
+    assert.ok(!result.timeline.includes("reserve"));
     assert.ok(!result.timeline.includes("upload"));
     assert.ok(!result.timeline.includes("metadata"));
     assert.ok(!result.timeline.includes("cleanup"));
@@ -259,7 +280,7 @@ test("uppercase UUIDs are canonicalized and cleanup is exact only after metadata
   assert.equal(success.timeline.includes("cleanup"), false);
   const failure = await run({ access: "admin", metadataError: true });
   assert.equal(failure.error, "REDIRECT:/quan-tri/catalog?upload=error");
-  assert.deepEqual(failure.timeline, ["auth", "profile", "form", "file", "material", "version", "upload", "metadata", "cleanup"]);
+    assert.deepEqual(failure.timeline, ["auth", "profile", "form", "file", "material", "reserve", "upload", "metadata", "cleanup", "release"]);
   const uploadPath = call(failure, "upload").path;
   assert.deepEqual(call(failure, "cleanup"), { bucket: "materials", paths: [uploadPath] });
   assert.equal(failure.signedUrls.length, 0);
@@ -269,6 +290,7 @@ test("storage failures and repository failures stay private and do not delete ol
     const result = await run({ access: "admin", ...scenario });
     assert.equal(result.error, "REDIRECT:/quan-tri/catalog?upload=error");
     assert.equal(result.timeline.includes("cleanup"), false);
+    assert.equal(result.timeline.includes("release"), Boolean(scenario.storageError));
     assert.equal(result.calls.some(([name]) => name === "metadata"), false);
     for (const forbidden of ["private_path", "private@example", "sql", "safe.pdf", "materials/"]) assert.ok(!JSON.stringify({ error: result.error, redirects: result.redirects }).toLowerCase().includes(forbidden), forbidden);
   }
