@@ -150,6 +150,77 @@ export interface MaterialObjectInfo {
   mimeType: string;
 }
 
+export const MATERIAL_CONTENT_PREFIX_BYTES = 4096;
+
+function hasBytesAt(bytes: Uint8Array, offset: number, signature: readonly number[]): boolean {
+  return offset >= 0 && offset + signature.length <= bytes.length && signature.every((value, index) => bytes[offset + index] === value);
+}
+
+function readUint32(bytes: Uint8Array, offset: number): number {
+  return bytes[offset] * 0x1000000 + bytes[offset + 1] * 0x10000 + bytes[offset + 2] * 0x100 + bytes[offset + 3];
+}
+
+function ascii(bytes: Uint8Array, start: number, end: number): string {
+  let value = "";
+  for (let index = start; index < end; index += 1) value += String.fromCharCode(bytes[index]);
+  return value;
+}
+
+function hasPdfSignature(bytes: Uint8Array): boolean {
+  return hasBytesAt(bytes, 0, [0x25, 0x50, 0x44, 0x46, 0x2d]);
+}
+
+function hasWebmSignature(bytes: Uint8Array): boolean {
+  return hasBytesAt(bytes, 0, [0x1a, 0x45, 0xdf, 0xa3]);
+}
+
+function hasBmffSignature(bytes: Uint8Array, mimeType: string): boolean {
+  if (bytes.length < 16) return false;
+  const boxSize = readUint32(bytes, 0);
+  if (boxSize < 16 || boxSize > bytes.length || ascii(bytes, 4, 8) !== "ftyp") return false;
+  const brands = [ascii(bytes, 8, 12)];
+  for (let offset = 16; offset + 4 <= boxSize; offset += 4) brands.push(ascii(bytes, offset, offset + 4));
+  if (mimeType === "video/quicktime") return brands.includes("qt  ");
+  return ["isom", "iso2", "mp41", "mp42", "avc1", "dash", "M4V "].some((brand) => brands.includes(brand));
+}
+
+/** Validates the bounded content prefix for the formats accepted by the upload flow. */
+export function validateMaterialContentPrefix(mimeType: unknown, bytes: Uint8Array): boolean {
+  if (!isSupportedMaterialMimeType(mimeType) || !(bytes instanceof Uint8Array) || bytes.byteLength === 0) return false;
+  if (mimeType === "application/pdf") return hasPdfSignature(bytes);
+  if (mimeType === "video/webm") return hasWebmSignature(bytes);
+  return hasBmffSignature(bytes, mimeType);
+}
+
+async function readBoundedPrefix(response: Response, maxBytes: number): Promise<Uint8Array> {
+  if (!response.ok || !response.body) throw new MaterialStorageError();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+      total += chunk.byteLength;
+      if (!Number.isSafeInteger(total) || total > maxBytes) {
+        await reader.cancel();
+        throw new MaterialStorageError();
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 /** Creates a one-object, non-upsert upload capability for a server-generated path. */
 export async function createMaterialUploadCapability(storagePath: unknown): Promise<MaterialUploadCapability> {
   if (typeof storagePath !== "string" || !MATERIAL_STORAGE_PATH_PATTERN.test(storagePath)) {
@@ -181,6 +252,30 @@ export async function getMaterialObjectInfo(storagePath: unknown): Promise<Mater
     return { storagePath, byteSize: data.size, mimeType: data.contentType };
   } catch (error) {
     if (error instanceof MaterialStorageInputError) throw error;
+    throw new MaterialStorageError();
+  }
+}
+
+/** Verifies provider metadata and a bounded content prefix without downloading the complete object. */
+export async function inspectMaterialObject(storagePath: unknown, expectedMimeType: unknown, expectedByteSize: unknown): Promise<MaterialObjectInfo> {
+  if (!MATERIAL_STORAGE_PATH_PATTERN.test(typeof storagePath === "string" ? storagePath : "") || !isSupportedMaterialMimeType(expectedMimeType) || !Number.isSafeInteger(expectedByteSize) || (expectedByteSize as number) <= 0) {
+    throw new MaterialStorageInputError();
+  }
+  const info = await getMaterialObjectInfo(storagePath);
+  if (info.mimeType !== expectedMimeType || info.byteSize !== expectedByteSize || info.byteSize > materialSizeLimit(expectedMimeType)) throw new MaterialStorageError();
+  try {
+    const supabase = createServerAdminClient();
+    const { data, error } = await supabase.storage.from(MATERIALS_BUCKET).createSignedUrl(storagePath as string, 60);
+    if (error || !data?.signedUrl) throw new Error();
+    const response = await fetch(data.signedUrl, {
+      cache: "no-store",
+      headers: { Range: `bytes=0-${MATERIAL_CONTENT_PREFIX_BYTES - 1}` }
+    });
+    const prefix = await readBoundedPrefix(response, MATERIAL_CONTENT_PREFIX_BYTES);
+    if (!validateMaterialContentPrefix(expectedMimeType, prefix)) throw new Error();
+    return info;
+  } catch (error) {
+    if (error instanceof MaterialStorageInputError || error instanceof MaterialStorageError) throw error;
     throw new MaterialStorageError();
   }
 }

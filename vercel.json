@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/internal/cron/material-upload-cleanup",
+      "schedule": "*/15 * * * *"
+    }
+  ]
+}

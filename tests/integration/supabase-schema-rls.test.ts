@@ -38,6 +38,7 @@ import {
   assertLearningProgressBoundaryMigrationContract,
   assertMaterialStorageIntegrityBoundaryMigrationContract,
   assertMaterialDirectUploadMigrationContract,
+  assertMaterialUploadCleanupMigrationContract,
   assertCatalogCompleteSearchMigrationContract,
   assertLearningProgressConcurrencyMigrationContract,
   assertLearningProgressMonotonicityMigrationContract,
@@ -269,6 +270,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ,"0031_learning_progress_concurrency.sql"
       ,"0032_learning_progress_monotonicity.sql"
       ,"0033_material_direct_upload_sessions.sql"
+      ,"0034_material_upload_cleanup_hardening.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -352,6 +354,13 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       assert.throws(() => assertMaterialDirectUploadMigrationContract(sql.replace("expires_at <= now()", "expires_at < now()")), /./);
       assert.throws(() => assertMaterialDirectUploadMigrationContract(sql.replace("upload_reservation_id = p_reservation_id", "storage_path = p_reservation_id")), /./);
       assert.doesNotThrow(() => assertMaterialDirectUploadMigrationContract(`-- service_role\n${sql}`));
+    });
+
+    test("0034 adds lock-safe cleanup state and protects finalized assets", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0034_material_upload_cleanup_hardening.sql"), "utf-8");
+      assert.doesNotThrow(() => assertMaterialUploadCleanupMigrationContract(sql));
+      assert.throws(() => assertMaterialUploadCleanupMigrationContract(sql.replace("FOR UPDATE SKIP LOCKED", "FOR UPDATE")), /./);
+      assert.throws(() => assertMaterialUploadCleanupMigrationContract(sql.replace("AND NOT EXISTS (", "AND EXISTS (")), /./);
     });
 
     test("0001_core_schema.sql creates all 8 application tables with primary keys and constraints", async () => {

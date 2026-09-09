@@ -5,6 +5,7 @@ import { createServerAdminClient } from "@/lib/supabase/server-admin";
 import type { Database, Json } from "@/lib/supabase/database.types";
 import {
   isSupportedMaterialMimeType,
+  isValidMaterialStoragePathForProduct,
   isValidMaterialStoragePathForProductAndVersion,
   isValidMaterialUuid,
   materialSizeLimit,
@@ -64,6 +65,12 @@ export interface MaterialAssetUploadReservationDetails {
   byteSize: number;
   version: number;
   expiresAt: string;
+}
+
+export interface ExpiredMaterialAssetUploadClaim {
+  reservationId: string;
+  storagePath: string;
+  claimId: string;
 }
 
 function validateProductIds(productIds: readonly string[]): void {
@@ -155,18 +162,81 @@ export async function getMaterialAssetUploadReservation(reservationId: string): 
   }
 }
 
-export async function getMaterialAssetByUploadReservation(reservationId: string): Promise<MaterialAsset | null> {
-  if (!isValidMaterialUuid(reservationId)) throw new MaterialAssetInputError();
+export async function getMaterialAssetByUploadReservation(reservationId: string, uploadedBy: string): Promise<MaterialAsset | null> {
+  if (!isValidMaterialUuid(reservationId) || !isValidMaterialUuid(uploadedBy)) throw new MaterialAssetInputError();
   try {
     const supabase = await createClient();
     const { data, error } = await supabase
       .from("material_assets")
       .select(MATERIAL_ASSET_SELECT)
       .eq("upload_reservation_id", reservationId.toLowerCase())
+      .eq("uploaded_by", uploadedBy.toLowerCase())
       .maybeSingle();
     if (error) throw new Error();
     if (!data) return null;
     return validateMaterialAssetRow(data as unknown as MaterialAsset);
+  } catch (error) {
+    if (error instanceof MaterialAssetInputError) throw error;
+    throw new MaterialAssetRepositoryError();
+  }
+}
+
+function validateCleanupClaim(row: unknown): ExpiredMaterialAssetUploadClaim {
+  if (typeof row !== "object" || row === null || Array.isArray(row)) throw new Error();
+  const value = row as Record<string, Json | undefined>;
+  const reservationId = asString(value.reservation_id);
+  const storagePath = asString(value.storage_path);
+  const claimId = asString(value.claim_id);
+  if (!isValidMaterialUuid(reservationId) || !isValidMaterialUuid(claimId) || !isValidMaterialStoragePathForProduct(storagePath, storagePath.split("/")[1])) throw new Error();
+  return { reservationId, storagePath, claimId };
+}
+
+export async function markMaterialAssetUploadCancelled(reservationId: string): Promise<boolean> {
+  if (!isValidMaterialUuid(reservationId)) throw new MaterialAssetInputError();
+  try {
+    const supabase = await createClient();
+    const { data, error } = await supabase.rpc("cancel_material_asset_upload", { p_reservation_id: reservationId.toLowerCase() });
+    if (error || typeof data !== "boolean") throw new Error();
+    return data;
+  } catch (error) {
+    if (error instanceof MaterialAssetInputError) throw error;
+    throw new MaterialAssetRepositoryError();
+  }
+}
+
+export async function claimExpiredMaterialAssetUploads(limit: number): Promise<ExpiredMaterialAssetUploadClaim[]> {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new MaterialAssetInputError();
+  try {
+    const supabase = createServerAdminClient();
+    const { data, error } = await supabase.rpc("claim_expired_material_asset_uploads", { p_limit: limit });
+    if (error || !Array.isArray(data)) throw new Error();
+    return data.map(validateCleanupClaim);
+  } catch (error) {
+    if (error instanceof MaterialAssetInputError) throw error;
+    throw new MaterialAssetRepositoryError();
+  }
+}
+
+export async function completeExpiredMaterialAssetUploadCleanup(reservationId: string, claimId: string): Promise<boolean> {
+  if (!isValidMaterialUuid(reservationId) || !isValidMaterialUuid(claimId)) throw new MaterialAssetInputError();
+  try {
+    const supabase = createServerAdminClient();
+    const { data, error } = await supabase.rpc("complete_expired_material_asset_upload_cleanup", { p_reservation_id: reservationId.toLowerCase(), p_claim_id: claimId.toLowerCase() });
+    if (error || typeof data !== "boolean") throw new Error();
+    return data;
+  } catch (error) {
+    if (error instanceof MaterialAssetInputError) throw error;
+    throw new MaterialAssetRepositoryError();
+  }
+}
+
+export async function releaseExpiredMaterialAssetUploadCleanup(reservationId: string, claimId: string): Promise<boolean> {
+  if (!isValidMaterialUuid(reservationId) || !isValidMaterialUuid(claimId)) throw new MaterialAssetInputError();
+  try {
+    const supabase = createServerAdminClient();
+    const { data, error } = await supabase.rpc("release_expired_material_asset_upload_cleanup", { p_reservation_id: reservationId.toLowerCase(), p_claim_id: claimId.toLowerCase() });
+    if (error || typeof data !== "boolean") throw new Error();
+    return data;
   } catch (error) {
     if (error instanceof MaterialAssetInputError) throw error;
     throw new MaterialAssetRepositoryError();

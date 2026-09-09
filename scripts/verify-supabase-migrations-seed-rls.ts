@@ -1122,6 +1122,30 @@ export function assertMaterialDirectUploadMigrationContract(sql0033: string): vo
   fail(!/\b(?:execute\s+(?:immediate|format)|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role)\b/i.test(executableCode), "Migration 0033 must not use dynamic SQL or privilege escalation");
 }
 
+/** Cleanup claim, cancellation, retry, and finalized-asset protection contract for migration 0034. */
+export function assertMaterialUploadCleanupMigrationContract(sql0034: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const code = stripSqlCommentsAndSplitStatements(sql0034).join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  const functionBody = (name: string): string => executableCode.match(new RegExp(`create or replace function public\\.${name}\\([\\s\\S]*?(?=create or replace function public\\.|revoke all on function|grant execute on function|$)`, "i"))?.[0] ?? "";
+  fail(/alter table public\.material_asset_upload_reservations[\s\S]*add column cancelled_at timestamptz[\s\S]*add column cleanup_claim_id uuid[\s\S]*add column cleanup_claimed_at timestamptz[\s\S]*add column cleanup_attempts integer not null default 0/i.test(code), "Migration 0034 must add bounded cleanup state to reservations");
+  fail(/create index material_asset_upload_reservations_cleanup_idx[\s\S]*expires_at, cancelled_at, cleanup_claimed_at, id/i.test(code), "Migration 0034 must index cleanup candidates");
+  for (const functionName of ["cancel_material_asset_upload", "claim_expired_material_asset_uploads", "complete_expired_material_asset_upload_cleanup", "release_expired_material_asset_upload_cleanup"]) {
+    fail(new RegExp(`create or replace function public\\.${functionName}\\(`, "i").test(code), `Migration 0034 must define ${functionName}`);
+  }
+  fail(/create or replace function public\.finalize_material_asset_upload\(p_reservation_id uuid\)/i.test(code), "Migration 0034 must preserve the finalized owner boundary");
+  fail(/cancelled_at = coalesce\(cancelled_at, now\(\)\)[\s\S]*expires_at = least\(expires_at, now\(\)\)/i.test(executableCode), "Cancellation must transition a reservation into cleanup");
+  fail(/uploaded_by = v_user_id[\s\S]*cleanup_claim_id is null/i.test(functionBody("cancel_material_asset_upload")), "Cancellation must not interrupt an active cleanup claim");
+  fail(/claim_expired_material_asset_uploads[\s\S]*for update skip locked/i.test(executableCode) && /cleanup_claim_id = gen_random_uuid\(\)/i.test(executableCode), "Cleanup claims must be lock-safe and uniquely claimed");
+  fail(/not exists \([\s\S]*from public\.material_assets[\s\S]*upload_reservation_id = reservations\.id/i.test(functionBody("claim_expired_material_asset_uploads")) && /not exists \([\s\S]*from public\.material_assets[\s\S]*upload_reservation_id = reservations\.id/i.test(functionBody("complete_expired_material_asset_upload_cleanup")), "Cleanup must never claim or delete a finalized asset reservation");
+  fail(/cleanup_claim_id = p_claim_id/i.test(executableCode) && /cleanup_claimed_at = null/i.test(executableCode), "Cleanup failures must release or expire their claim");
+  fail(/create or replace function public\.release_material_asset_upload\(p_reservation_id uuid\)/i.test(code) && /cleanup_claim_id is null[\s\S]*not exists[\s\S]*material_assets/i.test(functionBody("release_material_asset_upload")), "User release must not delete a claimed or finalized reservation");
+  fail(/v_reservation\.cancelled_at is not null[\s\S]*v_reservation\.expires_at <= now\(\)[\s\S]*v_reservation\.cleanup_claim_id is not null/i.test(functionBody("finalize_material_asset_upload")), "Finalization must reject cancelled, expired, or claimed reservations");
+  fail((code.match(/set search_path = pg_catalog, public/gi) ?? []).length === 6, "Migration 0034 functions must use the fixed search_path");
+  fail(!/\b(?:execute\s+(?:immediate|format)|set\s+role|alter\s+role|bypassrls|dynamic\s+sql)\b/i.test(executableCode), "Migration 0034 must not use dynamic SQL or privilege escalation");
+  fail(/revoke all on function public\.claim_expired_material_asset_uploads\(integer\) from public, anon, authenticated/i.test(code) && /grant execute on function public\.claim_expired_material_asset_uploads\(integer\) to service_role/i.test(code), "Cleanup claim execution must be private to service_role");
+}
+
 /** Canonical catalog search document contract for migration 0030. */
 export function assertCatalogCompleteSearchMigrationContract(sql0030: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -1754,13 +1778,14 @@ export async function runAudit(): Promise<boolean> {
       "0030_catalog_search_complete_fields.sql",
       "0031_learning_progress_concurrency.sql",
       "0032_learning_progress_monotonicity.sql",
-      "0033_material_direct_upload_sessions.sql"
+      "0033_material_direct_upload_sessions.sql",
+      "0034_material_upload_cleanup_hardening.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 33 migration files exist in strict topological order",
+      check: "All 34 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -2306,6 +2331,15 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0033_material_direct_upload_sessions", check: "Adds expiring direct-upload sessions and retry-safe finalization", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0033ContractValid) results.push({ category: "0033_material_direct_upload_sessions", check: "Adds expiring direct-upload sessions and retry-safe finalization", passed: true, details: "Reservation expiry, reservation-linked asset identity, fixed-path finalization, and duplicate-finalize idempotency verified" });
+
+    // 34. Audit 0034_material_upload_cleanup_hardening.sql
+    const sql0034 = await fs.readFile(path.join(migrationsDir, "0034_material_upload_cleanup_hardening.sql"), "utf-8");
+    let migration0034ContractValid = true;
+    try { assertMaterialUploadCleanupMigrationContract(sql0034); } catch (error) {
+      migration0034ContractValid = false;
+      results.push({ category: "0034_material_upload_cleanup_hardening", check: "Reclaims expired and cancelled direct-upload sessions safely", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0034ContractValid) results.push({ category: "0034_material_upload_cleanup_hardening", check: "Reclaims expired and cancelled direct-upload sessions safely", passed: true, details: "Authenticated cancellation, lock-safe cleanup claims, exact-path retry, and finalized-asset protection verified" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

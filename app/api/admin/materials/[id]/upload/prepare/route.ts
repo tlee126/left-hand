@@ -1,4 +1,5 @@
 import { getAccountAccess } from "@/lib/auth/session";
+import { BoundedJsonError, BoundedJsonErrorCode, readBoundedJson } from "@/lib/http/bounded-json";
 import {
   isMaterialProduct,
   releaseMaterialAssetUpload,
@@ -39,9 +40,7 @@ async function requireApprovedAdmin(): Promise<Response | null> {
 }
 
 async function readPrepareBody(request: Request): Promise<{ originalName: string; mimeType: string; byteSize: number } | null> {
-  const contentLength = request.headers.get("content-length");
-  if (contentLength !== null && (!/^\d+$/.test(contentLength) || Number(contentLength) > MAX_JSON_BYTES)) return null;
-  const body: unknown = await request.json();
+  const body = await readBoundedJson(request, MAX_JSON_BYTES);
   if (!isRecord(body) || Object.keys(body).length !== 3 || typeof body.originalName !== "string" || typeof body.mimeType !== "string" || typeof body.byteSize !== "number") return null;
   if (!Number.isSafeInteger(body.byteSize) || body.byteSize <= 0) return null;
   return { originalName: body.originalName, mimeType: body.mimeType, byteSize: body.byteSize };
@@ -65,7 +64,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     reservationId = reservation.reservationId;
     const capability = await createMaterialUploadCapability(reservation.storagePath);
     return Response.json({ reservationId, version: reservation.version, upload: { bucket: MATERIALS_BUCKET, path: capability.storagePath, token: capability.token }, expiresIn: MATERIAL_UPLOAD_EXPIRES_IN_SECONDS }, { headers: { "Cache-Control": CACHE_CONTROL } });
-  } catch {
+  } catch (error) {
+    if (error instanceof BoundedJsonError) return response({ error: error.code === BoundedJsonErrorCode.TooLarge ? "Request body is too large." : "Invalid material upload request." }, error.code === BoundedJsonErrorCode.TooLarge ? 413 : 400);
     if (reservationId) {
       try { await releaseMaterialAssetUpload(reservationId); } catch { /* keep provider details private */ }
     }

@@ -400,7 +400,11 @@ export type Database = {
       material_asset_upload_reservations: {
         Row: {
           byte_size: number
+          cancelled_at: string | null
           created_at: string
+          cleanup_attempts: number
+          cleanup_claim_id: string | null
+          cleanup_claimed_at: string | null
           expires_at: string
           id: string
           mime_type: string
@@ -412,7 +416,11 @@ export type Database = {
         }
         Insert: {
           byte_size: number
+          cancelled_at?: string | null
           created_at?: string
+          cleanup_attempts?: number
+          cleanup_claim_id?: string | null
+          cleanup_claimed_at?: string | null
           expires_at?: string
           id?: string
           mime_type: string
@@ -424,7 +432,11 @@ export type Database = {
         }
         Update: {
           byte_size?: number
+          cancelled_at?: string | null
           created_at?: string
+          cleanup_attempts?: number
+          cleanup_claim_id?: string | null
+          cleanup_claimed_at?: string | null
           expires_at?: string
           id?: string
           mime_type?: string
@@ -893,6 +905,22 @@ export type Database = {
       }
       release_material_asset_upload: {
         Args: { p_reservation_id: string }
+        Returns: boolean
+      }
+      cancel_material_asset_upload: {
+        Args: { p_reservation_id: string }
+        Returns: boolean
+      }
+      claim_expired_material_asset_uploads: {
+        Args: { p_limit: number }
+        Returns: Json
+      }
+      complete_expired_material_asset_upload_cleanup: {
+        Args: { p_claim_id: string; p_reservation_id: string }
+        Returns: boolean
+      }
+      release_expired_material_asset_upload_cleanup: {
+        Args: { p_claim_id: string; p_reservation_id: string }
         Returns: boolean
       }
     }

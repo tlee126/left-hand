@@ -70,7 +70,7 @@ test("prepare returns bounded JSON metadata and a signed capability only", async
 
 test("finalize resolves the session server-side, verifies object metadata, then commits", async () => {
   const code = await source(finalizePath);
-  order(code, ["reservation = await getMaterialAssetUploadReservation", "const object = await getMaterialObjectInfo", "const asset = await finalizeMaterialAssetUpload"]);
+  order(code, ["reservation = await getMaterialAssetUploadReservation", "const object = await inspectMaterialObject", "const asset = await finalizeMaterialAssetUpload"]);
   assert.match(code, /object\.storagePath !== reservation\.storagePath/);
   assert.match(code, /object\.mimeType !== reservation\.mimeType/);
   assert.match(code, /object\.byteSize !== reservation\.byteSize/);
@@ -112,7 +112,7 @@ test("direct upload failure does not commit metadata and retry can prepare a new
   const [client, finalize] = await Promise.all([source(clientPath), source(finalizePath)]);
   assert.match(client, /if \(error\)/);
   assert.match(client, /cancel\(reservationId\)/);
-  assert.match(finalize, /getMaterialObjectInfo/);
+  assert.match(finalize, /inspectMaterialObject/);
   assert.match(finalize, /finalizeMaterialAssetUpload/);
 });
 
@@ -166,7 +166,7 @@ test("existing signed read URL and entitlement route remain unchanged in scope",
 
 test("finalize checks the authenticated material session before touching storage", async () => {
   const code = await source(finalizePath);
-  order(code, ["const admin = await requireApprovedAdmin", "reservation = await getMaterialAssetUploadReservation", "const object = await getMaterialObjectInfo"]);
+  order(code, ["const admin = await requireApprovedAdmin", "reservation = await getMaterialAssetUploadReservation", "const object = await inspectMaterialObject"]);
   assert.match(code, /reservation\.productId !== productId/);
   assert.match(code, /reservation\.uploadedBy !== admin\.userId/);
 });
