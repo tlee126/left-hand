@@ -60,7 +60,8 @@ const workspaceData = {
     description: "Nội dung thật từ workspace",
     pages: 24
   }],
-  courses: []
+  courses: [],
+  hasNextPage: false
 };
 
 function activeEntitlement(userId = USER_ID, productId = PRODUCT_ID): Record<string, unknown> {
@@ -149,6 +150,7 @@ function createSupabaseMock() {
       return {
         select(_columns: string) {
           const filters: Array<[string, unknown]> = [];
+          let inValues: unknown[] = [];
           const query = {
             eq(field: string, value: unknown) {
               filters.push([field, value]);
@@ -162,33 +164,47 @@ function createSupabaseMock() {
               return query;
             },
             in(field: string, _values: unknown[]) {
+              inValues = _values;
               if (table === "product_entitlements" && field === "product_id") {
                 const lastCall = entitlementCalls[entitlementCalls.length - 1];
                 if (lastCall) lastCall[1] = _values.map(String).join(",");
-                timeline.push("entitlement lookup");
-                if (queryErrors.entitlement) return Promise.resolve({ data: null, error: queryError() });
-                if (entitlementOverride !== UNSET) return Promise.resolve({ data: Array.isArray(entitlementOverride) ? entitlementOverride : entitlementOverride ? [entitlementOverride] : [], error: null });
-                return Promise.resolve({ data: entitlementRows.filter((row) => uuidEquals(row.user_id, filters.find(([name]) => name === "user_id")?.[1]) && _values.some((value) => uuidEquals(row.product_id, value))), error: null });
               }
-              if (table === "products") {
-                timeline.push("product lookup");
-                if (queryErrors.product) return Promise.resolve({ data: null, error: queryError() });
-                return Promise.resolve({ data: products, error: null });
-              }
-              if (table === "materials") {
-                materialCalls.push(_values.map(String));
-                return Promise.resolve({ data: materialRows, error: null });
-              }
-              if (table === "course_lessons") {
-                lessonCalls.push(_values.map(String));
-                return { order: async () => ({ data: lessonRows, error: null }) };
-              }
-              return Promise.resolve({ data: [], error: null });
+              return query;
+            },
+            order() {
+              return query;
+            },
+            limit() {
+              return query;
+            },
+            range() {
+              return query;
             },
             maybeSingle: async () => {
               if (table === "subjects") timeline.push("subject lookup");
               if (table === "product_entitlements") timeline.push("entitlement lookup");
               return resultForTable(table, filters);
+            },
+            then(resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) {
+              if (table === "product_entitlements") timeline.push("entitlement lookup");
+              if (table === "products") timeline.push("product lookup");
+              if (table === "materials") materialCalls.push(inValues.map(String));
+              if (table === "course_lessons") lessonCalls.push(inValues.map(String));
+              let result: { data: unknown; error: Error | null };
+              if (table === "product_entitlements") {
+                if (queryErrors.entitlement) result = { data: null, error: queryError() };
+                else if (entitlementOverride !== UNSET) result = { data: Array.isArray(entitlementOverride) ? entitlementOverride : entitlementOverride ? [entitlementOverride] : [], error: null };
+                else result = { data: entitlementRows.filter((row) => uuidEquals(row.user_id, filters.find(([name]) => name === "user_id")?.[1]) && inValues.some((value) => uuidEquals(row.product_id, value))), error: null };
+              } else if (table === "products") {
+                result = queryErrors.product ? { data: null, error: queryError() } : { data: products, error: null };
+              } else if (table === "materials") {
+                result = { data: materialRows, error: null };
+              } else if (table === "course_lessons") {
+                result = { data: lessonRows, error: null };
+              } else {
+                result = { data: [], error: null };
+              }
+              return Promise.resolve(result).then(resolve, reject);
             }
           };
           return query;

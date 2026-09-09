@@ -264,18 +264,29 @@ function request(body: unknown): Request {
   });
 }
 
-function tracedRequest(body: Record<string, unknown>): Request {
-  let validationRecorded = false;
-  const trackedBody = new Proxy(body, {
-    get(target, property, receiver) {
-      if (!validationRecorded) {
-        validationRecorded = true;
-        timeline.push("validation");
-      }
-      return Reflect.get(target, property, receiver);
+function rawRequest(body: string, contentLength?: string): Request {
+  const headers = new Headers({ "content-type": "application/json" });
+  if (contentLength !== undefined) headers.set("content-length", contentLength);
+  return new Request("http://localhost/api/progress", {
+    method: "POST",
+    headers,
+    body
+  });
+}
+
+function chunkedRequest(chunks: string[]): Request {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+      controller.close();
     }
   });
-  return { json: async () => trackedBody } as Request;
+  return new Request("http://localhost/api/progress", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: stream,
+    duplex: "half"
+  } as RequestInit);
 }
 
 const VALID_INPUT = {
@@ -414,10 +425,10 @@ test("repository item identity and errors fail closed without raw details", asyn
 
 test("API authenticates and validates before entitlement/progress access, then persists only entitled items", async () => {
   const responseModule = Route;
-  let response = await responseModule.POST(tracedRequest(VALID_INPUT));
+  let response = await responseModule.POST(request(VALID_INPUT));
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { success: true });
-  assert.deepEqual(timeline, ["auth", "validation", "subject", "product", "entitlement", "progress write"]);
+  assert.deepEqual(timeline, ["auth", "subject", "product", "entitlement", "progress write"]);
   assert.deepEqual(calls.filter((call: Call) => call.method === "rpc")[0]?.args, ["save_learning_progress", {
     p_product_id: PRODUCT_ID,
     p_item_type: "lesson",
@@ -485,12 +496,40 @@ test("API rejects arbitrary fields, invalid progress values, expired/revoked/wro
 
 test("API writes only after binding and entitlement, and maps a progress write failure generically", async () => {
   upsertError = new Error(RAW_ERROR);
-  const response = await Route.POST(tracedRequest(VALID_INPUT));
+  const response = await Route.POST(request(VALID_INPUT));
   assert.equal(response.status, 500);
-  assert.deepEqual(timeline, ["auth", "validation", "subject", "product", "entitlement", "progress write"]);
+  assert.deepEqual(timeline, ["auth", "subject", "product", "entitlement", "progress write"]);
   const body = JSON.stringify(await response.json());
   assert.doesNotMatch(body, /database|user@example|secret=jwt/);
   assert.equal(rows.length, 0);
+});
+
+test("API progress POST applies bounded JSON parsing before repository or RPC access", async () => {
+  const responseModule = Route;
+  const oversized = "x".repeat(8 * 1024 + 1);
+  const cases: Array<{ name: string; makeRequest: () => Request; status: number }> = [
+    { name: "malformed small JSON", makeRequest: () => rawRequest("{"), status: 400 },
+    { name: "oversized Content-Length", makeRequest: () => rawRequest("{}", String(8 * 1024 + 1)), status: 413 },
+    { name: "huge Content-Length", makeRequest: () => rawRequest("{}", "999999999999999999999999999999999"), status: 413 },
+    { name: "negative Content-Length", makeRequest: () => rawRequest("{}", "-1"), status: 400 },
+    { name: "decimal Content-Length", makeRequest: () => rawRequest("{}", "1.5"), status: 400 },
+    { name: "infinite Content-Length", makeRequest: () => rawRequest("{}", "Infinity"), status: 400 },
+    { name: "missing Content-Length with oversized chunked body", makeRequest: () => chunkedRequest([oversized.slice(0, 4_096), oversized.slice(4_096)]), status: 413 }
+  ];
+
+  for (const testCase of cases) {
+    reset();
+    const response = await responseModule.POST(testCase.makeRequest());
+    assert.equal(response.status, testCase.status, testCase.name);
+    assert.equal(calls.some((call) => call.method === "rpc"), false, testCase.name);
+    assert.equal(calls.some((call) => call.table === "product_entitlements"), false, testCase.name);
+    assert.equal(calls.some((call) => call.table === "materials" || call.table === "course_lessons"), false, testCase.name);
+  }
+
+  reset();
+  const valid = await responseModule.POST(request(VALID_INPUT));
+  assert.equal(valid.status, 200);
+  assert.equal(calls.some((call) => call.method === "rpc"), true);
 });
 
 test("API exposes a generic conflict when the database rejects a stale progress version", async () => {
