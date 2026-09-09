@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test, describe, beforeEach } from "node:test";
+import { createHmac } from "node:crypto";
 import {
   handleConsultationPost,
   resetRateLimit,
@@ -295,6 +296,36 @@ describe("Consultation POST API", () => {
       headers: { "x-forwarded-for": "192.168.1.1" }
     });
     assert.strictEqual(getClientIp(req), null);
+  });
+
+  test("12b. signed proxy contract accepts canonical IP and rejects forged headers", async () => {
+    const previousEnabled = process.env.CONSULTATION_TRUSTED_PROXY;
+    const previousSecret = process.env.CONSULTATION_PROXY_SIGNING_SECRET;
+    process.env.CONSULTATION_TRUSTED_PROXY = "true";
+    process.env.CONSULTATION_PROXY_SIGNING_SECRET = "unit-proxy-secret";
+    try {
+      const canonical = "2001:db8::1";
+      const signature = createHmac("sha256", "unit-proxy-secret").update(canonical).digest("hex");
+      const valid = createMockRequest({
+        headers: {
+          "x-consultation-client-ip": "2001:0db8:0:0:0:0:0:1",
+          "x-consultation-client-ip-signature": signature
+        }
+      });
+      assert.strictEqual(getClientIp(valid), canonical);
+      const forged = createMockRequest({
+        headers: {
+          "x-consultation-client-ip": "2001:db8::2",
+          "x-consultation-client-ip-signature": signature
+        }
+      });
+      assert.strictEqual(getClientIp(forged), null);
+    } finally {
+      if (previousEnabled === undefined) delete process.env.CONSULTATION_TRUSTED_PROXY;
+      else process.env.CONSULTATION_TRUSTED_PROXY = previousEnabled;
+      if (previousSecret === undefined) delete process.env.CONSULTATION_PROXY_SIGNING_SECRET;
+      else process.env.CONSULTATION_PROXY_SIGNING_SECRET = previousSecret;
+    }
   });
 
   test("13. missing or malformed runtime IP fails closed without a shared rate-limit bucket", async () => {

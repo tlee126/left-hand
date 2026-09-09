@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test, describe } from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { createHmac } from "node:crypto";
 
 const execFileAsync = promisify(execFile);
 
@@ -25,6 +26,8 @@ type RouteScenario = {
   rpcOutcome?: "created" | "duplicate" | "invalid";
   calls?: number;
   forwardedVariants?: string[];
+  proxySignature?: string;
+  proxySignatureVariants?: string[];
 };
 
 const routeHarness = String.raw`
@@ -36,7 +39,7 @@ import { NextRequest } from "next/server.js";
 
 const scenario = JSON.parse(process.argv[1]);
 process.env.CONSULTATION_TRUSTED_PROXY = scenario.trustedProxy ? "true" : "false";
-process.env.CONSULTATION_TRUSTED_PROXY_HOPS = scenario.trustedProxyHops ?? "1";
+process.env.CONSULTATION_PROXY_SIGNING_SECRET = "phase4-runtime-proxy-secret";
 let createClientCalls = 0;
 const calls = [];
 let inserted = [];
@@ -52,7 +55,8 @@ const serverUrl = dataUrl(
   "  globalThis.__createClientCalls++;\n" +
   "  if (globalThis.__clientError) throw new Error('provider SQL secret phone=0901234567');\n" +
   "  return globalThis.__client;\n" +
-  "}"
+  "}\n" +
+  "export const createServerAdminClient = createClient;"
 );
 globalThis.__createClientCalls = 0;
 globalThis.__clientError = Boolean(scenario.clientError);
@@ -103,7 +107,7 @@ const routeCode = await compile(
   path.resolve(process.cwd(), "app/api/consultations/route.ts"),
     [
       ["\"next/server\"", JSON.stringify(nextServerUrl)],
-    ["\"@/lib/supabase/server\"", JSON.stringify(serverUrl)],
+    ["\"@/lib/supabase/server-admin\"", JSON.stringify(serverUrl)],
     ["\"@/lib/validation/consultation\"", JSON.stringify(validationUrl)],
     ["\"@/lib/repositories/consultation-repository\"", JSON.stringify(repoUrl)]
   ],
@@ -117,6 +121,16 @@ function makeRequest(s, index = 0) {
     "Idempotency-Key": s.idempotencyKey ?? ("runtime-key-" + index)
   });
   if (s.forwarded !== undefined) headers.set("x-forwarded-for", s.forwarded);
+  if (s.trustedProxy && s.forwarded) {
+    const proxyIp = s.forwarded.split(",")[0].trim().toLowerCase();
+    const canonicalIp = proxyIp === "2001:0db8:0000:0000:0000:0000:0000:0001"
+      ? "2001:db8::1"
+      : proxyIp === "0:0:0:0:0:ffff:c000:22c"
+        ? "::ffff:192.0.2.44"
+        : proxyIp;
+    headers.set("x-consultation-client-ip", canonicalIp);
+    headers.set("x-consultation-client-ip-signature", s.proxySignature ?? "");
+  }
   if (s.contentLength !== undefined) headers.set("content-length", s.contentLength);
   let body = s.rawBody ?? JSON.stringify(s.body ?? {
     fullName: "Nguyễn Văn An", phone: "0901234567", faculty: "Khoa Tài chính",
@@ -149,7 +163,7 @@ function makeRequest(s, index = 0) {
 const responses = [];
 if (scenario.forwardedVariants) {
   for (let i = 0; i < scenario.forwardedVariants.length; i++) {
-    responses.push((await POST(makeRequest({ ...scenario, forwarded: scenario.forwardedVariants[i] }, i))).status);
+    responses.push((await POST(makeRequest({ ...scenario, forwarded: scenario.forwardedVariants[i], proxySignature: scenario.proxySignatureVariants?.[i] }, i))).status);
   }
 } else if (scenario.calls) {
   for (let i = 0; i < scenario.calls; i++) {
@@ -169,9 +183,31 @@ console.log(JSON.stringify({
 `;
 
 async function runRouteScenario(scenario: RouteScenario) {
+  const rawProxyIp = scenario.forwarded?.split(",")[0].trim().toLowerCase();
+  const canonicalProxyIp = rawProxyIp === "2001:0db8:0000:0000:0000:0000:0000:0001"
+    ? "2001:db8::1"
+    : rawProxyIp === "0:0:0:0:0:ffff:c000:22c"
+      ? "::ffff:192.0.2.44"
+      : rawProxyIp;
+  const signedScenario = scenario.forwardedVariants
+    ? {
+        ...scenario,
+        proxySignatureVariants: scenario.forwardedVariants.map((value) => {
+          const normalized = value.split(",")[0].trim().toLowerCase();
+          const canonical = normalized === "2001:0db8:0000:0000:0000:0000:0000:0001"
+            ? "2001:db8::1"
+            : normalized === "0:0:0:0:0:ffff:c000:22c"
+              ? "::ffff:192.0.2.44"
+              : normalized;
+          return createHmac("sha256", "phase4-runtime-proxy-secret").update(canonical).digest("hex");
+        })
+      }
+    : canonicalProxyIp
+      ? { ...scenario, proxySignature: createHmac("sha256", "phase4-runtime-proxy-secret").update(canonicalProxyIp).digest("hex") }
+      : scenario;
   const { stdout } = await execFileAsync(
     process.execPath,
-    ["--import", "tsx/esm", "-e", routeHarness, JSON.stringify(scenario)],
+    ["--import", "tsx/esm", "-e", routeHarness, JSON.stringify(signedScenario)],
     { cwd: process.cwd(), maxBuffer: 1024 * 1024 }
   );
   return JSON.parse(stdout.trim()) as {

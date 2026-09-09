@@ -8,6 +8,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type {
   Consultation,
+  ConsultationStatus,
   ListConsultationsOptions,
   UpdatedConsultationStatus
 } from "../../lib/repositories/consultation-repository";
@@ -912,8 +913,9 @@ describe("Task 4.2-B: Server-side Consultation Repository", () => {
     });
 
     test("every valid status participates in the forward matrix or a no-op retry", async () => {
-      const expectedStatuses = { new: "new", contacted: "new", qualified: "contacted", closed: "qualified" } as const;
-      for (const status of VALID_CONSULTATION_STATUSES) {
+      const expectedStatuses: Record<ConsultationStatus, ConsultationStatus> = { new: "new", contacted: "new", qualified: "contacted", closed: "qualified" };
+      const statuses: readonly ConsultationStatus[] = VALID_CONSULTATION_STATUSES;
+      for (const status of statuses) {
         const client = createMockClient({
           queryData: {
             id: SAMPLE_CONSULTATION.id,

@@ -37,7 +37,13 @@ const immutableMigrationHashes = {
   "0014_product_entitlements.sql": "77b507859e5295bae896ac3e0ed66f4bb749a7f56ab71aeae9c0bb293b9722b2",
   "0015_learning_progress.sql": "4cd65043f20cd7badc9496e2d4d8466f5c6bc1546d6b91ac565c07d3e2a11e37",
   "0016_study_plans.sql": "3697e891b0833ab23bef47227090470e2afd916e6caa2bdbbb73d666017d8dc9",
-  "0017_profile_on_auth_signup.sql": "0b4dac5f5a3092704b2101bcbfaf47274e75a96f7fbfe8c304daba215b565351"
+  "0017_profile_on_auth_signup.sql": "0b4dac5f5a3092704b2101bcbfaf47274e75a96f7fbfe8c304daba215b565351",
+  "0018_catalog_semantic_invariants.sql": "49b58453495fd1e65c45bcc6cd3bb6789938b0ebf3cc6f8edfb984feda785996",
+  "0019_admin_catalog_transaction_rpc.sql": "3da9cf2fa53a80d8456547a309f6492dfb27a9e9a2fd03a04c2e38b2648cd6c5",
+  "0020_catalog_mutation_access_boundary.sql": "87d0666521f557f2e759afe9022f327b308040a1b068a513f2a02f8a6022699d",
+  "0021_catalog_search_normalization.sql": "e4712ed14e58d2da24350c0bab1349f26845d5e4024eac635fee872a4cf15d09",
+  "0022_catalog_integrity_boundary.sql": "060255c2e7e8649dab3f544ef6f8df6cf2abb850067bc38c95f1a98517b8b446",
+  "0023_catalog_search_child_fields.sql": "68a2aff1ac320bb76ba6bb7d0711e035ac67f4db1728fc3034a1a73dc8669786"
 } as const;
 
 export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
@@ -1565,6 +1571,23 @@ export function assertConsultationIntakeAccessBoundaryMigrationContract(sql0026:
   assertNestedFunctionSqlScope(statements, { allowDmlTables: ["consultations"], allowSelectTables: ["products", "subjects"], allowSqlExpressionSelect: true });
 }
 
+/** The intake RPC must be private to the server-only service role. */
+export function assertConsultationRpcPrivateBoundaryMigrationContract(sql0027: string): void {
+  const statements = stripSqlCommentsAndSplitStatements(sql0027).map(normalizeMigrationStatement);
+  const signature = "text, text, text, text, text, text, text, text, text, text, text";
+  const expected = [
+    new RegExp(`^revoke execute on function public\\.submit_consultation_intake\\(${signature}\\) from public, anon, authenticated$`, "i"),
+    new RegExp(`^grant execute on function public\\.submit_consultation_intake\\(${signature}\\) to service_role$`, "i")
+  ];
+  if (statements.length !== expected.length || statements.some((statement, index) => !expected[index].test(statement))) {
+    throw new Error("Migration 0027 must revoke public/anon/authenticated RPC execution and grant only service_role");
+  }
+  const code = statements.join(" ; ");
+  if (/\b(?:execute\s+immediate|format|bypassrls|set\s+role|alter\s+role|dynamic\s+sql)\b/i.test(code)) {
+    throw new Error("Migration 0027 must not contain privilege escalation or dynamic SQL");
+  }
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -1606,13 +1629,14 @@ export async function runAudit(): Promise<boolean> {
       "0023_catalog_search_child_fields.sql",
       "0024_consultation_workflow_hardening.sql",
       "0025_consultation_workflow_trigger_order.sql",
-      "0026_consultation_intake_access_boundary.sql"
+      "0026_consultation_intake_access_boundary.sql",
+      "0027_consultation_rpc_private_boundary.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 26 migration files exist in strict topological order",
+      check: "All 27 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -1632,7 +1656,7 @@ export async function runAudit(): Promise<boolean> {
       immutableHistoryValid = false;
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0017 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0023 match their canonical LF-normalized SHA-256 snapshots",
         passed: false,
         details: error instanceof Error ? error.message : String(error)
       });
@@ -1640,9 +1664,9 @@ export async function runAudit(): Promise<boolean> {
     if (immutableHistoryValid) {
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0017 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0023 match their canonical LF-normalized SHA-256 snapshots",
         passed: true,
-        details: "Every applied migration through 0017 is content-locked"
+        details: "Every immutable migration from 0001 through 0023 is content-locked"
       });
     }
 
@@ -2095,7 +2119,15 @@ export async function runAudit(): Promise<boolean> {
       migration0026ContractValid = false;
       results.push({ category: "0026_consultation_intake_access_boundary", check: "Closes direct consultation INSERT and exposes only the verified intake RPC", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
-    if (migration0026ContractValid) results.push({ category: "0026_consultation_intake_access_boundary", check: "Closes direct consultation INSERT and exposes only the verified intake RPC", passed: true, details: "Exact payload signature, source/catalog binding, idempotency, and constrained SECURITY DEFINER scope verified" });
+    if (migration0026ContractValid) results.push({ category: "0026_consultation_intake_access_boundary", check: "Closes direct consultation INSERT and preserves the verified intake RPC", passed: true, details: "Exact payload signature, source/catalog binding, idempotency, and constrained SECURITY DEFINER scope verified" });
+
+    const sql0027 = await fs.readFile(path.join(migrationsDir, "0027_consultation_rpc_private_boundary.sql"), "utf-8");
+    let migration0027ContractValid = true;
+    try { assertConsultationRpcPrivateBoundaryMigrationContract(sql0027); } catch (error) {
+      migration0027ContractValid = false;
+      results.push({ category: "0027_consultation_rpc_private_boundary", check: "Removes public RPC execution and leaves only service_role execution", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0027ContractValid) results.push({ category: "0027_consultation_rpc_private_boundary", check: "Removes public RPC execution and leaves only service_role execution", passed: true, details: "anon and authenticated direct RPC access is revoked; only the server-only service role is granted" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

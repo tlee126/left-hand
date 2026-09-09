@@ -9,7 +9,9 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/unit/**/*.test.ts tests/integration/**/*.test.ts",
     "test:integration": "tsx --test tests/integration/**/*.test.ts",
-    "verify:db": "tsx scripts/verify-supabase-migrations-seed-rls.ts"
+    "verify:db": "tsx scripts/verify-supabase-migrations-seed-rls.ts",
+    "test:phase4:live": "tsx scripts/phase4-live-harness.ts",
+    "test:phase4:browser": "tsx scripts/phase4-browser-harness.ts"
   },
   "dependencies": {
     "@fontsource/be-vietnam-pro": "5.2.8",

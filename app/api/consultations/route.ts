@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
-import { createClient } from "@/lib/supabase/server";
+import { createServerAdminClient } from "@/lib/supabase/server-admin";
 import {
   validateConsultationInput,
   type ValidatedConsultationData
@@ -97,48 +98,36 @@ export function normalizeRuntimeIp(value: unknown): string | null {
   return canonicalizeIpv4(candidate) ?? canonicalizeIpv6(candidate);
 }
 
-function getTrustedProxyHops(): number | null {
-  if (process.env.CONSULTATION_TRUSTED_PROXY !== "true") return null;
-  const raw = process.env.CONSULTATION_TRUSTED_PROXY_HOPS;
-  if (!raw || !/^[1-9]\d*$/.test(raw)) return null;
-  const hops = Number(raw);
-  return Number.isSafeInteger(hops) && hops <= 5 ? hops : null;
+function hasValidProxySignature(ip: string, signature: string | null): boolean {
+  const secret = process.env.CONSULTATION_PROXY_SIGNING_SECRET;
+  if (process.env.CONSULTATION_TRUSTED_PROXY !== "true" || !secret || !signature) return false;
+  if (!/^[0-9a-f]{64}$/i.test(signature)) return false;
+  const expected = createHmac("sha256", secret).update(ip, "utf8").digest("hex");
+  return timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"));
 }
 
-function resolveTrustedForwardedIp(req: Request): string | null {
-  // This opt-in is a deployment contract: the configured edge/proxy must
-  // overwrite the header before forwarding it to Next.js. A browser cannot
-  // enable this contract because it cannot change server configuration.
-  const trustedProxyHops = getTrustedProxyHops();
-  if (trustedProxyHops === null) return null;
-
-  const forwarded = req.headers.get("x-forwarded-for");
-  if (forwarded !== null) {
-    const hops = forwarded.split(",").map((value) => normalizeRuntimeIp(value));
-    // A malformed hop makes the whole chain unusable; never fall through to
-    // another client-controlled header or silently share a global bucket.
-    return hops.length > trustedProxyHops && hops.every((value): value is string => value !== null)
-      ? hops[hops.length - trustedProxyHops - 1]
-      : null;
-  }
-
-  return trustedProxyHops === 1 ? normalizeRuntimeIp(req.headers.get("x-real-ip")) : null;
+function resolveSignedProxyIp(req: Request): string | null {
+  const candidate = normalizeRuntimeIp(req.headers.get("x-consultation-client-ip"));
+  if (!candidate) return null;
+  return hasValidProxySignature(candidate, req.headers.get("x-consultation-client-ip-signature"))
+    ? candidate
+    : null;
 }
 
 /**
  * Resolves the consultation rate-limit identity.
  *
  * The target Next.js runtime does not expose `NextRequest.ip`. Deployments
- * must either provide that platform metadata or explicitly configure both
- * CONSULTATION_TRUSTED_PROXY=true and CONSULTATION_TRUSTED_PROXY_HOPS for a
- * proxy that strips and overwrites forwarding headers. Without either source
- * this returns null; it never uses a shared "unknown" bucket.
+ * must either provide that platform metadata or explicitly configure a proxy
+ * to sign the canonical client IP in X-Consultation-Client-IP. X-Forwarded-For
+ * and X-Real-IP are never trusted. Without either source this returns null; it
+ * never uses a shared "unknown" bucket.
  */
 export function resolveClientIp(request: NextRequest | Request): string | null {
   const runtimeIp = normalizeRuntimeIp(
     "ip" in request ? (request as NextRequest & { ip?: unknown }).ip : undefined
   );
-  return runtimeIp ?? resolveTrustedForwardedIp(request);
+  return runtimeIp ?? resolveSignedProxyIp(request);
 }
 
 /** @deprecated Use resolveClientIp. */
@@ -396,5 +385,5 @@ export async function POST(req: NextRequest) {
   const ip = resolveClientIp(req);
   // Defer client creation until after content-size, JSON, validation, rate
   // limit, and idempotency guards have passed.
-  return handleConsultationPost(req, createClient, ip);
+  return handleConsultationPost(req, createServerAdminClient, ip);
 }
