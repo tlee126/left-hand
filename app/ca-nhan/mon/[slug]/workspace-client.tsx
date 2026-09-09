@@ -14,11 +14,12 @@ import type {
 import type { StudentWorkspaceData } from "@/lib/repositories/student-workspace-repository";
 
 interface SubjectWorkspaceClientProps {
-  workspace: StudentWorkspaceData & { progress?: LearningProgress[] };
+  workspace: StudentWorkspaceData & { progress?: LearningProgress[]; progressUnavailable?: boolean };
 }
 type TabKey = "overview" | "documents" | "courses" | "unavailable";
 type ProgressMap = Record<string, LearningProgress>;
 type RetryMap = Record<string, UpsertLearningProgressInput>;
+const PROGRESS_PRODUCT_BATCH_SIZE = 100;
 
 function progressKey(productId: string, itemType: LearningProgressItemType, itemId: string): string {
   return `${productId}:${itemType}:${itemId}`;
@@ -62,6 +63,18 @@ function progressForItem(progress: LearningProgress[], input: UpsertLearningProg
   return progress.find((row) => progressKey(row.product_id, row.item_type, row.item_id) === progressKey(input.productId, input.itemType, input.itemId));
 }
 
+function productIdBatches(productIds: readonly string[]): string[][] {
+  const result: string[][] = [];
+  for (let index = 0; index < productIds.length; index += PROGRESS_PRODUCT_BATCH_SIZE) result.push(productIds.slice(index, index + PROGRESS_PRODUCT_BATCH_SIZE));
+  return result;
+}
+
+function compareProgress(left: LearningProgress, right: LearningProgress): number {
+  return left.product_id.localeCompare(right.product_id)
+    || left.item_type.localeCompare(right.item_type)
+    || left.item_id.localeCompare(right.item_id);
+}
+
 export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [openingProductId, setOpeningProductId] = useState<string | null>(null);
@@ -76,13 +89,19 @@ export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProp
       ...workspace.materials.map((material) => material.productId),
       ...workspace.courses.map((course) => course.productId)
     ])];
-    const params = new URLSearchParams();
-    productIds.forEach((productId) => params.append("productId", productId));
-    const response = await fetch(`/api/progress?${params.toString()}`, { method: "GET", cache: "no-store" });
-    if (!response.ok) throw new Error();
-    const body: unknown = await response.json();
-    if (!body || typeof body !== "object" || !Array.isArray((body as { progress?: unknown }).progress)) throw new Error();
-    return (body as { progress: LearningProgress[] }).progress;
+    if (!productIds.length) return [];
+    const batchResults = await Promise.all(productIdBatches(productIds).map(async (productIdBatch) => {
+      const params = new URLSearchParams();
+      productIdBatch.forEach((productId) => params.append("productId", productId));
+      const response = await fetch(`/api/progress?${params.toString()}`, { method: "GET", cache: "no-store" });
+      if (!response.ok) throw new Error();
+      const body: unknown = await response.json();
+      if (!body || typeof body !== "object" || !Array.isArray((body as { progress?: unknown }).progress)) throw new Error();
+      return (body as { progress: LearningProgress[] }).progress;
+    }));
+    const byItem = new Map<string, LearningProgress>();
+    for (const rows of batchResults) for (const row of rows) byItem.set(progressKey(row.product_id, row.item_type, row.item_id), row);
+    return [...byItem.values()].sort(compareProgress);
   }
 
   async function saveProgress(input: UpsertLearningProgressInput) {
@@ -182,12 +201,14 @@ export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProp
     { id: "overview", label: "Tổng quan" }, { id: "documents", label: "Tài liệu", count: workspace.materials.length },
     { id: "courses", label: "Khóa học", count: workspace.courses.length }, { id: "unavailable", label: "Nội dung khác" }
   ];
+  const pageHref = (targetPage: number) => `/ca-nhan/mon/${encodeURIComponent(workspace.subject.slug)}?page=${targetPage}`;
   return <div className="relative min-h-screen overflow-x-hidden bg-[#fffdf9]">
     <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[34rem] bg-[radial-gradient(circle_at_top_left,rgba(23,101,233,0.18),transparent_36%),radial-gradient(circle_at_top_right,rgba(233,87,255,0.14),transparent_28%)]" />
     <Header />
     <main className="container mx-auto px-4 py-8 md:px-8">
       <div className="mb-6 flex items-center justify-between border-b border-slate-100 pb-5"><Link href="/ca-nhan" className="inline-flex items-center gap-1.5 text-sm font-bold text-accent"><ArrowLeft className="h-4 w-4" />Quay lại Cá nhân</Link><Link href="/" className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#8a97b4]"><Home className="h-3.5 w-3.5" />Trang chủ</Link></div>
-      <section className="mb-6 rounded-[28px] border border-[#1b2e7428] bg-white p-6 shadow-[0_12px_36px_rgba(19,37,79,0.05)]"><span className="inline-flex rounded-full border border-blue-100 bg-[#edf2ff] px-3 py-1 text-[11px] font-extrabold text-[#3657d7]">{workspace.subject.category}</span><h1 className="mt-3 text-2xl font-black text-[#132a67] sm:text-3xl">{workspace.subject.name}</h1><p className="mt-2 text-xs font-semibold text-[#617092]">Học liệu đã được cấp quyền cho môn học này.</p></section>
+      <section className="mb-6 rounded-[28px] border border-[#1b2e7428] bg-white p-6 shadow-[0_12px_36px_rgba(19,37,79,0.05)]"><span className="inline-flex rounded-full border border-blue-100 bg-[#edf2ff] px-3 py-1 text-[11px] font-extrabold text-[#3657d7]">{workspace.subject.category}</span><h1 className="mt-3 text-2xl font-black text-[#132a67] sm:text-3xl">{workspace.subject.name}</h1><p className="mt-2 text-xs font-semibold text-[#617092]">Học liệu đã được cấp quyền cho môn học này.</p>{workspace.hasHardOverflow && <p role="alert" className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">Không thể hiển thị toàn bộ học liệu trong giới hạn an toàn. Danh sách này chưa hoàn chỉnh.</p>}{workspace.progressUnavailable && <p role="status" className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">Tiến độ hiện chưa thể tải. Vui lòng tải lại trang trước khi tiếp tục.</p>}</section>
+      {(workspace.hasPreviousPage || workspace.hasNextPage) && <nav aria-label="Phân trang không gian học" className="mb-6 flex items-center justify-between gap-4 rounded-2xl border border-[#1b2e7420] bg-white p-3 shadow-sm">{workspace.hasPreviousPage ? <Link href={pageHref(workspace.page - 1)} className="rounded-full border border-[#132a67] px-4 py-2 text-xs font-bold text-[#132a67]">← Trang trước</Link> : <span aria-hidden="true" />}{<span className="text-xs font-bold text-[#617092]">Trang {workspace.page}</span>}{workspace.hasNextPage ? <Link href={pageHref(workspace.page + 1)} className="rounded-full bg-[#132a67] px-4 py-2 text-xs font-bold text-white">Trang sau →</Link> : <span aria-hidden="true" />}</nav>}
       <nav className="mb-6 flex gap-1.5 overflow-x-auto rounded-[20px] border border-[#1b2e7420] bg-white p-2 shadow-sm">{tabs.map((tab) => <button key={tab.id} type="button" onClick={() => setActiveTab(tab.id)} className={`inline-flex h-10 shrink-0 items-center gap-2 rounded-xl px-4 text-xs font-extrabold ${activeTab === tab.id ? "bg-[#132a67] text-white" : "text-[#617092] hover:bg-slate-50"}`}>{tab.label}{tab.count !== undefined && <span className="rounded-full bg-white/20 px-1.5 py-0.5 text-[10px]">{tab.count}</span>}</button>)}</nav>
       <section className="rounded-[24px] border border-[#1b2e7422] bg-white p-6 shadow-sm">
         {activeTab === "overview" && (hasData ? <div><h2 className="flex items-center gap-2 text-base font-extrabold text-[#132a67]"><Sparkles className="h-5 w-5 text-accent" />Không gian tự học</h2><p className="mt-3 text-sm leading-relaxed text-[#5f6d8f]">Chọn tab Tài liệu hoặc Khóa học để xem nội dung bạn được cấp quyền.</p><p className="mt-4 text-sm font-extrabold text-[#132a67]">Tiến độ đã lưu: {overallPercent}% <span className="ml-2 text-xs font-semibold text-[#8091b8]">({completedItems}/{totalItems} mục)</span></p><div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-[#3657d7]" style={{ width: `${overallPercent}%` }} /></div></div> : <Unavailable />)}

@@ -39,7 +39,9 @@ function execute(table: string, filters: Array<[string, unknown]>, inFilter: [st
   else if (table === "course_lessons") rows = lessons.filter((row) => ids.includes(row.course_id));
   else rows = [];
 
-  for (const field of orders.slice().reverse()) rows = rows.slice().sort((left, right) => String(left[field]).localeCompare(String(right[field])));
+  for (const field of orders.slice().reverse()) rows = rows.slice().sort((left, right) => typeof left[field] === "number" && typeof right[field] === "number"
+    ? left[field] - right[field]
+    : String(left[field]).localeCompare(String(right[field])));
   if (range) rows = rows.slice(range[0], range[1] + 1);
   if (limit !== null) rows = rows.slice(0, limit);
   return { data: table === "subjects" ? (rows[0] ?? null) : rows, error: null };
@@ -134,30 +136,74 @@ test("workspace skips child and entitlement queries when their ID lists are empt
   assert.equal(requests.some((request) => request.table === "materials"), false);
 });
 
-test("large workspace lists are paged/chunked without loss, N+1, or oversized ID requests", async () => {
+test("workspace page boundary sizes are bounded and never claim an incomplete page is complete", async () => {
+  for (const count of [0, 1, 99, 100, 101, 499, 500]) {
+    resetData();
+    configureProducts(count);
+    const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
+    if (count === 0) {
+      assert.equal(result, null);
+      assert.equal(requests.some((request) => request.table === "product_entitlements"), false);
+      continue;
+    }
+    assert.equal((result?.materials.length ?? 0) + (result?.courses.length ?? 0), Math.min(count, repository.STUDENT_WORKSPACE_PAGE_SIZE), String(count));
+    assert.equal(result?.page, 1);
+    assert.equal(result?.hasPreviousPage, false);
+    assert.equal(result?.hasNextPage, count > repository.STUDENT_WORKSPACE_PAGE_SIZE, String(count));
+    assert.equal(result?.hasHardOverflow, false, String(count));
+  }
+});
+
+test("workspace continuation returns every authorized product once in deterministic order without N+1", async () => {
   configureProducts(205);
-  const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
-  assert.equal(result?.hasNextPage, false);
-  assert.equal(result?.materials.length, 103);
-  assert.equal(result?.courses.length, 102);
-  assert.equal(result?.courses.reduce((sum: number, course: any) => sum + course.lessons.length, 0), 204);
-  assert.deepEqual(result?.materials.map((row: any) => row.productId), products.filter((row) => row.kind === "material").map((row) => row.id).sort());
-  assert.deepEqual(result?.courses.map((row: any) => row.productId), products.filter((row) => row.kind === "course").map((row) => row.id).sort());
+  const pages = await Promise.all([1, 2, 3].map((page) => repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan", page)));
+  assert.deepEqual(pages.map((page: any) => page?.hasNextPage), [true, true, false]);
+  assert.ok(pages.every((page: any) => page && !page.hasHardOverflow));
+  const materials = pages.flatMap((page: any) => page.materials).map((row: any) => row.productId);
+  const courses = pages.flatMap((page: any) => page.courses);
+  assert.deepEqual(materials, products.filter((row) => row.kind === "material").map((row) => row.id).sort());
+  assert.deepEqual(courses.map((row: any) => row.productId), products.filter((row) => row.kind === "course").map((row) => row.id).sort());
+  assert.equal(new Set([...materials, ...courses.map((row: any) => row.productId)]).size, 205);
+  assert.ok(courses.every((course: any) => course.lessons.length === 2 && course.lessons.map((lesson: any) => lesson.orderIndex).join(",") === "1,2"));
   assert.ok(requests.every((request) => !request.inValues || request.inValues.length <= repository.STUDENT_WORKSPACE_ID_CHUNK_SIZE));
-  assert.equal(requests.filter((request) => request.table === "product_entitlements").length, 3);
-  assert.equal(requests.filter((request) => request.table === "materials").length, 2);
-  assert.equal(requests.filter((request) => request.table === "course_lessons").length, 4);
+  assert.ok(requests.filter((request) => request.table === "product_entitlements").length < 205);
   assert.ok(requests.filter((request) => request.table === "product_entitlements").every((request) => request.orders.includes("product_id")));
   assert.ok(requests.filter((request) => request.table === "course_lessons").every((request) => request.orders.join(",") === "course_id,order_index,id"));
 });
 
-test("workspace reports overflow instead of silently truncating authorized products", async () => {
+test("workspace marks the fifth page as hard overflow at 501 authorized products", async () => {
   configureProducts(repository.STUDENT_WORKSPACE_MAX_AUTHORIZED_PRODUCTS + 1);
-  const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
-  assert.equal(result?.materials.length, repository.STUDENT_WORKSPACE_MAX_AUTHORIZED_PRODUCTS / 2);
-  assert.equal(result?.courses.length, Math.ceil(repository.STUDENT_WORKSPACE_MAX_AUTHORIZED_PRODUCTS / 2));
-  assert.equal(result?.hasNextPage, true);
-  assert.ok(requests.every((request) => !request.inValues || request.inValues.length <= repository.STUDENT_WORKSPACE_ID_CHUNK_SIZE));
+  const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan", repository.STUDENT_WORKSPACE_MAX_PAGES);
+  assert.equal(result?.page, 5);
+  assert.equal((result?.materials.length ?? 0) + (result?.courses.length ?? 0), 100);
+  assert.equal(result?.hasNextPage, false);
+  assert.equal(result?.hasHardOverflow, true);
+  await assert.rejects(() => repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan", repository.STUDENT_WORKSPACE_MAX_PAGES + 1), repository.StudentWorkspaceRepositoryError);
+});
+
+test("lesson hard overflow is explicit at 2,001 without dropping the first deterministic 2,000", async () => {
+  configureProducts(1);
+  products[0].kind = "course";
+  materials = [];
+  const courseId = products[0].id;
+  lessons = Array.from({ length: repository.STUDENT_WORKSPACE_MAX_LESSONS }, (_, index) => ({ id: uuid(50_000 + index), course_id: courseId, title: `Lesson ${index + 1}`, description: null, duration_minutes: 1, order_index: index + 1 }));
+  const complete = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
+  assert.equal(complete?.courses[0].lessons.length, 2_000);
+  assert.equal(complete?.hasHardOverflow, false);
+
+  lessons.push({ id: uuid(60_000), course_id: courseId, title: "Overflow", description: null, duration_minutes: 1, order_index: 2_001 });
+  const overflow = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
+  assert.equal(overflow?.courses[0].lessons.length, 2_000);
+  assert.equal(overflow?.hasHardOverflow, true);
+  assert.deepEqual(overflow?.courses[0].lessons.map((lesson: any) => lesson.orderIndex), Array.from({ length: 2_000 }, (_, index) => index + 1));
+});
+
+test("unauthorized continuation does not reveal a later workspace page", async () => {
+  configureProducts(205, false);
+  const first = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
+  assert.equal((first?.materials.length ?? 0) + (first?.courses.length ?? 0), 1);
+  assert.equal(first?.hasNextPage, false);
+  assert.equal(await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan", 2), null);
 });
 
 test("workspace bounds are server-controlled safe constants, with no client page/limit input", () => {

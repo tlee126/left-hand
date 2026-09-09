@@ -61,7 +61,10 @@ const workspaceData = {
     pages: 24
   }],
   courses: [],
-  hasNextPage: false
+  page: 1,
+  hasPreviousPage: false,
+  hasNextPage: false,
+  hasHardOverflow: false
 };
 
 function activeEntitlement(userId = USER_ID, productId = PRODUCT_ID): Record<string, unknown> {
@@ -527,7 +530,8 @@ test("authorized page executes the complete guard-to-render timeline and passes 
   assert.match(markup, /Học liệu đã được cấp quyền/);
   assert.deepEqual(renderedWorkspace, {
     ...workspaceData,
-    subject: { ...workspaceData.subject }
+    subject: { ...workspaceData.subject },
+    progressUnavailable: true
   });
 });
 
@@ -536,6 +540,18 @@ test("real client renders an empty workspace as a fixed unavailable state", asyn
   const markup = await renderRealClient(emptyWorkspace);
   assert.match(markup, /Chưa có dữ liệu/);
   assert.doesNotMatch(markup, /Tài liệu được cấp quyền|UNAUTHORIZED/);
+});
+
+test("real client exposes server-backed continuation and explicit overflow or progress failures", async () => {
+  const continued = await renderRealClient({ ...workspaceData, hasNextPage: true });
+  assert.match(continued, /Trang sau/);
+  assert.match(continued, new RegExp(`/ca-nhan/mon/${workspaceData.subject.slug}\\?page=2`));
+
+  const overflow = await renderRealClient({ ...workspaceData, hasHardOverflow: true });
+  assert.match(overflow, /Danh sách này chưa hoàn chỉnh/);
+
+  const progressFailure = await renderRealClient({ ...workspaceData, progressUnavailable: true });
+  assert.match(progressFailure, /Tiến độ hiện chưa thể tải/);
 });
 
 test("real client renders only server-authorized fields and uses the signed-url API boundary", async () => {

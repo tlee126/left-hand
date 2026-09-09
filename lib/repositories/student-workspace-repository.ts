@@ -13,10 +13,19 @@ export const STUDENT_WORKSPACE_PAGE_SIZE = 100;
 export const STUDENT_WORKSPACE_ID_CHUNK_SIZE = 100;
 export const STUDENT_WORKSPACE_MAX_AUTHORIZED_PRODUCTS = 500;
 export const STUDENT_WORKSPACE_MAX_LESSONS = 2_000;
+export const STUDENT_WORKSPACE_MAX_PAGES = STUDENT_WORKSPACE_MAX_AUTHORIZED_PRODUCTS / STUDENT_WORKSPACE_PAGE_SIZE;
 
 export interface StudentWorkspaceMaterial { productId: string; title: string; description: string; pages: number; }
 export interface StudentWorkspaceCourse { productId: string; title: string; lessons: Array<{ id: string; title: string; description: string | null; durationMinutes: number | null; orderIndex: number }>; }
-export interface StudentWorkspaceData { subject: { slug: string; name: string; category: string; facultyGroup: string; colorTheme: string }; materials: StudentWorkspaceMaterial[]; courses: StudentWorkspaceCourse[]; hasNextPage: boolean; }
+export interface StudentWorkspaceData {
+  subject: { slug: string; name: string; category: string; facultyGroup: string; colorTheme: string };
+  materials: StudentWorkspaceMaterial[];
+  courses: StudentWorkspaceCourse[];
+  page: number;
+  hasPreviousPage: boolean;
+  hasNextPage: boolean;
+  hasHardOverflow: boolean;
+}
 export class StudentWorkspaceRepositoryError extends Error { constructor() { super("Student workspace data is unavailable."); this.name = "StudentWorkspaceRepositoryError"; } }
 
 type StudentWorkspaceProduct = Pick<ProductRow, "id" | "subject_id" | "kind" | "title" | "description">;
@@ -116,10 +125,10 @@ async function readLessonRows(
   return { rows: result, hasMore: false };
 }
 
-/** Returns only subject resources covered by the user's current exact-product entitlement. */
-export async function getAuthorizedStudentWorkspace(userId: string, slug: string): Promise<StudentWorkspaceData | null> {
+/** Returns one deterministic, entitlement-scoped workspace page; hard caps are reported, never hidden. */
+export async function getAuthorizedStudentWorkspace(userId: string, slug: string, page = 1): Promise<StudentWorkspaceData | null> {
   const canonicalUserId = canonicalUuid(userId);
-  if (!canonicalUserId) throw new StudentWorkspaceRepositoryError();
+  if (!canonicalUserId || !Number.isSafeInteger(page) || page < 1 || page > STUDENT_WORKSPACE_MAX_PAGES) throw new StudentWorkspaceRepositoryError();
   try {
     const supabase = await createClient();
     const { data: subjectData, error: subjectError } = await supabase.from("subjects").select("id, slug, name, category, faculty_group, color_theme").eq("slug", slug).maybeSingle();
@@ -129,8 +138,12 @@ export async function getAuthorizedStudentWorkspace(userId: string, slug: string
     const canonicalSubjectId = canonicalUuid(subject.id);
     if (!canonicalSubjectId) throw new Error();
     const entitledProducts: Array<Pick<ProductRow, "id" | "kind" | "title" | "description"> & { canonicalId: string }> = [];
+    const pageStart = (page - 1) * STUDENT_WORKSPACE_PAGE_SIZE;
+    const pageEnd = pageStart + STUDENT_WORKSPACE_PAGE_SIZE;
+    let authorizedProductCount = 0;
     let hasNextPage = false;
-    for (let offset = 0; ; offset += STUDENT_WORKSPACE_PAGE_SIZE) {
+    let hasHardOverflow = false;
+    productPages: for (let offset = 0; ; offset += STUDENT_WORKSPACE_PAGE_SIZE) {
       const productPage = await readProductPage(supabase, canonicalSubjectId, offset);
       const productIds = productPage.rows.map((product) => canonicalUuid(product.id)).filter((productId): productId is string => productId !== null);
       const entitlementData = await readEntitlements(supabase, canonicalUserId, productIds);
@@ -150,13 +163,18 @@ export async function getAuthorizedStudentWorkspace(userId: string, slug: string
           || (entitlement.expires_at !== null && Date.parse(entitlement.expires_at) <= Date.now())
           || canonicalUuid(entitlement.user_id) !== canonicalUserId
           || canonicalUuid(entitlement.product_id) !== productId) continue;
-        if (entitledProducts.length >= STUDENT_WORKSPACE_MAX_AUTHORIZED_PRODUCTS) {
-          hasNextPage = true;
-          break;
+        if (authorizedProductCount >= STUDENT_WORKSPACE_MAX_AUTHORIZED_PRODUCTS) {
+          hasHardOverflow = true;
+          break productPages;
         }
-        entitledProducts.push({ ...product, canonicalId: productId });
+        if (authorizedProductCount >= pageEnd) {
+          hasNextPage = true;
+          break productPages;
+        }
+        if (authorizedProductCount >= pageStart) entitledProducts.push({ ...product, canonicalId: productId });
+        authorizedProductCount += 1;
       }
-      if (hasNextPage || !productPage.hasMore) break;
+      if (!productPage.hasMore) break;
     }
     if (!entitledProducts.length) return null;
     const materialProducts = entitledProducts.filter((product) => product.kind === "material");
@@ -165,14 +183,17 @@ export async function getAuthorizedStudentWorkspace(userId: string, slug: string
     const courseIds = courseProducts.map((product) => product.canonicalId);
     const materialRows = await readMaterialRows(supabase, materialIds);
     const lessonResult = await readLessonRows(supabase, courseIds);
-    hasNextPage ||= lessonResult.hasMore;
+    hasHardOverflow ||= lessonResult.hasMore;
     const lessonRows = lessonResult.rows;
     const materialByProductId = new Map(materialRows.map((row) => [canonicalUuid(row.product_id), row]));
     return {
       subject: { slug: subject.slug, name: subject.name, category: subject.category, facultyGroup: subject.faculty_group, colorTheme: subject.color_theme },
       materials: materialProducts.flatMap((product) => { const material = materialByProductId.get(product.canonicalId); return material ? [{ productId: product.canonicalId, title: product.title, description: product.description, pages: material.pages }] : []; }),
       courses: courseProducts.map((product) => ({ productId: product.canonicalId, title: product.title, lessons: lessonRows.filter((lesson) => canonicalUuid(lesson.course_id) === product.canonicalId).map((lesson) => ({ id: lesson.id, title: lesson.title, description: lesson.description, durationMinutes: lesson.duration_minutes, orderIndex: lesson.order_index })) })),
-      hasNextPage
+      page,
+      hasPreviousPage: page > 1,
+      hasNextPage,
+      hasHardOverflow
     };
   } catch (error) { if (error instanceof StudentWorkspaceRepositoryError) throw error; throw new StudentWorkspaceRepositoryError(); }
 }

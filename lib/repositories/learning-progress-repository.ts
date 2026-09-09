@@ -37,6 +37,8 @@ const ITEM_TYPES = new Set<LearningProgressItemType>(["material", "lesson"]);
 const STATUSES = new Set<LearningProgressStatus>(["not_started", "in_progress", "completed"]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_PROGRESS_ROWS = 500;
+export const LEARNING_PROGRESS_PRODUCT_CHUNK_SIZE = 100;
+export const LEARNING_PROGRESS_MAX_PRODUCTS = 500;
 
 export const LEARNING_PROGRESS_COLUMNS = [
   "user_id",
@@ -172,6 +174,16 @@ function compareProgressRows(left: LearningProgress, right: LearningProgress): n
     || left.updated_at.localeCompare(right.updated_at);
 }
 
+function chunks<T>(values: readonly T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size));
+  return result;
+}
+
+function progressKey(row: LearningProgress): string {
+  return `${canonicalUuid(row.user_id)}:${canonicalUuid(row.product_id)}:${row.item_type}:${canonicalUuid(row.item_id)}`;
+}
+
 /** Reads only the authenticated user's bounded, deterministic progress for one product workspace. */
 export async function getLearningProgressForWorkspace(
   userId: string,
@@ -208,32 +220,40 @@ export async function getLearningProgressForWorkspace(
 
 export const getLearningProgress = getLearningProgressForWorkspace;
 
-/** Reads one bounded batch for a subject workspace without issuing one entitlement-scoped query per product. */
+/** Reads all progress for a bounded workspace through deterministic product-ID and row pages. */
 export async function getLearningProgressForProducts(
   userId: string,
   productIds: readonly string[]
 ): Promise<LearningProgress[]> {
-  if (arguments.length !== 2 || !Array.isArray(productIds) || productIds.length > 100) throw new LearningProgressInputError();
+  if (arguments.length !== 2 || !Array.isArray(productIds)) throw new LearningProgressInputError();
   const canonicalUserId = canonicalUuid(userId);
   const canonicalProductIds = [...new Set(productIds.map((productId) => canonicalUuid(productId)))];
+  if (canonicalProductIds.length > LEARNING_PROGRESS_MAX_PRODUCTS) throw new LearningProgressInputError();
   if (canonicalProductIds.length === 0) return [];
 
   try {
     const supabase = await createClient();
-    const { data, error } = await supabase
-      .from("learning_progress")
-      .select(LEARNING_PROGRESS_SELECT)
-      .eq("user_id", canonicalUserId)
-      .in("product_id", canonicalProductIds)
-      .order("product_id", { ascending: true })
-      .order("item_type", { ascending: true })
-      .order("item_id", { ascending: true })
-      .limit(MAX_PROGRESS_ROWS);
-    if (error || !Array.isArray(data) || data.length > MAX_PROGRESS_ROWS) return repositoryFailure();
-    const rows = data as unknown[];
-    if (!rows.every(isValidProgressRow)) return repositoryFailure();
-    if (!rows.every((row) => canonicalUuid(row.user_id) === canonicalUserId && canonicalProductIds.includes(canonicalUuid(row.product_id)))) return repositoryFailure();
-    return rows.slice().sort((left, right) => canonicalUuid(left.product_id).localeCompare(canonicalUuid(right.product_id)) || compareProgressRows(left, right));
+    const results = new Map<string, LearningProgress>();
+    for (const productIdChunk of chunks(canonicalProductIds, LEARNING_PROGRESS_PRODUCT_CHUNK_SIZE)) {
+      for (let offset = 0; ; offset += MAX_PROGRESS_ROWS) {
+        const { data, error } = await supabase
+          .from("learning_progress")
+          .select(LEARNING_PROGRESS_SELECT)
+          .eq("user_id", canonicalUserId)
+          .in("product_id", productIdChunk)
+          .order("product_id", { ascending: true })
+          .order("item_type", { ascending: true })
+          .order("item_id", { ascending: true })
+          .range(offset, offset + MAX_PROGRESS_ROWS - 1);
+        if (error || !Array.isArray(data) || data.length > MAX_PROGRESS_ROWS) return repositoryFailure();
+        const rows = data as unknown[];
+        if (!rows.every(isValidProgressRow)) return repositoryFailure();
+        if (!rows.every((row) => canonicalUuid(row.user_id) === canonicalUserId && productIdChunk.includes(canonicalUuid(row.product_id)))) return repositoryFailure();
+        for (const row of rows) results.set(progressKey(row), row);
+        if (data.length < MAX_PROGRESS_ROWS) break;
+      }
+    }
+    return [...results.values()].sort((left, right) => canonicalUuid(left.product_id).localeCompare(canonicalUuid(right.product_id)) || compareProgressRows(left, right));
   } catch (error) {
     if (error instanceof LearningProgressInputError || error instanceof LearningProgressRepositoryError) throw error;
     return repositoryFailure();

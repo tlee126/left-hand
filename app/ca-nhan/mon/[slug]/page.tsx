@@ -32,6 +32,13 @@ function getSafeInternalRedirect(pathWithQuery: string): string {
   return "/ca-nhan";
 }
 
+function getWorkspacePage(value: string | string[] | undefined): number | null {
+  if (value === undefined) return 1;
+  if (Array.isArray(value) || !/^\d+$/.test(value)) return null;
+  const page = Number(value);
+  return Number.isSafeInteger(page) && page >= 1 ? page : null;
+}
+
 export default async function SubjectWorkspacePage({
   params,
   searchParams
@@ -40,10 +47,10 @@ export default async function SubjectWorkspacePage({
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { slug } = await params;
+  const resolvedSearchParams = searchParams ? await searchParams : {};
   const access = await getAccountAccess();
 
   if (access.status === "unauthenticated") {
-    const resolvedSearchParams = searchParams ? await searchParams : {};
     const query = new URLSearchParams();
 
     Object.entries(resolvedSearchParams).forEach(([key, value]) => {
@@ -83,9 +90,12 @@ export default async function SubjectWorkspacePage({
     redirect("/quan-tri");
   }
 
+  const page = getWorkspacePage(resolvedSearchParams.page);
+  if (page === null) notFound();
+
   let workspace;
   try {
-    workspace = await getAuthorizedStudentWorkspace(access.user!.id, slug);
+    workspace = await getAuthorizedStudentWorkspace(access.user!.id, slug, page);
   } catch {
     notFound();
   }
@@ -96,15 +106,15 @@ export default async function SubjectWorkspacePage({
 
   const productIds = [...workspace.materials.map((material) => material.productId), ...workspace.courses.map((course) => course.productId)];
   let progress: LearningProgress[] = [];
+  let progressUnavailable = false;
   try {
     const { getLearningProgressForProducts } = await import("@/lib/repositories/learning-progress-repository");
     progress = await getLearningProgressForProducts(access.user!.id, [...new Set(productIds)]);
   } catch {
-    // Progress is additive to the already-authorized workspace. The client exposes a retryable save state.
-    progress = [];
+    progressUnavailable = true;
   }
 
   return progress.length > 0
     ? <SubjectWorkspaceClient workspace={{ ...workspace, progress }} />
-    : <SubjectWorkspaceClient workspace={workspace} />;
+    : <SubjectWorkspaceClient workspace={progressUnavailable ? { ...workspace, progressUnavailable } : workspace} />;
 }
