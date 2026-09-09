@@ -63,6 +63,20 @@ export type AdminCatalogMutateArgs =
   | { p_operation: "update"; p_kind: "tutor"; p_product: AdminCatalogProductPayload; p_child: AdminCatalogTutorPayload; p_product_id: string }
   | { p_operation: "delete"; p_kind: "material" | "course" | "tutor"; p_product: {}; p_child: {}; p_product_id: string }
 
+export type ConsultationIntakeRpcArgs = {
+  p_request_id: string
+  p_full_name: string
+  p_phone: string
+  p_faculty: string
+  p_major: string | null
+  p_interest: string
+  p_need: string
+  p_note: string | null
+  p_source_path: string | null
+  p_selected_product_slug: string | null
+  p_selected_subject_slug: string | null
+}
+
 export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
@@ -89,6 +103,7 @@ export type Database = {
           status: string
           updated_at: string
           updated_by: string | null
+          version: number
         }
         Insert: {
           created_at?: string
@@ -107,6 +122,7 @@ export type Database = {
           status?: string
           updated_at?: string
           updated_by?: string | null
+          version?: number
         }
         Update: {
           created_at?: string
@@ -125,8 +141,55 @@ export type Database = {
           status?: string
           updated_at?: string
           updated_by?: string | null
+          version?: number
         }
         Relationships: []
+      }
+      consultation_status_history: {
+        Row: {
+          changed_at: string
+          changed_by: string
+          consultation_id: string
+          id: string
+          new_status: string
+          old_status: string
+          version: number
+        }
+        Insert: {
+          changed_at?: string
+          changed_by: string
+          consultation_id: string
+          id?: string
+          new_status: string
+          old_status: string
+          version: number
+        }
+        Update: {
+          changed_at?: string
+          changed_by?: string
+          consultation_id?: string
+          id?: string
+          new_status?: string
+          old_status?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "consultation_status_history_changed_by_fkey"
+            columns: ["changed_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedSchema: "auth"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "consultation_status_history_consultation_id_fkey"
+            columns: ["consultation_id"]
+            isOneToOne: false
+            referencedRelation: "consultations"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       course_lessons: {
         Row: {
@@ -740,6 +803,10 @@ export type Database = {
           p_subject?: Json
           p_subject_id?: string
         }
+        Returns: Json
+      }
+      submit_consultation_intake: {
+        Args: ConsultationIntakeRpcArgs
         Returns: Json
       }
     }

@@ -31,6 +31,10 @@ import {
   assertCatalogSearchNormalizationMigrationContract,
   assertCatalogIntegrityBoundaryMigrationContract,
   assertCatalogChildSearchMigrationContract,
+  assertConsultationWorkflowMigrationContract,
+  assertConsultationWorkflowTriggerCleanupMigrationContract,
+  assertConsultationIntakeAccessBoundaryMigrationContract,
+  assertConsultationRpcPrivateBoundaryMigrationContract,
   stripSqlCommentsAndSplitStatements,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
@@ -248,13 +252,17 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       "0020_catalog_mutation_access_boundary.sql",
       "0021_catalog_search_normalization.sql",
       "0022_catalog_integrity_boundary.sql",
-      "0023_catalog_search_child_fields.sql"
+      "0023_catalog_search_child_fields.sql",
+      "0024_consultation_workflow_hardening.sql",
+      "0025_consultation_workflow_trigger_order.sql",
+      "0026_consultation_intake_access_boundary.sql",
+      "0027_consultation_rpc_private_boundary.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
     });
 
-    test("the canonical history verifier rejects a content mutation in every migration 0001-0017", async () => {
+    test("the canonical history verifier rejects a content mutation in every migration 0001-0023", async () => {
       const snapshots: Record<string, string> = {};
       for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
         snapshots[filename] = await fs.readFile(path.join(migrationsDir, filename), "utf-8");
@@ -1383,16 +1391,29 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       assert.doesNotThrow(() => assertMigration0017Contract(commented));
     });
 
-    test("rejects a mutation in every immutable migration 0001-0017", async () => {
+    test("rejects whitespace, comments, grants, DDL, DML, function, trigger, policy, and index mutations in every immutable migration 0001-0023", async () => {
       const snapshots: Record<string, string> = {};
       for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
         snapshots[filename] = await fs.readFile(path.join(migrationsDir, filename), "utf-8");
       }
       for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
-        assert.throws(() => assertMigrationHistoryUnchanged({
-          ...snapshots,
-          [filename]: `${snapshots[filename]}\n-- mutation fixture`
-        }), /canonical SHA-256 mismatch|must remain unchanged/i);
+        for (const mutation of [
+          "\n\n",
+          "\n-- mutation fixture",
+          "\nGRANT SELECT ON public.consultations TO anon;",
+          "\nREVOKE SELECT ON public.consultations FROM anon;",
+          "\nCREATE TABLE public.phase4_fixture (id integer);",
+          "\nINSERT INTO public.phase4_fixture VALUES (1);",
+          "\nCREATE OR REPLACE FUNCTION public.phase4_fixture() RETURNS void LANGUAGE sql AS $$ SELECT 1 $$;",
+          "\nCREATE TRIGGER phase4_fixture AFTER INSERT ON public.consultations FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();",
+          "\nCREATE POLICY phase4_fixture ON public.consultations USING (true);",
+          "\nCREATE INDEX phase4_fixture ON public.consultations (id);"
+        ]) {
+          assert.throws(() => assertMigrationHistoryUnchanged({
+            ...snapshots,
+            [filename]: `${snapshots[filename]}${mutation}`
+          }), /canonical SHA-256 mismatch|must remain unchanged/i, `${filename} mutation must be rejected`);
+        }
       }
     });
   });
@@ -1657,6 +1678,100 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
         assert.throws(() => assertCatalogChildSearchMigrationContract(`${sql}\n${statement}`), /./);
       }
       assert.doesNotThrow(() => assertCatalogChildSearchMigrationContract(sql.replace("'[^[:alnum:]\\s-]'", "'[^[:alnum:]\\s-] DELETE FROM public.products'")));
+    });
+  });
+
+  describe("20. Migration 0024 Consultation Workflow Hardening", () => {
+    const migrationPath = path.resolve(process.cwd(), "supabase/migrations/0024_consultation_workflow_hardening.sql");
+
+    test("accepts the exact workflow, history, RLS, and version contract", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      assert.doesNotThrow(() => assertConsultationWorkflowMigrationContract(sql));
+      assert.match(sql, /old_status\s+TEXT\s+NOT\s+NULL/i);
+      assert.match(sql, /new_status\s+TEXT\s+NOT\s+NULL/i);
+      assert.match(sql, /changed_by\s+UUID\s+NOT\s+NULL/i);
+      assert.match(sql, /version\s+INTEGER\s+NOT\s+NULL/i);
+    });
+
+    test("rejects hostile statements and mutation escapes", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      for (const hostile of [
+        "GRANT DELETE ON TABLE public.consultation_status_history TO authenticated;",
+        "DO $$ BEGIN DELETE FROM public.consultation_status_history; END $$;",
+        "ALTER TABLE public.profiles ADD COLUMN leaked text;",
+        "CREATE OR REPLACE FUNCTION public.leaked() RETURNS void LANGUAGE plpgsql AS $$ BEGIN EXECUTE 'SELECT 1'; END $$;"
+      ]) {
+        assert.throws(() => assertConsultationWorkflowMigrationContract(`${sql}\n${hostile}`), /./, hostile);
+      }
+    });
+  });
+
+  describe("21. Migration 0025 Consultation Workflow Trigger Cleanup", () => {
+    const migrationPath = path.resolve(process.cwd(), "supabase/migrations/0025_consultation_workflow_trigger_order.sql");
+
+    test("accepts only the legacy consultation trigger cleanup", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      assert.doesNotThrow(() => assertConsultationWorkflowTriggerCleanupMigrationContract(sql));
+    });
+
+    test("rejects unrelated DDL or DML", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      assert.throws(
+        () => assertConsultationWorkflowTriggerCleanupMigrationContract(`${sql}\nDROP TABLE public.consultations;`),
+        /./
+      );
+    });
+  });
+
+  describe("22. Migration 0026 Consultation Intake Access Boundary", () => {
+    const migrationPath = path.resolve(process.cwd(), "supabase/migrations/0026_consultation_intake_access_boundary.sql");
+
+    test("revokes direct INSERT and allows only the exact verified intake RPC", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      assert.doesNotThrow(() => assertConsultationIntakeAccessBoundaryMigrationContract(sql));
+      assert.match(sql, /REVOKE\s+INSERT\s+ON\s+TABLE\s+public\.consultations\s+FROM\s+anon,\s*authenticated/i);
+      assert.match(sql, /ON\s+CONFLICT\s*\(request_id\)\s+DO\s+NOTHING/i);
+      assert.match(sql, /product\.publication_status\s*=\s*'published'/i);
+    });
+
+    test("rejects direct grants, nested DDL/DML, trigger mutation, and privilege escalation", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      for (const hostile of [
+        "GRANT INSERT ON TABLE public.consultations TO anon;",
+        "CREATE POLICY bypass ON public.consultations FOR INSERT TO anon WITH CHECK (true);",
+        "DROP TRIGGER trg_consultations_status_workflow ON public.consultations;",
+        "CREATE OR REPLACE FUNCTION public.leaked() RETURNS void LANGUAGE plpgsql AS $$ BEGIN EXECUTE 'DELETE FROM public.consultations'; END $$;",
+        "ALTER TABLE public.consultations DISABLE ROW LEVEL SECURITY;"
+      ]) {
+        assert.throws(() => assertConsultationIntakeAccessBoundaryMigrationContract(`${sql}\n${hostile}`), /./, hostile);
+      }
+      assert.throws(
+        () => assertConsultationIntakeAccessBoundaryMigrationContract(sql.replace("BEGIN", "BEGIN\n  TRUNCATE TABLE public.consultations;")),
+        /./
+      );
+    });
+  });
+
+  describe("23. Migration 0027 Consultation RPC Private Boundary", () => {
+    const migrationPath = path.resolve(process.cwd(), "supabase/migrations/0027_consultation_rpc_private_boundary.sql");
+
+    test("revokes direct RPC execution from public roles and grants only service_role", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      assert.doesNotThrow(() => assertConsultationRpcPrivateBoundaryMigrationContract(sql));
+      assert.match(sql, /REVOKE\s+EXECUTE[\s\S]+FROM\s+PUBLIC,\s*anon,\s*authenticated/i);
+      assert.match(sql, /GRANT\s+EXECUTE[\s\S]+TO\s+service_role/i);
+    });
+
+    test("rejects public grants and privilege escalation fixtures", async () => {
+      const sql = await fs.readFile(migrationPath, "utf8");
+      for (const hostile of [
+        "GRANT EXECUTE ON FUNCTION public.submit_consultation_intake(text,text,text,text,text,text,text,text,text,text,text) TO anon;",
+        "GRANT EXECUTE ON FUNCTION public.submit_consultation_intake(text,text,text,text,text,text,text,text,text,text,text) TO authenticated;",
+        "SET ROLE postgres;",
+        "ALTER ROLE authenticated BYPASSRLS;"
+      ]) {
+        assert.throws(() => assertConsultationRpcPrivateBoundaryMigrationContract(`${sql}\n${hostile}`), /./, hostile);
+      }
     });
   });
 

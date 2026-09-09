@@ -1,6 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-import { validateConsultationInput } from "@/lib/validation/consultation";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { isIP } from "node:net";
+import { createServerAdminClient } from "@/lib/supabase/server-admin";
+import {
+  validateConsultationInput,
+  type ValidatedConsultationData
+} from "@/lib/validation/consultation";
+import {
+  ConsultationInputError,
+  ConsultationRepositoryError,
+  resolvePublishedConsultationSelection
+} from "@/lib/repositories/consultation-repository";
 
 // Best-effort in-memory rate limiting.
 // Note: This is NOT a distributed production rate limiter.
@@ -13,16 +23,115 @@ const RATE_LIMIT_MAP = new Map<string, RateLimitEntry>();
 const MAX_REQUESTS = 5;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 export const MAX_MAP_ENTRIES = 1000;
+export const MAX_CONSULTATION_BODY_BYTES = 32 * 1024;
 
-export function getClientIp(req: NextRequest | Request): string {
-  // Prefer platform-provided IP (e.g., Vercel/Next.js Edge)
-  if ("ip" in req && typeof (req as any).ip === "string" && (req as any).ip.length > 0) {
-    return (req as any).ip;
-  }
+class ConsultationBodyTooLargeError extends Error {}
+class ConsultationInvalidBodyLengthError extends Error {}
 
-  // Fallback to shared bucket
-  return "unknown";
+/**
+ * RFC 5952-style IPv6 canonicalization, including the IPv4-mapped form.
+ * `node:net.isIP` validates the address; this code only serializes that
+ * validated address into one stable rate-limit key.
+ */
+function canonicalizeIpv4(value: string): string | null {
+  if (isIP(value) !== 4) return null;
+  const parts = value.split(".");
+  if (parts.length !== 4) return null;
+  const octets = parts.map((part) => {
+    if (!/^(?:0|[1-9]\d{0,2})$/.test(part)) return null;
+    const octet = Number(part);
+    return Number.isInteger(octet) && octet >= 0 && octet <= 255 ? octet : null;
+  });
+  return octets.every((octet): octet is number => octet !== null)
+    ? octets.join(".")
+    : null;
 }
+
+function canonicalizeIpv6(value: string): string | null {
+  if (isIP(value) !== 6 || value.includes("%")) return null;
+  const halves = value.toLowerCase().split("::");
+  if (halves.length > 2) return null;
+  const parseSide = (side: string): string[] | null => {
+    if (side === "") return [];
+    const groups = side.split(":");
+    const last = groups.at(-1);
+    if (last?.includes(".")) {
+      const ipv4 = canonicalizeIpv4(last);
+      if (!ipv4) return null;
+      const [first, second, third, fourth] = ipv4.split(".").map(Number);
+      groups.splice(-1, 1, ((first << 8) | second).toString(16), ((third << 8) | fourth).toString(16));
+    }
+    return groups.every((group) => /^[0-9a-f]{1,4}$/.test(group)) ? groups : null;
+  };
+  const left = parseSide(halves[0]);
+  const right = parseSide(halves.length === 2 ? halves[1] : "");
+  if (!left || !right) return null;
+  const missing = 8 - left.length - right.length;
+  if ((halves.length === 1 && missing !== 0) || (halves.length === 2 && missing < 1)) return null;
+  const groups = [...left, ...Array(missing).fill("0"), ...right].map((group) => Number.parseInt(group, 16));
+  if (groups.length !== 8 || groups.some((group) => !Number.isInteger(group) || group < 0 || group > 0xffff)) return null;
+  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+    return `::ffff:${groups[6] >> 8}.${groups[6] & 0xff}.${groups[7] >> 8}.${groups[7] & 0xff}`;
+  }
+  const words = groups.map((group) => group.toString(16));
+  let bestStart = -1;
+  let bestLength = 0;
+  for (let index = 0; index < words.length;) {
+    if (words[index] !== "0") { index += 1; continue; }
+    const start = index;
+    while (index < words.length && words[index] === "0") index += 1;
+    if (index - start > bestLength && index - start >= 2) {
+      bestStart = start;
+      bestLength = index - start;
+    }
+  }
+  if (bestStart === -1) return words.join(":");
+  const before = words.slice(0, bestStart).join(":");
+  const after = words.slice(bestStart + bestLength).join(":");
+  return before === "" ? `::${after}` : after === "" ? `${before}::` : `${before}::${after}`;
+}
+
+export function normalizeRuntimeIp(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const candidate = value.trim();
+  if (candidate.length === 0) return null;
+  return canonicalizeIpv4(candidate) ?? canonicalizeIpv6(candidate);
+}
+
+function hasValidProxySignature(ip: string, signature: string | null): boolean {
+  const secret = process.env.CONSULTATION_PROXY_SIGNING_SECRET;
+  if (process.env.CONSULTATION_TRUSTED_PROXY !== "true" || !secret || !signature) return false;
+  if (!/^[0-9a-f]{64}$/i.test(signature)) return false;
+  const expected = createHmac("sha256", secret).update(ip, "utf8").digest("hex");
+  return timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"));
+}
+
+function resolveSignedProxyIp(req: Request): string | null {
+  const candidate = normalizeRuntimeIp(req.headers.get("x-consultation-client-ip"));
+  if (!candidate) return null;
+  return hasValidProxySignature(candidate, req.headers.get("x-consultation-client-ip-signature"))
+    ? candidate
+    : null;
+}
+
+/**
+ * Resolves the consultation rate-limit identity.
+ *
+ * The target Next.js runtime does not expose `NextRequest.ip`. Deployments
+ * must either provide that platform metadata or explicitly configure a proxy
+ * to sign the canonical client IP in X-Consultation-Client-IP. X-Forwarded-For
+ * and X-Real-IP are never trusted. Without either source this returns null; it
+ * never uses a shared "unknown" bucket.
+ */
+export function resolveClientIp(request: NextRequest | Request): string | null {
+  const runtimeIp = normalizeRuntimeIp(
+    "ip" in request ? (request as NextRequest & { ip?: unknown }).ip : undefined
+  );
+  return runtimeIp ?? resolveSignedProxyIp(request);
+}
+
+/** @deprecated Use resolveClientIp. */
+export const getClientIp = resolveClientIp;
 
 function cleanupRateLimitMap(now: number) {
   for (const [key, val] of RATE_LIMIT_MAP.entries()) {
@@ -33,11 +142,14 @@ function cleanupRateLimitMap(now: number) {
 }
 
 export function checkRateLimit(ip: string): boolean {
+  const normalizedIp = normalizeRuntimeIp(ip);
+  if (!normalizedIp) return true;
+
   const now = Date.now();
-  let entry = RATE_LIMIT_MAP.get(ip);
+  let entry = RATE_LIMIT_MAP.get(normalizedIp);
 
   if (entry && entry.expiresAt < now) {
-    RATE_LIMIT_MAP.delete(ip);
+    RATE_LIMIT_MAP.delete(normalizedIp);
     entry = undefined;
   }
 
@@ -53,7 +165,7 @@ export function checkRateLimit(ip: string): boolean {
         }
       }
     }
-    RATE_LIMIT_MAP.set(ip, { count: 1, expiresAt: now + RATE_LIMIT_WINDOW_MS });
+    RATE_LIMIT_MAP.set(normalizedIp, { count: 1, expiresAt: now + RATE_LIMIT_WINDOW_MS });
     return true;
   }
 
@@ -69,34 +181,64 @@ export function resetRateLimit() {
   RATE_LIMIT_MAP.clear();
 }
 
+function getDeclaredBodyLength(req: Request): number | undefined {
+  const raw = req.headers.get("content-length");
+  if (raw === null) return undefined;
+  // Never coerce unbounded decimal input through Number: it rounds beyond
+  // MAX_SAFE_INTEGER and could turn an oversized body into a chunked read.
+  if (!/^(?:0|[1-9]\d*)$/.test(raw)) throw new ConsultationInvalidBodyLengthError();
+  const length = BigInt(raw);
+  if (length > BigInt(MAX_CONSULTATION_BODY_BYTES)) throw new ConsultationBodyTooLargeError();
+  return Number(length);
+}
+
+async function readBodyWithinLimit(req: Request): Promise<string> {
+  getDeclaredBodyLength(req);
+  if (!req.body) return "";
+
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      const chunk = result.value instanceof Uint8Array
+        ? result.value
+        : new Uint8Array(result.value);
+      total += chunk.byteLength;
+      if (total > MAX_CONSULTATION_BODY_BYTES) {
+        await reader.cancel();
+        throw new ConsultationBodyTooLargeError();
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new SyntaxError("Invalid UTF-8 body");
+  }
+}
+
 /**
  * Abstraction for the POST handler to allow dependency injection in tests.
  */
 export async function handleConsultationPost(
   req: Request,
-  supabase: any,
-  ip: string
+  supabaseOrFactory: any,
+  ip: string | null
 ) {
-  if (!checkRateLimit(ip)) {
-    return NextResponse.json(
-      { error: "Too many requests" },
-      { status: 429 }
-    );
-  }
-
-  const idempotencyKey = req.headers.get("Idempotency-Key");
-  if (
-    !idempotencyKey ||
-    typeof idempotencyKey !== "string" ||
-    idempotencyKey.trim().length === 0 ||
-    idempotencyKey.length > 100
-  ) {
-    return NextResponse.json(
-      { error: "Missing or invalid Idempotency-Key header" },
-      { status: 400 }
-    );
-  }
-
   const contentType = req.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) {
     return NextResponse.json(
@@ -107,8 +249,18 @@ export async function handleConsultationPost(
 
   let body: unknown;
   try {
-    body = await req.json();
-  } catch (e) {
+    const bodyText = await readBodyWithinLimit(req);
+    body = JSON.parse(bodyText);
+  } catch (error) {
+    if (error instanceof ConsultationBodyTooLargeError) {
+      return NextResponse.json(
+        { error: "Request entity too large" },
+        { status: 413 }
+      );
+    }
+    if (error instanceof ConsultationInvalidBodyLengthError) {
+      return NextResponse.json({ error: "Invalid Content-Length" }, { status: 400 });
+    }
     return NextResponse.json(
       { error: "Invalid JSON body" },
       { status: 400 }
@@ -123,52 +275,35 @@ export async function handleConsultationPost(
     );
   }
 
-  const { data } = validation;
-
-  // Insert only approved form columns plus server-provided request_id.
-  // Never use .select() after insert.
-  const insertPayload = {
-    request_id: idempotencyKey,
-    full_name: data.fullName,
-    phone: data.phone,
-    faculty: data.faculty,
-    major: data.major,
-    interest: data.interest,
-    need: data.need,
-    note: data.note,
-    source_path: data.sourcePath,
-    selected_product_slug: data.selectedProductSlug,
-    selected_subject_slug: data.selectedSubjectSlug
-  };
-
-  const { error } = await supabase.from("consultations").insert(insertPayload);
-
-  if (error) {
-    // 23505 is the PostgreSQL error code for unique_violation
-    if (error.code === "23505") {
-      return NextResponse.json(
-        { error: "Request already processed" },
-        { status: 409 }
-      );
-    }
-
-    // Do not log full phone, note, request body, or secrets.
-    console.error("Database insert failed for consultation");
+  if (!ip) {
     return NextResponse.json(
-      { error: "Internal Server Error" },
-      { status: 500 }
+      { error: "Request identity unavailable" },
+      { status: 400 }
     );
   }
 
-  return NextResponse.json({ success: true }, { status: 201 });
-}
+  if (!checkRateLimit(ip)) {
+    return NextResponse.json(
+      { error: "Too many requests" },
+      { status: 429 }
+    );
+  }
 
-export async function POST(req: NextRequest) {
-  let supabase;
+  const rawIdempotencyKey = req.headers.get("Idempotency-Key");
+  const idempotencyKey = rawIdempotencyKey?.trim();
+  if (!idempotencyKey || idempotencyKey.length > 100) {
+    return NextResponse.json(
+      { error: "Missing or invalid Idempotency-Key header" },
+      { status: 400 }
+    );
+  }
+
+  let supabase: any;
   try {
-    // Use the existing server Supabase client
-    supabase = await createClient();
-  } catch (e) {
+    supabase = typeof supabaseOrFactory === "function"
+      ? await supabaseOrFactory()
+      : supabaseOrFactory;
+  } catch {
     console.error("Failed to create Supabase client");
     return NextResponse.json(
       { error: "Service Unavailable" },
@@ -176,7 +311,79 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const ip = getClientIp(req);
+  const { data } = validation;
+  let selection: Pick<ValidatedConsultationData, "selectedProductSlug" | "selectedSubjectSlug">;
+  try {
+    selection = await resolvePublishedConsultationSelection(
+      data.selectedProductSlug,
+      data.selectedSubjectSlug,
+      supabase
+    );
+  } catch (error) {
+    if (error instanceof ConsultationInputError) {
+      return NextResponse.json(
+        { error: "Invalid consultation catalog selection" },
+        { status: 400 }
+      );
+    }
+    if (error instanceof ConsultationRepositoryError) {
+      console.error("Consultation catalog lookup failed");
+      return NextResponse.json(
+        { error: "Internal Server Error" },
+        { status: 500 }
+      );
+    }
+    console.error("Consultation catalog lookup failed");
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 }
+    );
+  }
 
-  return handleConsultationPost(req, supabase, ip);
+  try {
+    // 0026 revokes direct table INSERT. Its fixed-signature RPC repeats the
+    // source/catalog checks in PostgreSQL so API validation cannot be bypassed.
+    const { data: rpcData, error } = await supabase.rpc("submit_consultation_intake", {
+      p_request_id: idempotencyKey,
+      p_full_name: data.fullName,
+      p_phone: data.phone,
+      p_faculty: data.faculty,
+      p_major: data.major,
+      p_interest: data.interest,
+      p_need: data.need,
+      p_note: data.note,
+      p_source_path: data.sourcePath,
+      p_selected_product_slug: selection.selectedProductSlug,
+      p_selected_subject_slug: selection.selectedSubjectSlug
+    });
+
+    if (error) {
+      console.error("Consultation intake RPC failed");
+      return NextResponse.json(
+        { error: "Internal Server Error" },
+        { status: 500 }
+      );
+    }
+
+    if (rpcData && typeof rpcData === "object" && !Array.isArray(rpcData)) {
+      const outcome = Object.getOwnPropertyDescriptor(rpcData, "outcome")?.value;
+      if (outcome === "duplicate") {
+        return NextResponse.json({ error: "Request already processed" }, { status: 409 });
+      }
+      if (outcome === "created") return NextResponse.json({ success: true }, { status: 201 });
+    }
+
+    console.error("Consultation intake RPC returned an invalid response");
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  } catch (e) {
+    console.error("Consultation intake RPC failed");
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
+
+export async function POST(req: NextRequest) {
+  const ip = resolveClientIp(req);
+  // Defer client creation until after content-size, JSON, validation, rate
+  // limit, and idempotency guards have passed.
+  return handleConsultationPost(req, createServerAdminClient, ip);
 }

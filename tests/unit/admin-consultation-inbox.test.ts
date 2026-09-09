@@ -118,7 +118,7 @@ async function readPage(): Promise<string> {
 }
 
 function rowCount(text: string): number {
-  return (text.match(/Khách \d+/g) ?? []).length;
+  return (text.match(/Mở lead/g) ?? []).length;
 }
 
 describe("Task 4.2-C: Admin consultation inbox", () => {
@@ -158,6 +158,8 @@ describe("Task 4.2-C: Admin consultation inbox", () => {
     assert.deepEqual(result.headings, ["Tư vấn"]);
     assert.ok(!(result.text ?? "").includes("Hộp thư tư vấn"));
     assert.equal(rowCount(result.text ?? ""), 20);
+    assert.ok(!(result.text ?? "").includes("Khách 1"));
+    assert.ok(!(result.text ?? "").includes("0900000000"));
     assert.ok(result.links?.some((link) => link.href === "/quan-tri/tu-van?q=Nguyen+Van+A&status=contacted&page=4"));
     assert.ok(result.links?.some((link) => link.href === "/quan-tri/tu-van?q=Nguyen+Van+A&status=contacted&page=2"));
   });

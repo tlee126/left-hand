@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test, describe, beforeEach } from "node:test";
-import { handleConsultationPost, resetRateLimit, getClientIp, MAX_MAP_ENTRIES, checkRateLimit } from "../../app/api/consultations/route";
+import { createHmac } from "node:crypto";
+import {
+  handleConsultationPost,
+  resetRateLimit,
+  getClientIp,
+  MAX_MAP_ENTRIES,
+  MAX_CONSULTATION_BODY_BYTES,
+  checkRateLimit
+} from "../../app/api/consultations/route";
 
 function createMockRequest(options: {
   method?: string;
@@ -36,21 +44,66 @@ function createMockRequest(options: {
   return req as Request;
 }
 
-function createMockSupabase(overrideInsert?: (payload: any) => Promise<{error: any}>) {
+function createMockSupabase(
+  overrideInsert?: (payload: any) => Promise<{error: any}>,
+  catalog: { productSlug?: string | null; subjectSlug?: string | null; productStatus?: string; error?: any } = {}
+) {
+  const configuredProductSlug = Object.prototype.hasOwnProperty.call(catalog, "productSlug")
+    ? catalog.productSlug
+    : "prod";
+  const configuredSubjectSlug = Object.prototype.hasOwnProperty.call(catalog, "subjectSlug")
+    ? catalog.subjectSlug
+    : "subj";
   let insertedPayload: any = null;
   const client = {
     _getInsertedPayload: () => insertedPayload,
     from: (table: string) => {
-      assert.strictEqual(table, "consultations");
-      return {
-        insert: async (payload: any) => {
-          insertedPayload = payload;
-          if (overrideInsert) {
-            return overrideInsert(payload);
+      if (table === "products" || table === "subjects") {
+        let selectedSlug: string | null = null;
+        const query = {
+          select: () => query,
+          eq: (column: string, value: string) => {
+            if (column === "slug") selectedSlug = value;
+            if (column === "subjects.slug") selectedSlug = value;
+            return query;
+          },
+          range: async () => {
+            if (catalog.error) return { data: [], error: catalog.error };
+            if (table === "products" && configuredSubjectSlug === selectedSlug && catalog.productStatus !== "draft" && catalog.productStatus !== "archived") {
+              return { data: [{ slug: configuredProductSlug ?? "published-product", subjects: { slug: configuredSubjectSlug } }], error: null };
+            }
+            return { data: [], error: null };
+          },
+          maybeSingle: async () => {
+            if (catalog.error) return { data: null, error: catalog.error };
+            if (table === "products") {
+              if (configuredProductSlug === selectedSlug && catalog.productStatus !== "draft" && catalog.productStatus !== "archived") {
+                return { data: { slug: configuredProductSlug, subjects: { slug: configuredSubjectSlug ?? "subj" } }, error: null };
+              }
+              return { data: null, error: null };
+            }
+            if (configuredSubjectSlug === selectedSlug) {
+              return { data: { slug: configuredSubjectSlug }, error: null };
+            }
+            return { data: null, error: null };
           }
-          return { error: null };
-        }
-      };
+        };
+        return query;
+      }
+
+      throw new Error(`unexpected table ${table}`);
+    }
+    ,
+    rpc: async (name: string, payload: any) => {
+      assert.strictEqual(name, "submit_consultation_intake");
+      insertedPayload = payload;
+      if (overrideInsert) {
+        const result = await overrideInsert(payload);
+        return result.error?.code === "23505"
+          ? { data: { outcome: "duplicate" }, error: null }
+          : { data: null, error: result.error };
+      }
+      return { data: { outcome: "created" }, error: null };
     }
   };
   return client;
@@ -64,7 +117,7 @@ const VALID_PAYLOAD = {
   interest: "Toán",
   need: "Cần tư vấn",
   note: "Không",
-  sourcePath: "/path",
+  sourcePath: "/",
   selectedProductSlug: "prod",
   selectedSubjectSlug: "subj"
 };
@@ -89,9 +142,9 @@ describe("Consultation POST API", () => {
 
     const inserted = supabase._getInsertedPayload();
     assert.ok(inserted);
-    assert.strictEqual(inserted.request_id, "test-key-123");
-    assert.strictEqual(inserted.full_name, "Nguyễn Văn An");
-    assert.strictEqual(inserted.phone, "0901234567");
+    assert.strictEqual(inserted.p_request_id, "test-key-123");
+    assert.strictEqual(inserted.p_full_name, "Nguyễn Văn An");
+    assert.strictEqual(inserted.p_phone, "0901234567");
 
     // Server-managed fields like status, id should NOT be in the insert payload
     assert.strictEqual(inserted.status, undefined);
@@ -234,44 +287,74 @@ describe("Consultation POST API", () => {
       headers: { "x-forwarded-for": "10.0.0.2" }
     });
     assert.strictEqual(getClientIp(req), "10.0.0.1");
+    const malformed = createMockRequest({ ip: "not-an-ip", headers: { "x-forwarded-for": "10.0.0.2" } });
+    assert.strictEqual(getClientIp(malformed), null);
   });
 
   test("12. getClientIp ignores x-forwarded-for", async () => {
     const req = createMockRequest({
       headers: { "x-forwarded-for": "192.168.1.1" }
     });
-    assert.strictEqual(getClientIp(req), "unknown");
+    assert.strictEqual(getClientIp(req), null);
   });
 
-  test("13. Rate limiter uses shared unknown bucket when req.ip is absent, even with valid spoofed x-forwarded-for", async () => {
+  test("12b. signed proxy contract accepts canonical IP and rejects forged headers", async () => {
+    const previousEnabled = process.env.CONSULTATION_TRUSTED_PROXY;
+    const previousSecret = process.env.CONSULTATION_PROXY_SIGNING_SECRET;
+    process.env.CONSULTATION_TRUSTED_PROXY = "true";
+    process.env.CONSULTATION_PROXY_SIGNING_SECRET = "unit-proxy-secret";
+    try {
+      const canonical = "2001:db8::1";
+      const signature = createHmac("sha256", "unit-proxy-secret").update(canonical).digest("hex");
+      const valid = createMockRequest({
+        headers: {
+          "x-consultation-client-ip": "2001:0db8:0:0:0:0:0:1",
+          "x-consultation-client-ip-signature": signature
+        }
+      });
+      assert.strictEqual(getClientIp(valid), canonical);
+      const forged = createMockRequest({
+        headers: {
+          "x-consultation-client-ip": "2001:db8::2",
+          "x-consultation-client-ip-signature": signature
+        }
+      });
+      assert.strictEqual(getClientIp(forged), null);
+    } finally {
+      if (previousEnabled === undefined) delete process.env.CONSULTATION_TRUSTED_PROXY;
+      else process.env.CONSULTATION_TRUSTED_PROXY = previousEnabled;
+      if (previousSecret === undefined) delete process.env.CONSULTATION_PROXY_SIGNING_SECRET;
+      else process.env.CONSULTATION_PROXY_SIGNING_SECRET = previousSecret;
+    }
+  });
+
+  test("13. missing or malformed runtime IP fails closed without a shared rate-limit bucket", async () => {
     const supabase = createMockSupabase();
-    // Use valid IP spoofing to fall into 'unknown' bucket
-    for (let i = 0; i < 5; i++) {
+    for (const forwarded of ["192.168.1.1", "garbage, 192.168.1.2"]) {
       const req = createMockRequest({
         headers: {
-          "Idempotency-Key": `test-key-${i}`,
-          "x-forwarded-for": `192.168.1.${i}` // valid spoofed IPs
+          "Idempotency-Key": "test-key-no-ip",
+          "x-forwarded-for": forwarded
         },
         body: VALID_PAYLOAD
       });
-      const ip = getClientIp(req);
-      const res = await handleConsultationPost(req, supabase, ip);
-      assert.strictEqual(res.status, 201);
+      const response = await handleConsultationPost(req, supabase, getClientIp(req));
+      assert.strictEqual(response.status, 400);
+      assert.deepStrictEqual(await response.json(), { error: "Request identity unavailable" });
     }
-
-    const req6 = createMockRequest({
-      headers: {
-        "Idempotency-Key": "test-key-6",
-        "x-forwarded-for": "192.168.1.100"
-      },
-      body: VALID_PAYLOAD
-    });
-    const ip6 = getClientIp(req6);
-    const res6 = await handleConsultationPost(req6, supabase, ip6);
-    assert.strictEqual(res6.status, 429); // Bypassing fails because all map to "unknown"
+    assert.strictEqual(checkRateLimit("unknown"), true);
+    assert.strictEqual(checkRateLimit("unknown"), true);
   });
 
-  test("14. Rate limiter max entries bound and eviction", async () => {
+  test("14. different runtime IPs have independent bounded buckets", async () => {
+    assert.strictEqual(checkRateLimit("10.0.0.1"), true);
+    assert.strictEqual(checkRateLimit("10.0.0.2"), true);
+    for (let i = 0; i < 4; i++) assert.strictEqual(checkRateLimit("10.0.0.1"), true);
+    assert.strictEqual(checkRateLimit("10.0.0.1"), false);
+    assert.strictEqual(checkRateLimit("10.0.0.2"), true);
+  });
+
+  test("15. Rate limiter max entries bound and eviction", async () => {
     // Fill up the map to MAX_MAP_ENTRIES
     for (let i = 0; i < MAX_MAP_ENTRIES; i++) {
       checkRateLimit(`10.0.${Math.floor(i / 256)}.${i % 256}`);
@@ -282,7 +365,7 @@ describe("Consultation POST API", () => {
     assert.strictEqual(res, true);
   });
 
-  test("15. Rate limiter expired-entry cleanup", async () => {
+  test("16. Rate limiter expired-entry cleanup", async () => {
     const originalDateNow = Date.now;
     let mockTime = 1000000;
     Date.now = () => mockTime;
@@ -312,7 +395,130 @@ describe("Consultation POST API", () => {
     }
   });
 
-  test("16. database errors are not logged with raw details", async () => {
+  test("17. body-size and catalog-boundary failures happen before insert", async () => {
+    const tooLargeJson = JSON.stringify({ ...VALID_PAYLOAD, unknown: "x".repeat(MAX_CONSULTATION_BODY_BYTES) });
+    const tooLargeRequest = createMockRequest({
+      headers: {
+        "Idempotency-Key": "test-key-large",
+        "content-type": "application/json",
+        "content-length": String(MAX_CONSULTATION_BODY_BYTES + 1)
+      },
+      body: tooLargeJson,
+      jsonBody: false
+    });
+    const tooLargeResponse = await handleConsultationPost(tooLargeRequest, createMockSupabase(), "127.0.0.1");
+    assert.strictEqual(tooLargeResponse.status, 413);
+
+    const chunkedBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{" + JSON.stringify("unknown") + ":\"" + "x".repeat(MAX_CONSULTATION_BODY_BYTES) + "\"}"));
+        controller.close();
+      }
+    });
+    const chunkedRequest = new Request("http://localhost/api/consultations", {
+      method: "POST",
+      headers: { "content-type": "application/json", "Idempotency-Key": "test-key-chunked" },
+      body: chunkedBody,
+      duplex: "half"
+    } as RequestInit);
+    const chunkedSupabase = createMockSupabase();
+    const chunkedResponse = await handleConsultationPost(chunkedRequest, chunkedSupabase, "127.0.0.1");
+    assert.strictEqual(chunkedResponse.status, 413);
+    assert.strictEqual(chunkedSupabase._getInsertedPayload(), null);
+
+    const fakeProductSupabase = createMockSupabase(undefined, { productSlug: "real-product", subjectSlug: "real-subject" });
+    const fakeProductResponse = await handleConsultationPost(
+      createMockRequest({ headers: { "Idempotency-Key": "test-key-fake-product" }, body: { ...VALID_PAYLOAD, selectedProductSlug: "fake-product", selectedSubjectSlug: "real-subject" } }),
+      fakeProductSupabase,
+      "127.0.0.1"
+    );
+    assert.strictEqual(fakeProductResponse.status, 400);
+    assert.strictEqual(fakeProductSupabase._getInsertedPayload(), null);
+
+    const mismatchSupabase = createMockSupabase(undefined, { productSlug: "real-product", subjectSlug: "real-subject" });
+    const mismatchResponse = await handleConsultationPost(
+      createMockRequest({ headers: { "Idempotency-Key": "test-key-mismatch" }, body: { ...VALID_PAYLOAD, selectedProductSlug: "real-product", selectedSubjectSlug: "wrong-subject" } }),
+      mismatchSupabase,
+      "127.0.0.1"
+    );
+    assert.strictEqual(mismatchResponse.status, 400);
+    assert.strictEqual(mismatchSupabase._getInsertedPayload(), null);
+
+    const draftSupabase = createMockSupabase(undefined, { productSlug: "draft-product", subjectSlug: "real-subject", productStatus: "draft" });
+    const draftResponse = await handleConsultationPost(
+      createMockRequest({ headers: { "Idempotency-Key": "test-key-draft" }, body: { ...VALID_PAYLOAD, selectedProductSlug: "draft-product", selectedSubjectSlug: "real-subject" } }),
+      draftSupabase,
+      "127.0.0.1"
+    );
+    assert.strictEqual(draftResponse.status, 400);
+    assert.strictEqual(draftSupabase._getInsertedPayload(), null);
+
+    const archivedSupabase = createMockSupabase(undefined, { productSlug: "archived-product", subjectSlug: "real-subject", productStatus: "archived" });
+    const archivedResponse = await handleConsultationPost(
+      createMockRequest({ headers: { "Idempotency-Key": "test-key-archived" }, body: { ...VALID_PAYLOAD, selectedProductSlug: "archived-product", selectedSubjectSlug: "real-subject" } }),
+      archivedSupabase,
+      "127.0.0.1"
+    );
+    assert.strictEqual(archivedResponse.status, 400);
+    assert.strictEqual(archivedSupabase._getInsertedPayload(), null);
+
+    const fakeSubjectSupabase = createMockSupabase(undefined, { productSlug: null, subjectSlug: "real-subject" });
+    const fakeSubjectResponse = await handleConsultationPost(
+      createMockRequest({ headers: { "Idempotency-Key": "test-key-fake-subject" }, body: { ...VALID_PAYLOAD, selectedProductSlug: null, selectedSubjectSlug: "fake-subject" } }),
+      fakeSubjectSupabase,
+      "127.0.0.1"
+    );
+    assert.strictEqual(fakeSubjectResponse.status, 400);
+    assert.strictEqual(fakeSubjectSupabase._getInsertedPayload(), null);
+  });
+
+  test("18. subject-only selection is resolved and optional omission stays null", async () => {
+    const subjectSupabase = createMockSupabase(undefined, { productSlug: null, subjectSlug: "real-subject" });
+    const subjectResponse = await handleConsultationPost(
+      createMockRequest({ headers: { "Idempotency-Key": "test-key-subject" }, body: { ...VALID_PAYLOAD, selectedProductSlug: null, selectedSubjectSlug: "real-subject" } }),
+      subjectSupabase,
+      "127.0.0.1"
+    );
+    assert.strictEqual(subjectResponse.status, 201);
+    assert.strictEqual(subjectSupabase._getInsertedPayload().p_selected_product_slug, null);
+    assert.strictEqual(subjectSupabase._getInsertedPayload().p_selected_subject_slug, "real-subject");
+
+    const noSelectionSupabase = createMockSupabase();
+    const noSelectionResponse = await handleConsultationPost(
+      createMockRequest({ headers: { "Idempotency-Key": "test-key-no-selection" }, body: { ...VALID_PAYLOAD, selectedProductSlug: null, selectedSubjectSlug: null } }),
+      noSelectionSupabase,
+      "127.0.0.1"
+    );
+    assert.strictEqual(noSelectionResponse.status, 201);
+    assert.strictEqual(noSelectionSupabase._getInsertedPayload().p_selected_product_slug, null);
+    assert.strictEqual(noSelectionSupabase._getInsertedPayload().p_selected_subject_slug, null);
+  });
+
+  test("19. product-only selection derives the subject from the published server row", async () => {
+    const supabase = createMockSupabase(undefined, { productSlug: "real-product", subjectSlug: "real-subject" });
+    const response = await handleConsultationPost(
+      createMockRequest({ headers: { "Idempotency-Key": "test-key-product-only" }, body: { ...VALID_PAYLOAD, selectedProductSlug: "real-product", selectedSubjectSlug: null } }),
+      supabase,
+      "127.0.0.1"
+    );
+    assert.strictEqual(response.status, 201);
+    assert.strictEqual(supabase._getInsertedPayload().p_selected_product_slug, "real-product");
+    assert.strictEqual(supabase._getInsertedPayload().p_selected_subject_slug, "real-subject");
+  });
+
+  test("20. catalog lookup errors are generic and do not insert", async () => {
+    const supabase = createMockSupabase(undefined, { error: { code: "XX000", message: "PII 0901234567 secret SQL" } });
+    const response = await handleConsultationPost(
+      createMockRequest({ headers: { "Idempotency-Key": "test-key-catalog-error" }, body: VALID_PAYLOAD }),
+      supabase,
+      "127.0.0.1"
+    );
+    assert.strictEqual(response.status, 500);
+    assert.deepStrictEqual(await response.json(), { error: "Internal Server Error" });
+    assert.strictEqual(supabase._getInsertedPayload(), null);
+  });
+
+  test("21. database errors are not logged with raw details", async () => {
     let loggedErrors: any[] = [];
     const originalError = console.error;
     console.error = (...args: any[]) => {
@@ -331,7 +537,7 @@ describe("Consultation POST API", () => {
     try {
       await handleConsultationPost(req, supabase, "127.0.0.1");
       assert.strictEqual(loggedErrors.length, 1);
-      assert.strictEqual(loggedErrors[0][0], "Database insert failed for consultation");
+      assert.strictEqual(loggedErrors[0][0], "Consultation intake RPC failed");
       assert.strictEqual(loggedErrors[0].length, 1); // No second argument containing raw error details
     } finally {
       console.error = originalError;

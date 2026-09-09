@@ -3,7 +3,7 @@
 This document outlines the PostgreSQL database schema for the LEFT HAND learning platform, designed for Supabase.
 
 > [!NOTE]
-> **Status:** Migrations `0001_core_schema.sql` through `0017_profile_on_auth_signup.sql` are already applied and content-locked. Migrations `0018_catalog_semantic_invariants.sql` through `0023_catalog_search_child_fields.sql` are prepared locally and verified via automated contract checks; none of these Phase 2 migrations has been applied to the hosted Supabase project.
+> **Status:** Migrations `0001_core_schema.sql` through `0017_profile_on_auth_signup.sql` are content-locked. Migrations `0018_catalog_semantic_invariants.sql` through `0027_consultation_rpc_private_boundary.sql` are prepared locally and verified via automated contract checks; hosted migration state must be checked before applying them.
 
 ---
 
@@ -25,7 +25,8 @@ The schema employs a normalized, typed relational model separating core product 
 | `course_lessons` | `id` (UUID) | 1-to-N lessons / syllabus items under a specific course (order index, lesson title, duration). |
 | `tutors` | `product_id` (UUID FK) | 1-to-1 extension of `products` for 1-on-1 and small group peer tutors (name, faculty, format description, strengths, bio). |
 | `tutor_subjects` | `(tutor_product_id, subject_id)` | M-to-N join table tracking which subjects each tutor teaches and whether a subject is their primary specialization. |
-| `consultations` | `id` (UUID) | Consultation lead capture. Tracks requests for advice/quotes (status, requester info, requested item). |
+| `consultations` | `id` (UUID) | Consultation lead capture. Tracks requests for advice/quotes (status, requester info, requested item, and optimistic-concurrency version). |
+| `consultation_status_history` | `id` (UUID) | Append-only forward status transitions with database-managed actor, timestamp, and version. |
 
 ---
 
@@ -186,8 +187,8 @@ erDiagram
   - Public users may read only published content (`publication_status = 'published'`).
   - Child tables (`materials`, `courses`, `course_lessons`, `tutors`, `tutor_subjects`) restrict reads to items whose parent product is published.
   - User profiles remain strictly private with no public table grants or policies.
-- **Consultation Form Insert Security (`0006_consultations.sql`):**
-  - Consultation leads (`consultations`) allow restricted public `INSERT` (anon, authenticated) only on specific safe form columns. Database-managed fields (id, status, timestamps) cannot be written by clients.
+- **Consultation Form Insert Security (`0006_consultations.sql`, superseded for writes by `0026`):**
+  - Migration 0006 originally allowed restricted public `INSERT`; migration 0026 revokes that table privilege and drops its permissive INSERT policy without altering historical migration content.
   - Canonical status constraint `chk_consultations_status` enforces exactly `'new'`, `'contacted'`, `'qualified'`, and `'closed'`.
 - **Consultation Admin Read Access (`0007_consultation_admin_rls.sql`):**
   - Consultation read access (`SELECT`) is strictly granted only to authenticated users whose profile `role` is `'admin'`. Anonymous, student, and tutor roles are explicitly denied read access.
@@ -199,6 +200,19 @@ erDiagram
   - **Trigger Contract:** Trigger `trg_consultations_updated_at` targets `consultations` before update for each row and executes the established `update_updated_at_column()` function from migration 0004 without defining a replacement or using `SECURITY DEFINER`.
   - **Dual-Predicate Admin RLS Policy:** Exactly one UPDATE policy (`consultations_allow_update_status_admin`) is created, targeting `authenticated`. Both `USING` and `WITH CHECK` clauses require `EXISTS (SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')`. No DELETE policy or grants exist.
 - **Consultation Updater Audit Trail (`0009_consultation_updated_by.sql`):** `consultations.updated_by` is a nullable UUID reference to `auth.users(id)` with `ON DELETE SET NULL`. A dedicated database `BEFORE UPDATE` trigger assigns it from `auth.uid()`, so the client cannot choose the updater identity. The existing `0008` trigger continues to manage `updated_at`.
+- **Consultation Workflow Hardening (`0024_consultation_workflow_hardening.sql`):** approved admins may move a consultation only forward (`new → contacted → qualified → closed`); same-state retries are idempotent, while backward/reopen transitions are rejected by the database trigger. `consultations.version` is incremented atomically and required in the repository update predicate. Each real transition inserts one append-only `consultation_status_history` row in the same transaction, with `old_status`, `new_status`, `auth.uid()`, server time, and version. History is readable only by approved admins; update/delete/insert grants are absent and mutation triggers reject tampering.
+- **Consultation Workflow Trigger Cleanup (`0025_consultation_workflow_trigger_order.sql`):** removes only the legacy consultation `updated_at`/`updated_by` triggers from `0008`/`0009`, so the `0024` workflow trigger is the sole owner of audit fields. This preserves the immutable earlier migrations and makes same-state retries true no-ops.
+- **Consultation Intake Access Boundary (`0026_consultation_intake_access_boundary.sql` + `0027_consultation_rpc_private_boundary.sql`):** direct `INSERT` and direct RPC `EXECUTE` are revoked from `anon` and `authenticated`; only the server-only `service_role` client may call the fixed-signature `submit_consultation_intake` RPC. The `SECURITY DEFINER` function uses a fixed `pg_catalog, public` search path, checks exact input fields/lengths/phone format, stores only an allowlisted internal pathname, resolves subject-only requests directly from `subjects`, and requires any product to be uniquely published and bound to the selected subject. It uses `ON CONFLICT (request_id) DO NOTHING` for idempotency and returns only `created`/`duplicate`; no caller provides timestamps, status, or actor fields. The function contains no dynamic SQL, role switching, or RLS bypass. The HTTP route imports a `server-only` Supabase client and retains the IP rate limiter before catalog lookup/RPC.
+
+### Consultation intake edge contract
+
+The route accepts platform IP metadata when Next.js exposes it. If it does not,
+production may enable the signed proxy contract documented in
+docs/deployment/consultation-edge.md: the edge canonicalizes the client IP and
+signs it with the server-only secret. X-Forwarded-For and X-Real-IP are ignored
+even when present. Direct origin access must be blocked operationally. The RPC is
+private to service_role, so direct PostgREST callers cannot bypass the HTTP
+limiter; database validation, grants, RLS, and idempotency remain defense in depth.
 - **Admin Account Approval Data Layer (`0010_admin_account_approval_rls.sql`):** Approved authenticated admins using the `/quan-tri` workflow can read profiles through a dedicated RLS policy. The approval update workflow accepts only `account_status` and `rejection_reason`; it does not change `role` or any identity/profile field. A database trigger writes `approved_by = auth.uid()` and the current UTC timestamp to `approved_at`, so clients cannot provide those audit fields. Admins cannot change their own account status.
 - **Private Material Storage Foundation (`0012_private_material_storage.sql`):** Supabase Storage bucket `materials` is private (`public = false`). Object `SELECT`, `INSERT`, `UPDATE`, and `DELETE` access on `storage.objects` is limited to authenticated users whose matching `public.profiles` row has role `admin` and account status `approved`. Public and anonymous access is denied. Upload workflows and signed URLs are intentionally deferred to later tasks.
 - **Material Asset Metadata (`0013_material_asset_metadata.sql`):** `material_assets` records the product, uploader, original filename, MIME type, byte size, private visibility, storage path, and monotonically increasing version of each upload. Its product must also exist in `materials`, so a course or tutor product cannot receive a material file. RLS grants metadata `SELECT` and `INSERT` only to approved authenticated admins.
@@ -256,6 +270,12 @@ psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0018_c
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0019_admin_catalog_transaction_rpc.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0020_catalog_mutation_access_boundary.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0021_catalog_search_normalization.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0022_catalog_integrity_boundary.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0023_catalog_search_child_fields.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0024_consultation_workflow_hardening.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0025_consultation_workflow_trigger_order.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0026_consultation_intake_access_boundary.sql
+psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/migrations/0027_consultation_rpc_private_boundary.sql
 psql -h <SUPABASE_DB_HOST> -U postgres -d postgres -f supabase/seed.sql
 ```
 

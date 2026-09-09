@@ -37,7 +37,13 @@ const immutableMigrationHashes = {
   "0014_product_entitlements.sql": "77b507859e5295bae896ac3e0ed66f4bb749a7f56ab71aeae9c0bb293b9722b2",
   "0015_learning_progress.sql": "4cd65043f20cd7badc9496e2d4d8466f5c6bc1546d6b91ac565c07d3e2a11e37",
   "0016_study_plans.sql": "3697e891b0833ab23bef47227090470e2afd916e6caa2bdbbb73d666017d8dc9",
-  "0017_profile_on_auth_signup.sql": "0b4dac5f5a3092704b2101bcbfaf47274e75a96f7fbfe8c304daba215b565351"
+  "0017_profile_on_auth_signup.sql": "0b4dac5f5a3092704b2101bcbfaf47274e75a96f7fbfe8c304daba215b565351",
+  "0018_catalog_semantic_invariants.sql": "49b58453495fd1e65c45bcc6cd3bb6789938b0ebf3cc6f8edfb984feda785996",
+  "0019_admin_catalog_transaction_rpc.sql": "3da9cf2fa53a80d8456547a309f6492dfb27a9e9a2fd03a04c2e38b2648cd6c5",
+  "0020_catalog_mutation_access_boundary.sql": "87d0666521f557f2e759afe9022f327b308040a1b068a513f2a02f8a6022699d",
+  "0021_catalog_search_normalization.sql": "e4712ed14e58d2da24350c0bab1349f26845d5e4024eac635fee872a4cf15d09",
+  "0022_catalog_integrity_boundary.sql": "060255c2e7e8649dab3f544ef6f8df6cf2abb850067bc38c95f1a98517b8b446",
+  "0023_catalog_search_child_fields.sql": "68a2aff1ac320bb76ba6bb7d0711e035ac67f4db1728fc3034a1a73dc8669786"
 } as const;
 
 export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
@@ -1461,6 +1467,127 @@ export function assertCatalogChildSearchMigrationContract(sql0023: string): void
   assertNestedFunctionSqlScope(statements, { allowDmlTables: ["products"], allowSelectTables: ["products", "subjects", "materials", "courses", "tutors"], allowSqlExpressionSelect: true });
 }
 
+/** Exact workflow, history, RLS, and optimistic-concurrency contract for migration 0024. */
+export function assertConsultationWorkflowMigrationContract(sql0024: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const statements = stripSqlCommentsAndSplitStatements(sql0024);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const allowed: RegExp[] = [
+    /^alter table consultations add column if not exists version integer not null default 0$/i,
+    /^alter table consultations drop constraint if exists chk_consultations_version_nonnegative$/i,
+    /^alter table consultations add constraint chk_consultations_version_nonnegative check \(version >= 0\)$/i,
+    /^create index if not exists idx_consultations_status_created_at_id on consultations \(status, created_at desc, id desc\)$/i,
+    /^create index if not exists idx_consultations_full_name_trgm on consultations using gin \(full_name gin_trgm_ops\)$/i,
+    /^create index if not exists idx_consultations_phone_trgm on consultations using gin \(phone gin_trgm_ops\)$/i,
+    /^create table if not exists consultation_status_history \([\s\S]+\)$/i,
+    /^create index if not exists idx_consultation_status_history_consultation_changed_at on consultation_status_history \(consultation_id, changed_at desc, id desc\)$/i,
+    /^alter table consultation_status_history enable row level security$/i,
+    /^revoke all on table consultation_status_history from anon, authenticated$/i,
+    /^grant select on table consultation_status_history to authenticated$/i,
+    /^create policy consultation_status_history_allow_select_approved_admin on consultation_status_history for select to authenticated using \(public\.is_approved_admin\(\)\)$/i,
+    /^drop policy if exists consultations_allow_select_admin on consultations$/i,
+    /^create policy consultations_allow_select_admin on consultations for select to authenticated using \(public\.is_approved_admin\(\)\)$/i,
+    /^drop policy if exists consultations_allow_update_status_admin on consultations$/i,
+    /^create policy consultations_allow_update_status_admin on consultations for update to authenticated using \(public\.is_approved_admin\(\)\) with check \(public\.is_approved_admin\(\)\)$/i,
+    /^revoke update on table consultations from anon, authenticated$/i,
+    /^grant update \(status, version\) on table consultations to authenticated$/i,
+    /^create or replace function public\.enforce_consultation_status_workflow\(\) returns trigger language plpgsql set search_path = pg_catalog, public as \$\$[\s\S]+\$\$$/i,
+    /^drop trigger if exists trg_consultations_status_workflow on consultations$/i,
+    /^create trigger trg_consultations_status_workflow before update on consultations for each row execute function public\.enforce_consultation_status_workflow\(\)$/i,
+    /^create or replace function public\.append_consultation_status_history\(\) returns trigger language plpgsql security definer set search_path = pg_catalog, public as \$\$[\s\S]+\$\$$/i,
+    /^revoke execute on function public\.append_consultation_status_history\(\) from public, anon, authenticated$/i,
+    /^drop trigger if exists trg_consultations_status_history on consultations$/i,
+    /^create trigger trg_consultations_status_history after update on consultations for each row execute function public\.append_consultation_status_history\(\)$/i,
+    /^create or replace function public\.prevent_consultation_status_history_mutation\(\) returns trigger language plpgsql set search_path = pg_catalog, public as \$\$[\s\S]+\$\$$/i,
+    /^revoke execute on function public\.prevent_consultation_status_history_mutation\(\) from public, anon, authenticated$/i,
+    /^drop trigger if exists trg_consultation_status_history_append_only on consultation_status_history$/i,
+    /^create trigger trg_consultation_status_history_append_only before update or delete on consultation_status_history for each row execute function public\.prevent_consultation_status_history_mutation\(\)$/i
+  ];
+
+  fail(statements.length === 29, "Migration 0024 must contain exactly its 29 allowlisted statements");
+  fail(normalized.every((statement) => allowed.some((pattern) => pattern.test(statement))), "Migration 0024 contains a statement outside its exact allowlist");
+  const code = normalized.join(" ; ");
+  fail(code.includes("old_status <> new_status"), "History must reject same-state entries");
+  fail(code.includes("unique (consultation_id, version)"), "History must be unique per consultation version");
+  fail(code.includes("new.status is not distinct from old.status") && code.includes("new.updated_at = old.updated_at") && code.includes("new.updated_by = old.updated_by"), "Same-state retries must preserve database audit fields as an idempotent no-op");
+  fail(code.includes("old.status = 'new' and new.status = 'contacted'") && code.includes("old.status = 'contacted' and new.status = 'qualified'") && code.includes("old.status = 'qualified' and new.status = 'closed'"), "Workflow must allow only forward transitions");
+  fail(code.includes("new.version is distinct from old.version + 1"), "Real transitions must increment version atomically");
+  fail(code.includes("new.updated_by = auth.uid()") && code.includes("new.updated_at = timezone('utc'::text, now())"), "Updater and timestamp must be database-managed");
+  fail(code.includes("changed_by, changed_at, version") && code.includes("auth.uid(), new.updated_at, new.version"), "History actor, timestamp, and version must come from the transition");
+  fail(code.includes("insert into public.consultation_status_history"), "Status trigger must append history in the same transaction");
+  fail(code.includes("raise exception 'consultation status history is append-only'"), "History mutations must be rejected");
+  fail(code.includes("public.is_approved_admin()"), "Consultation workflow must require approved admins");
+
+  const executableCode = maskSqlStringLiterals(normalized.join(" ; "));
+  fail(!/\b(?:execute\s+(?:immediate|format)|set\s+role|alter\s+role|service_role|bypassrls)\b/i.test(executableCode), "Migration 0024 must not contain dynamic SQL, role escalation, service role, or BYPASSRLS");
+  assertNestedFunctionSqlScope(statements, { allowDmlTables: ["consultation_status_history"], allowSelectTables: [] });
+}
+
+/** Exact trigger cleanup contract for the post-0024 consultation workflow fix. */
+export function assertConsultationWorkflowTriggerCleanupMigrationContract(sql0025: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const normalized = stripSqlCommentsAndSplitStatements(sql0025).map(normalizeMigrationStatement);
+  const allowed = [
+    /^drop trigger if exists trg_consultations_updated_at on public\.consultations$/i,
+    /^drop trigger if exists trg_consultations_updated_by on public\.consultations$/i
+  ];
+  fail(normalized.length === 2, "Migration 0025 must contain exactly two trigger cleanup statements");
+  fail(normalized.every((statement) => allowed.some((pattern) => pattern.test(statement))), "Migration 0025 contains a statement outside its exact allowlist");
+}
+
+/** Exact public-intake boundary: no table INSERT, one fixed-signature RPC. */
+export function assertConsultationIntakeAccessBoundaryMigrationContract(sql0026: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const statements = stripSqlCommentsAndSplitStatements(sql0026);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const signature = "text, text, text, text, text, text, text, text, text, text, text";
+  const allowed: RegExp[] = [
+    /^revoke insert on table public\.consultations from anon, authenticated$/i,
+    /^drop policy if exists consultations_allow_insert_anon_authenticated on public\.consultations$/i,
+    /^create or replace function public\.submit_consultation_intake\([\s\S]+\) returns jsonb language plpgsql security definer set search_path = pg_catalog, public as \$\$[\s\S]+\$\$$/i,
+    new RegExp(`^revoke all on function public\\.submit_consultation_intake\\(${signature}\\) from public$`, "i"),
+    new RegExp(`^grant execute on function public\\.submit_consultation_intake\\(${signature}\\) to anon, authenticated$`, "i")
+  ];
+  fail(statements.length === 5, "Migration 0026 must contain exactly its five allowlisted statements");
+  fail(normalized.every((statement) => allowed.some((pattern) => pattern.test(statement))), "Migration 0026 contains a statement outside its exact allowlist");
+  const code = normalized.join(" ; ");
+  fail(!/\b(?:service_role|bypassrls|set\s+role|alter\s+role|execute\s+(?:immediate|format)|truncate|copy|call)\b|\bdo\s+(?:(?:language\s+)?plpgsql\b|\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$)/i.test(maskSqlStringLiterals(code)), "Migration 0026 must not contain privilege escalation, dynamic SQL, or hidden executable SQL");
+  fail(!/grant\s+(?:insert|update|delete|all)\b[^;]*\bconsultations\b/i.test(code), "Migration 0026 must not re-grant direct consultation DML");
+  fail(code.includes("drop policy if exists consultations_allow_insert_anon_authenticated"), "Migration 0026 must remove the direct INSERT RLS policy");
+  for (const name of ["p_request_id", "p_full_name", "p_phone", "p_faculty", "p_major", "p_interest", "p_need", "p_note", "p_source_path", "p_selected_product_slug", "p_selected_subject_slug"]) {
+    fail(code.includes(name), `Migration 0026 RPC must use the exact ${name} parameter`);
+  }
+  fail(code.includes("product.publication_status = 'published'"), "Migration 0026 must require a published product");
+  fail(code.includes("inner join public.subjects as subject"), "Migration 0026 must bind a product to its actual subject");
+  fail(code.includes("from public.subjects as subject"), "Migration 0026 must resolve subject-only submissions directly");
+  fail(code.includes("on conflict (request_id) do nothing") && code.includes("'outcome', 'duplicate'"), "Migration 0026 must make duplicate request IDs idempotent");
+  fail(code.includes("v_source_path = '/'") && code.includes("/tai-lieu") && code.includes("/khoa-hoc") && code.includes("/tutor"), "Migration 0026 must allow only internal source paths");
+  assertNestedFunctionSqlScope(statements, { allowDmlTables: ["consultations"], allowSelectTables: ["products", "subjects"], allowSqlExpressionSelect: true });
+}
+
+/** The intake RPC must be private to the server-only service role. */
+export function assertConsultationRpcPrivateBoundaryMigrationContract(sql0027: string): void {
+  const statements = stripSqlCommentsAndSplitStatements(sql0027).map(normalizeMigrationStatement);
+  const signature = "text, text, text, text, text, text, text, text, text, text, text";
+  const expected = [
+    new RegExp(`^revoke execute on function public\\.submit_consultation_intake\\(${signature}\\) from public, anon, authenticated$`, "i"),
+    new RegExp(`^grant execute on function public\\.submit_consultation_intake\\(${signature}\\) to service_role$`, "i")
+  ];
+  if (statements.length !== expected.length || statements.some((statement, index) => !expected[index].test(statement))) {
+    throw new Error("Migration 0027 must revoke public/anon/authenticated RPC execution and grant only service_role");
+  }
+  const code = statements.join(" ; ");
+  if (/\b(?:execute\s+immediate|format|bypassrls|set\s+role|alter\s+role|dynamic\s+sql)\b/i.test(code)) {
+    throw new Error("Migration 0027 must not contain privilege escalation or dynamic SQL");
+  }
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -1499,13 +1626,17 @@ export async function runAudit(): Promise<boolean> {
       "0020_catalog_mutation_access_boundary.sql",
       "0021_catalog_search_normalization.sql",
       "0022_catalog_integrity_boundary.sql",
-      "0023_catalog_search_child_fields.sql"
+      "0023_catalog_search_child_fields.sql",
+      "0024_consultation_workflow_hardening.sql",
+      "0025_consultation_workflow_trigger_order.sql",
+      "0026_consultation_intake_access_boundary.sql",
+      "0027_consultation_rpc_private_boundary.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 23 migration files exist in strict topological order",
+      check: "All 27 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -1525,7 +1656,7 @@ export async function runAudit(): Promise<boolean> {
       immutableHistoryValid = false;
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0017 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0023 match their canonical LF-normalized SHA-256 snapshots",
         passed: false,
         details: error instanceof Error ? error.message : String(error)
       });
@@ -1533,9 +1664,9 @@ export async function runAudit(): Promise<boolean> {
     if (immutableHistoryValid) {
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0017 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0023 match their canonical LF-normalized SHA-256 snapshots",
         passed: true,
-        details: "Every applied migration through 0017 is content-locked"
+        details: "Every immutable migration from 0001 through 0023 is content-locked"
       });
     }
 
@@ -1756,8 +1887,8 @@ export async function runAudit(): Promise<boolean> {
       migration0009ContractValid = false;
     }
     const repoSource = await fs.readFile(path.join(rootDir, "lib/repositories/consultation-repository.ts"), "utf-8");
-    const repositoryDoesNotAcceptUpdater = /export\s+async\s+function\s+updateConsultationStatus\s*\(\s*id:\s*string\s*,\s*status:\s*ConsultationStatus\s*,\s*client\?:\s*[^)]*\)/.test(repoSource)
-      && /\.update\(\{\s*status\s*\}\)/.test(repoSource)
+    const repositoryDoesNotAcceptUpdater = /export\s+async\s+function\s+updateConsultationStatus\s*\(\s*id:\s*string\s*,\s*status:\s*ConsultationStatus\s*,\s*expectedVersion:\s*number\s*,\s*expectedStatus:\s*ConsultationStatus\s*,\s*client\?:\s*[^)]*\)/.test(repoSource)
+      && /\.update\(\{\s*status\s*,\s*version:\s*expectedVersion\s*\+\s*1\s*\}\)/.test(repoSource)
       && !/\.update\(\{[^}]*\b(?:userId|user_id|updatedBy|updated_by)\b/i.test(repoSource);
     results.push({
       category: "0009_consultation_updated_by",
@@ -1769,7 +1900,7 @@ export async function runAudit(): Promise<boolean> {
       category: "0009_consultation_updated_by",
       check: "Rejects updater grants, policies, privilege escalation, and client-supplied identity",
       passed: migration0009ContractValid && repositoryDoesNotAcceptUpdater,
-      details: "No updater grant/policy/bypass; applied migration history is hash-locked; repository sends only { status }"
+      details: "No updater grant/policy/bypass; applied migration history is hash-locked; repository sends only status plus expected version"
     });
 
     // 10. Audit 0010_admin_account_approval_rls.sql
@@ -1963,6 +2094,40 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0023_catalog_search_child_fields", check: "Maintains normalized child-aware public search documents", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0023ContractValid) results.push({ category: "0023_catalog_search_child_fields", check: "Maintains normalized child-aware public search documents", passed: true, details: "Mentor, tutor, material-tag, subject, and product fields are indexed and trigger-maintained" });
+
+    // 24. Audit 0024_consultation_workflow_hardening.sql
+    const sql0024 = await fs.readFile(path.join(migrationsDir, "0024_consultation_workflow_hardening.sql"), "utf-8");
+    let migration0024ContractValid = true;
+    try { assertConsultationWorkflowMigrationContract(sql0024); } catch (error) {
+      migration0024ContractValid = false;
+      results.push({ category: "0024_consultation_workflow_hardening", check: "Enforces forward status workflow, append-only history, approved-admin RLS, and optimistic concurrency", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0024ContractValid) results.push({ category: "0024_consultation_workflow_hardening", check: "Enforces forward status workflow, append-only history, approved-admin RLS, and optimistic concurrency", passed: true, details: "Forward-only trigger, database actor/timestamp, atomic history, protected grants, and version token verified" });
+
+    // 25. Audit 0025_consultation_workflow_trigger_order.sql
+    const sql0025 = await fs.readFile(path.join(migrationsDir, "0025_consultation_workflow_trigger_order.sql"), "utf-8");
+    let migration0025ContractValid = true;
+    try { assertConsultationWorkflowTriggerCleanupMigrationContract(sql0025); } catch (error) {
+      migration0025ContractValid = false;
+      results.push({ category: "0025_consultation_workflow_trigger_order", check: "Removes legacy consultation triggers that overwrite workflow-managed audit fields", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0025ContractValid) results.push({ category: "0025_consultation_workflow_trigger_order", check: "Removes legacy consultation triggers that overwrite workflow-managed audit fields", passed: true, details: "Legacy updated_at and updated_by triggers are removed without modifying migrations 0001-0024" });
+
+    const sql0026 = await fs.readFile(path.join(migrationsDir, "0026_consultation_intake_access_boundary.sql"), "utf-8");
+    let migration0026ContractValid = true;
+    try { assertConsultationIntakeAccessBoundaryMigrationContract(sql0026); } catch (error) {
+      migration0026ContractValid = false;
+      results.push({ category: "0026_consultation_intake_access_boundary", check: "Closes direct consultation INSERT and exposes only the verified intake RPC", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0026ContractValid) results.push({ category: "0026_consultation_intake_access_boundary", check: "Closes direct consultation INSERT and preserves the verified intake RPC", passed: true, details: "Exact payload signature, source/catalog binding, idempotency, and constrained SECURITY DEFINER scope verified" });
+
+    const sql0027 = await fs.readFile(path.join(migrationsDir, "0027_consultation_rpc_private_boundary.sql"), "utf-8");
+    let migration0027ContractValid = true;
+    try { assertConsultationRpcPrivateBoundaryMigrationContract(sql0027); } catch (error) {
+      migration0027ContractValid = false;
+      results.push({ category: "0027_consultation_rpc_private_boundary", check: "Removes public RPC execution and leaves only service_role execution", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0027ContractValid) results.push({ category: "0027_consultation_rpc_private_boundary", check: "Removes public RPC execution and leaves only service_role execution", passed: true, details: "anon and authenticated direct RPC access is revoked; only the server-only service role is granted" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

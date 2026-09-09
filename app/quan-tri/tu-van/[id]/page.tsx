@@ -4,9 +4,12 @@ import type { ReactNode } from "react";
 import { getAccountAccess } from "@/lib/auth/session";
 import {
   getConsultationById,
+  getConsultationStatusHistory,
   isValidUuid,
-  VALID_CONSULTATION_STATUSES,
-  type Consultation
+  CONSULTATION_STATUS_TRANSITIONS,
+  type Consultation,
+  type ConsultationStatus,
+  type ConsultationStatusHistoryEntry
 } from "@/lib/repositories/consultation-repository";
 
 const INBOX_PATH = "/quan-tri/tu-van";
@@ -23,6 +26,7 @@ function displayNullableValue(value: string | null): string {
 
 function formatTimestamp(value: string): string {
   const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
   return new Intl.DateTimeFormat("vi-VN", {
     dateStyle: "medium",
     timeStyle: "short"
@@ -52,6 +56,7 @@ function ConsultationDetails({ consultation }: { consultation: Consultation }): 
       <DetailField label="Ghi chú" value={displayNullableValue(consultation.note)} />
       <DetailField label="Đường dẫn nguồn" value={displayNullableValue(consultation.source_path)} />
       <DetailField label="Slug sản phẩm đã chọn" value={displayNullableValue(consultation.selected_product_slug)} />
+      <DetailField label="Slug môn học đã chọn" value={displayNullableValue(consultation.selected_subject_slug)} />
       <div>
         <dt className="text-xs font-extrabold uppercase tracking-wide text-ink/55">Trạng thái</dt>
         <dd className="mt-2">
@@ -98,6 +103,7 @@ export default async function AdminConsultationDetailPage({
     firstParam(query.error) === "1" ||
     firstParam(query.status_error) === "1" ||
     firstParam(query.status) === "error";
+  const conflictFlag = firstParam(query.conflict) === "1";
 
   let consultation: Consultation | null;
   try {
@@ -119,6 +125,14 @@ export default async function AdminConsultationDetailPage({
 
   if (!consultation) {
     notFound();
+  }
+
+  let history: ConsultationStatusHistoryEntry[] = [];
+  let historyLoadFailed = false;
+  try {
+    history = await getConsultationStatusHistory(id);
+  } catch {
+    historyLoadFailed = true;
   }
 
   async function updateConsultationStatusAction(
@@ -161,6 +175,12 @@ export default async function AdminConsultationDetailPage({
         </p>
       )}
 
+      {conflictFlag && (
+        <p role="alert" className="mt-6 rounded-2xl border border-amber-200 bg-amber-50/90 p-4 text-sm font-semibold text-amber-800">
+          Trạng thái đã được cập nhật bởi người khác. Dữ liệu mới đã được tải lại; vui lòng kiểm tra trước khi thử lại.
+        </p>
+      )}
+
       <section className="notebook-card notebook-paper-lines mt-8 rounded-[26px] p-5 sm:p-7" aria-labelledby="consultation-details-title">
         <h2 id="consultation-details-title" className="mb-6 border-b border-ink/10 pb-4 text-lg font-black text-ink">Thông tin yêu cầu</h2>
         <ConsultationDetails consultation={consultation} />
@@ -178,12 +198,14 @@ export default async function AdminConsultationDetailPage({
             defaultValue={consultation.status}
             className="notebook-select"
           >
-            {VALID_CONSULTATION_STATUSES.map((status) => (
+            {CONSULTATION_STATUS_TRANSITIONS[consultation.status as ConsultationStatus].map((status) => (
               <option key={status} value={status}>
                 {status}
               </option>
             ))}
           </select>
+          <input type="hidden" name="currentStatus" value={consultation.status} />
+          <input type="hidden" name="version" value={String(consultation.version)} />
           <button
             type="submit"
             className="inline-flex min-h-[50px] items-center justify-center rounded-full bg-accent px-5 text-sm font-extrabold text-white shadow-[0_8px_18px_rgba(23,101,233,0.16)] transition hover:bg-[#1258ce]"
@@ -191,6 +213,35 @@ export default async function AdminConsultationDetailPage({
             Lưu trạng thái
           </button>
         </form>
+      </section>
+
+      <section className="surface-card mt-6 p-5 sm:p-7" aria-labelledby="consultation-history-title">
+        <h2 id="consultation-history-title" className="text-lg font-black text-ink">Lịch sử trạng thái</h2>
+        {historyLoadFailed ? (
+          <p role="alert" className="mt-4 rounded-2xl border border-rose-200 bg-rose-50/90 p-4 text-sm font-semibold text-rose-700">
+            Không thể tải lịch sử trạng thái lúc này. Vui lòng thử lại sau.
+          </p>
+        ) : history.length === 0 ? (
+          <p className="mt-4 text-sm font-semibold text-ink/60">Chưa có lịch sử thay đổi trạng thái.</p>
+        ) : (
+          <ol className="mt-5 space-y-4">
+            {history.map((entry) => (
+              <li key={entry.id} className="rounded-2xl border border-ink/10 bg-white/70 p-4">
+                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-sm font-extrabold text-ink">
+                    {entry.old_status} → {entry.new_status}
+                  </p>
+                  <time dateTime={entry.changed_at} className="text-xs font-semibold text-ink/55">
+                    {formatTimestamp(entry.changed_at)}
+                  </time>
+                </div>
+                <p className="mt-2 text-xs font-semibold text-ink/60">
+                  Người cập nhật: {entry.actor_name ?? "Quản trị viên"}
+                </p>
+              </li>
+            ))}
+          </ol>
+        )}
       </section>
       </div>
     </main>

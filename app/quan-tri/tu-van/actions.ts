@@ -5,6 +5,7 @@ import { notFound, redirect } from "next/navigation";
 import { getAccountAccess } from "@/lib/auth/session";
 import {
   isValidUuid,
+  isValidConsultationStatusTransition,
   updateConsultationStatus,
   VALID_CONSULTATION_STATUSES,
   type ConsultationStatus
@@ -27,25 +28,48 @@ export async function updateConsultationStatusAction(
   }
 
   const rawStatus = formData.get("status");
+  const rawCurrentStatus = formData.get("currentStatus");
+  const rawVersion = formData.get("version");
   const isValidStatus =
     typeof rawStatus === "string" &&
     VALID_CONSULTATION_STATUSES.includes(rawStatus as ConsultationStatus);
+  const isValidCurrentStatus =
+    typeof rawCurrentStatus === "string" &&
+    VALID_CONSULTATION_STATUSES.includes(rawCurrentStatus as ConsultationStatus);
+  const version =
+    typeof rawVersion === "string" && /^\d+$/.test(rawVersion)
+      ? Number(rawVersion)
+      : Number.NaN;
 
-  if (!isValidUuid(id) || !isValidStatus) {
+  if (
+    !isValidUuid(id) ||
+    !isValidStatus ||
+    !isValidCurrentStatus ||
+    !Number.isSafeInteger(version) ||
+    version < 0 ||
+    !isValidConsultationStatusTransition(rawCurrentStatus, rawStatus)
+  ) {
     redirect(`${INBOX_PATH}/${id}?error=1`);
   }
 
   let updateFailed = false;
+  let updateConflict = false;
   try {
     const updated = await updateConsultationStatus(
       id,
-      rawStatus as ConsultationStatus
+      rawStatus as ConsultationStatus,
+      version,
+      rawCurrentStatus as ConsultationStatus
     );
     if (!updated) {
-      updateFailed = true;
+      updateConflict = true;
     }
   } catch {
     updateFailed = true;
+  }
+
+  if (updateConflict) {
+    redirect(`${INBOX_PATH}/${id}?conflict=1`);
   }
 
   if (updateFailed) {
