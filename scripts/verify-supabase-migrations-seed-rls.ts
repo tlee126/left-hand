@@ -1142,6 +1142,21 @@ export function assertLearningProgressConcurrencyMigrationContract(sql0031: stri
   fail(!/\b(?:execute\s+immediate|format\s*\(|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role)\b/i.test(executableCode), "Migration 0031 must not use privilege escalation or dynamic SQL");
 }
 
+/** Exact monotonicity extension contract for migration 0032. */
+export function assertLearningProgressMonotonicityMigrationContract(sql0032: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const code = stripSqlCommentsAndSplitStatements(sql0032).join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  fail(/create or replace function public\.save_learning_progress\([\s\S]*p_expected_version integer/i.test(code), "Migration 0032 must replace the exact CAS progress RPC");
+  fail(/returns public\.learning_progress\s+language plpgsql\s+security definer\s+set search_path = pg_catalog, public/i.test(code), "Migration 0032 must preserve the fixed SECURITY DEFINER boundary");
+  fail(/p_status = 'completed'\s+and p_watched_percent <> 100/i.test(code), "Completed progress must require exactly 100 percent");
+  fail(/p_watched_percent >= public\.learning_progress\.watched_percent/i.test(executableCode), "Migration 0032 must reject watched-percent regressions");
+  fail(/where public\.learning_progress\.version = p_expected_version/i.test(executableCode), "Migration 0032 must preserve expected-version CAS");
+  fail(/version\s*=\s*public\.learning_progress\.version\s*\+\s*1/i.test(executableCode), "Migration 0032 must increment version exactly once");
+  fail(/using errcode = 'p0002'/i.test(code), "Migration 0032 must preserve the generic conflict code");
+  fail(!/\b(?:execute\s+immediate|format\s*\(|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role|grant\s+all|revoke\s+all)\b/i.test(executableCode), "Migration 0032 must not weaken privileges or use unsafe execution");
+}
+
 /** Pure contract used by the CLI audit and integration tests for migration 0016. */
 export function assertMigration0016Contract(sql0016: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -1721,13 +1736,14 @@ export async function runAudit(): Promise<boolean> {
       "0028_learning_progress_entitlement_boundary.sql",
       "0029_material_storage_integrity_boundary.sql",
       "0030_catalog_search_complete_fields.sql",
-      "0031_learning_progress_concurrency.sql"
+      "0031_learning_progress_concurrency.sql",
+      "0032_learning_progress_monotonicity.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 31 migration files exist in strict topological order",
+      check: "All 32 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -2255,6 +2271,15 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0031_learning_progress_concurrency", check: "Rejects stale progress writers and backward progress transitions", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0031ContractValid) results.push({ category: "0031_learning_progress_concurrency", check: "Rejects stale progress writers and backward progress transitions", passed: true, details: "Version token, expected-version CAS, conflict code, monotonic status/percentage rules, and entitlement-bound RPC preserved" });
+
+    // 32. Audit 0032_learning_progress_monotonicity.sql
+    const sql0032 = await fs.readFile(path.join(migrationsDir, "0032_learning_progress_monotonicity.sql"), "utf-8");
+    let migration0032ContractValid = true;
+    try { assertLearningProgressMonotonicityMigrationContract(sql0032); } catch (error) {
+      migration0032ContractValid = false;
+      results.push({ category: "0032_learning_progress_monotonicity", check: "Rejects completed progress below 100% and watched-percent regressions", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0032ContractValid) results.push({ category: "0032_learning_progress_monotonicity", check: "Rejects completed progress below 100% and watched-percent regressions", passed: true, details: "Exact RPC signature, fixed boundary, completed=100 validation, monotonic CAS, and conflict contract verified" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

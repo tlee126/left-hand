@@ -500,6 +500,15 @@ test("API exposes a generic conflict when the database rejects a stale progress 
   assert.deepEqual(await response.json(), { error: "Progress conflict." });
 });
 
+test("API GET returns the authenticated user's fresh batch progress", async () => {
+  reset();
+  rows = [progressRow({ item_type: "material", item_id: PRODUCT_ID, version: 8 })];
+  const response = await Route.GET(new Request(`http://localhost/api/progress?productId=${PRODUCT_ID}`));
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).progress[0], rows[0]);
+  assert.equal(calls.some((call) => call.method === "in" && call.table === "learning_progress"), true);
+});
+
 test("API maps repository/database failures to generic responses without raw error leakage", async () => {
   const responseModule = Route;
   queryError = new Error(RAW_ERROR);
@@ -599,5 +608,69 @@ test("page and real workspace client preserve the auth-to-render timeline and pe
   } finally {
     recordProgressRead = false;
     moduleLoader._load = originalModuleLoad;
+  }
+});
+
+test("workspace refetches fresh progress after one conflict and retries with the fresh version", async () => {
+  const runtime: HookRuntime = { slots: [], cursor: 0 };
+  const workspace = {
+    subject: { slug: "ke-toan", name: "Kế toán", category: "Kế toán", facultyGroup: "UFM", colorTheme: "accounting" },
+    materials: [{ productId: PRODUCT_ID, title: "Material", description: "Description", pages: 1 }],
+    courses: [],
+    progress: [progressRow({ item_type: "material", item_id: PRODUCT_ID, status: "in_progress", watched_percent: 40, completed_at: null, version: 7 })]
+  };
+  const fetchCalls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    fetchCalls.push({ input, init });
+    if (fetchCalls.length === 1) return new Response(JSON.stringify({ error: "conflict" }), { status: 409 });
+    if (fetchCalls.length === 2) return new Response(JSON.stringify({ progress: [progressRow({ item_type: "material", item_id: PRODUCT_ID, status: "in_progress", watched_percent: 60, completed_at: null, version: 8 })] }), { status: 200 });
+    return new Response(JSON.stringify({ success: true }), { status: 200 });
+  };
+  try {
+    let tree = renderClient({ workspace }, runtime);
+    buttonWithText(tree, "Tài liệu").props.onClick();
+    tree = renderClient({ workspace }, runtime);
+    await buttonWithText(tree, "Đánh dấu đã học").props.onClick();
+    assert.equal(fetchCalls.length, 3);
+    assert.equal(String(fetchCalls[1].input), `/api/progress?productId=${PRODUCT_ID}`);
+    const retryPayload = JSON.parse(String(fetchCalls[2].init?.body));
+    assert.equal(retryPayload.expectedVersion, 8);
+    assert.equal(retryPayload.watchedPercent, 100);
+    assert.equal(retryPayload.status, "completed");
+    tree = renderClient({ workspace }, runtime);
+    assert.match(elementText(tree), /100%/);
+    assert.doesNotMatch(elementText(tree), /conflict|database|secret/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("workspace stops after a second conflict and exposes one manual retry", async () => {
+  const runtime: HookRuntime = { slots: [], cursor: 0 };
+  const workspace = {
+    subject: { slug: "ke-toan", name: "Kế toán", category: "Kế toán", facultyGroup: "UFM", colorTheme: "accounting" },
+    materials: [{ productId: PRODUCT_ID, title: "Material", description: "Description", pages: 1 }],
+    courses: [],
+    progress: [progressRow({ item_type: "material", item_id: PRODUCT_ID, status: "in_progress", watched_percent: 40, completed_at: null, version: 7 })]
+  };
+  let requestCount = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    requestCount += 1;
+    if (requestCount === 2) return new Response(JSON.stringify({ progress: [progressRow({ item_type: "material", item_id: PRODUCT_ID, status: "in_progress", watched_percent: 60, completed_at: null, version: 8 })] }), { status: 200 });
+    return new Response(JSON.stringify({ error: "conflict" }), { status: 409 });
+  };
+  try {
+    let tree = renderClient({ workspace }, runtime);
+    buttonWithText(tree, "Tài liệu").props.onClick();
+    tree = renderClient({ workspace }, runtime);
+    await buttonWithText(tree, "Đánh dấu đã học").props.onClick();
+    tree = renderClient({ workspace }, runtime);
+    assert.equal(requestCount, 3);
+    assert.match(elementText(tree), /Tiến độ vừa được cập nhật ở nơi khác\. Vui lòng thử lại/);
+    assert.match(elementText(tree), /Lưu lại/);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });

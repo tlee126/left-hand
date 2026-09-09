@@ -39,6 +39,7 @@ import {
   assertMaterialStorageIntegrityBoundaryMigrationContract,
   assertCatalogCompleteSearchMigrationContract,
   assertLearningProgressConcurrencyMigrationContract,
+  assertLearningProgressMonotonicityMigrationContract,
   stripSqlCommentsAndSplitStatements,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
@@ -265,6 +266,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       "0029_material_storage_integrity_boundary.sql",
       "0030_catalog_search_complete_fields.sql"
       ,"0031_learning_progress_concurrency.sql"
+      ,"0032_learning_progress_monotonicity.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -332,6 +334,14 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         /./
       );
       assert.doesNotThrow(() => assertLearningProgressConcurrencyMigrationContract(`-- p_user_id uuid\n${sql}`));
+    });
+
+    test("0032 rejects completed progress below 100% and watched-percent regressions", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0032_learning_progress_monotonicity.sql"), "utf-8");
+      assert.doesNotThrow(() => assertLearningProgressMonotonicityMigrationContract(sql));
+      assert.throws(() => assertLearningProgressMonotonicityMigrationContract(sql.replace("p_watched_percent <> 100", "p_watched_percent <> 99")), /./);
+      assert.throws(() => assertLearningProgressMonotonicityMigrationContract(sql.replace("p_watched_percent >= public.learning_progress.watched_percent", "p_watched_percent > public.learning_progress.watched_percent")), /./);
+      assert.doesNotThrow(() => assertLearningProgressMonotonicityMigrationContract(`-- p_watched_percent <> 100\n${sql}`));
     });
 
     test("0001_core_schema.sql creates all 8 application tables with primary keys and constraints", async () => {
