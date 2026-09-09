@@ -1149,23 +1149,97 @@ export function assertMaterialUploadCleanupMigrationContract(sql0034: string): v
 /** Server/database idempotency contract for each direct-upload attempt. */
 export function assertMaterialUploadIdempotencyMigrationContract(sql0035: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
-  const code = stripSqlCommentsAndSplitStatements(sql0035).join(" ; ");
+  const statements = stripSqlCommentsAndSplitStatements(sql0035).map(normalizeMigrationStatement);
+  const code = statements.join(" ; ");
   const executableCode = maskSqlStringLiterals(code);
+  const reserve = statements.find((statement) => statement.startsWith("create or replace function public.reserve_material_asset_upload(")) || "";
+  const finalize = statements.find((statement) => statement.startsWith("create or replace function public.finalize_material_asset_upload(")) || "";
+  const expectedPrivileges = [
+    "revoke all on function public.reserve_material_asset_upload(uuid, text, text, text, bigint, uuid) from public, anon",
+    "revoke all on function public.finalize_material_asset_upload(uuid, uuid) from public, anon",
+    "grant execute on function public.reserve_material_asset_upload(uuid, text, text, text, bigint, uuid) to authenticated",
+    "grant execute on function public.finalize_material_asset_upload(uuid, uuid) to authenticated"
+  ];
+  const privilegeStatements = statements.filter((statement) => /^(?:grant|revoke)\b/i.test(statement));
+  fail(statements.length === 12, "Migration 0035 must contain exactly its 12 allowlisted statements");
+  fail(privilegeStatements.length === expectedPrivileges.length && expectedPrivileges.every((statement) => privilegeStatements.includes(statement)), "Migration 0035 privileges must match the exact server upload allowlist");
+  fail(statements.filter((statement) => !/^(?:grant|revoke)\b/i.test(statement)).every((statement) => !/^(?:do|copy|call|insert|update|delete|truncate|alter\s+system)\b/i.test(statement)), "Migration 0035 contains a top-level statement outside the upload contract");
+  fail(statements.includes("create unique index material_asset_upload_reservations_idempotency_key_unique on public.material_asset_upload_reservations (uploaded_by, upload_idempotency_key) where upload_idempotency_key is not null"), "Migration 0035 must contain the exact owner/key reservation uniqueness constraint");
+  fail(statements.includes("create unique index material_assets_upload_idempotency_key_unique on public.material_assets (uploaded_by, upload_idempotency_key) where uploaded_by is not null and upload_idempotency_key is not null"), "Migration 0035 must contain the exact owner/key committed-asset uniqueness constraint");
   fail(/alter table public\.material_asset_upload_reservations[\s\S]*add column upload_idempotency_key uuid/i.test(code), "Migration 0035 must bind reservations to an idempotency key");
   fail(/alter table public\.material_assets[\s\S]*add column upload_idempotency_key uuid/i.test(code), "Migration 0035 must persist the idempotency key on committed assets");
   fail(/material_asset_upload_reservations_idempotency_key_unique[\s\S]*uploaded_by, upload_idempotency_key[\s\S]*where upload_idempotency_key is not null/i.test(code), "Migration 0035 must uniquely scope active reservations by uploader and key");
   fail(/material_assets_upload_idempotency_key_unique[\s\S]*uploaded_by, upload_idempotency_key[\s\S]*where uploaded_by is not null and upload_idempotency_key is not null/i.test(code), "Migration 0035 must uniquely scope committed assets by uploader and key");
-  fail(/create or replace function public\.reserve_material_asset_upload\([\s\S]*p_idempotency_key uuid/i.test(code), "Migration 0035 must require the idempotency key in prepare RPC");
-  fail(/uploaded_by = v_user_id[\s\S]*upload_idempotency_key = p_idempotency_key/i.test(code), "Prepare RPC must look up keys in the authenticated owner scope");
+  fail(/^create or replace function public\.reserve_material_asset_upload\(\s*p_product_id uuid, p_original_name text, p_safe_filename text, p_mime_type text, p_byte_size bigint, p_idempotency_key uuid\s*\)/i.test(reserve), "Migration 0035 must require the exact keyed prepare RPC signature");
+  fail(/^create or replace function public\.finalize_material_asset_upload\(\s*p_reservation_id uuid, p_idempotency_key uuid\s*\)/i.test(finalize), "Migration 0035 must require the exact keyed finalize RPC signature");
+  fail(!/\b(?:p_actor|p_user_id|p_uploaded_by|p_timestamp|p_created_at|p_updated_at)\b/i.test(code), "Migration 0035 must not accept caller-supplied actor or timestamp values");
+  fail(/uploaded_by = v_user_id[\s\S]*upload_idempotency_key = p_idempotency_key/i.test(reserve), "Prepare RPC must look up keys in the authenticated owner scope");
   fail(/status', 'reserved'[\s\S]*is_new', false/i.test(code) && /status', 'committed'[\s\S]*is_new', false/i.test(code), "Prepare RPC must return existing active reservations and committed assets");
   fail(/return\s+jsonb_build_object\(\s*'status',\s*'conflict'\s*\)/i.test(code), "Prepare RPC must reject immutable metadata conflicts generically");
-  fail(/pg_advisory_xact_lock\(hashtextextended\(v_user_id::text[\s\S]*p_idempotency_key::text/i.test(code), "Prepare RPC must serialize an uploader's idempotency key");
-  fail(/drop function if exists public\.finalize_material_asset_upload\(uuid\)/i.test(code) && /create or replace function public\.finalize_material_asset_upload\(p_reservation_id uuid, p_idempotency_key uuid\)/i.test(code), "Finalization RPC must bind the same idempotency key");
-  fail(/upload_idempotency_key = p_idempotency_key[\s\S]*for update/i.test(code) && /upload_reservation_id = p_reservation_id[\s\S]*uploaded_by = v_user_id[\s\S]*upload_idempotency_key = p_idempotency_key/i.test(code), "Finalization must enforce owner/key identity and return committed duplicates");
+  fail(/pg_advisory_xact_lock\(hashtextextended\(v_user_id::text[\s\S]*p_idempotency_key::text/i.test(reserve), "Prepare RPC must serialize an uploader's idempotency key");
+  fail(statements.some((statement) => /^drop function if exists public\.finalize_material_asset_upload\(uuid\)$/i.test(statement)), "Finalization RPC must remove the pre-keyed overload");
+  fail(/upload_idempotency_key = p_idempotency_key[\s\S]*for update/i.test(finalize) && /upload_reservation_id = p_reservation_id[\s\S]*uploaded_by = v_user_id[\s\S]*upload_idempotency_key = p_idempotency_key/i.test(finalize), "Finalization must enforce owner/key identity and return committed duplicates");
   fail(/upload_reservation_id, upload_idempotency_key, storage_path/i.test(executableCode) && /delete from public\.material_asset_upload_reservations/i.test(executableCode), "Finalization must persist the key and consume the reservation atomically");
   fail((code.match(/set search_path = pg_catalog, public/gi) ?? []).length === 2, "Migration 0035 functions must use the fixed search_path");
-  fail(!/\b(?:execute\s+(?:immediate|format)|set\s+role|alter\s+role|bypassrls|dynamic\s+sql)\b/i.test(executableCode), "Migration 0035 must not use dynamic SQL or privilege escalation");
-  fail(/grant execute on function public\.reserve_material_asset_upload\(uuid, text, text, text, bigint, uuid\) to authenticated/i.test(code) && /grant execute on function public\.finalize_material_asset_upload\(uuid, uuid\) to authenticated/i.test(code), "Migration 0035 must grant only the authenticated upload boundary");
+  fail(!/\b(?:execute\s+(?:immediate|format)|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role)\b/i.test(executableCode), "Migration 0035 must not use dynamic SQL or privilege escalation");
+  fail(/v_reservation\.product_id <> p_product_id/i.test(reserve) && /v_reservation\.original_name is distinct from p_original_name/i.test(reserve) && /v_reservation\.mime_type is distinct from p_mime_type/i.test(reserve) && /v_reservation\.byte_size is distinct from p_byte_size/i.test(reserve), "Prepare RPC must bind product and immutable file metadata");
+  fail(/material_asset_upload_reservations_idempotency_key_unique/i.test(code) && /material_assets_upload_idempotency_key_unique/i.test(code), "Migration 0035 must retain unique reservation and committed-asset idempotency scopes");
+}
+
+/** Exact retry-state, owner-scoped cleanup, and privilege contract for migration 0036. */
+export function assertMaterialUploadRetryStateMigrationContract(sql0036: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const statements = stripSqlCommentsAndSplitStatements(sql0036).map(normalizeMigrationStatement);
+  const code = statements.join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  const functionBody = (name: string): string => statements.find((statement) => statement.startsWith(`create or replace function public.${name}(`)) || "";
+  const expectedPrivileges = [
+    "revoke all on function public.mark_material_asset_upload_retryable(uuid) from public, anon",
+    "revoke all on function public.begin_material_asset_upload_retry_cleanup(uuid) from public, anon",
+    "revoke all on function public.complete_material_asset_upload_retry_cleanup(uuid) from public, anon",
+    "grant execute on function public.mark_material_asset_upload_retryable(uuid) to authenticated",
+    "grant execute on function public.begin_material_asset_upload_retry_cleanup(uuid) to authenticated",
+    "grant execute on function public.complete_material_asset_upload_retry_cleanup(uuid) to authenticated"
+  ];
+  const privilegeStatements = statements.filter((statement) => /^(?:grant|revoke)\b/i.test(statement));
+  const expectedPrefixes = [
+    /^alter table public\.material_asset_upload_reservations add column retryable_at timestamptz, add column cleanup_pending_at timestamptz, add constraint material_asset_upload_reservations_retry_state_check check \(\s*not \(retryable_at is not null and cleanup_pending_at is not null\)\s*\)$/i,
+    /^create index material_asset_upload_reservations_retry_state_idx /i,
+    /^drop policy if exists materials_approved_admin_insert on storage\.objects$/i,
+    /^create policy materials_approved_admin_insert on storage\.objects for insert to authenticated /i,
+    /^create or replace function public\.(?:reserve_material_asset_upload|mark_material_asset_upload_retryable|begin_material_asset_upload_retry_cleanup|complete_material_asset_upload_retry_cleanup|claim_expired_material_asset_uploads|complete_expired_material_asset_upload_cleanup|release_expired_material_asset_upload_cleanup|cancel_material_asset_upload|finalize_material_asset_upload)\(/i,
+    /^revoke all on function public\.(?:mark_material_asset_upload_retryable|begin_material_asset_upload_retry_cleanup|complete_material_asset_upload_retry_cleanup)\(uuid\) from public, anon$/i,
+    /^grant execute on function public\.(?:mark_material_asset_upload_retryable|begin_material_asset_upload_retry_cleanup|complete_material_asset_upload_retry_cleanup)\(uuid\) to authenticated$/i
+  ];
+  const expectedFunctionNames = [
+    "reserve_material_asset_upload",
+    "mark_material_asset_upload_retryable",
+    "begin_material_asset_upload_retry_cleanup",
+    "complete_material_asset_upload_retry_cleanup",
+    "claim_expired_material_asset_uploads",
+    "complete_expired_material_asset_upload_cleanup",
+    "release_expired_material_asset_upload_cleanup",
+    "cancel_material_asset_upload",
+    "finalize_material_asset_upload"
+  ];
+  fail(statements.length === 19, "Migration 0036 must contain exactly its 19 allowlisted statements");
+  fail(statements.every((statement) => expectedPrefixes.some((pattern) => pattern.test(statement))), "Migration 0036 contains a statement outside its exact allowlist");
+  fail(expectedFunctionNames.every((name, index) => statements[index + 4].startsWith(`create or replace function public.${name}(`)), "Migration 0036 functions must match the exact state-machine allowlist and order");
+  fail(privilegeStatements.length === expectedPrivileges.length && expectedPrivileges.every((statement, index) => privilegeStatements[index] === statement), "Migration 0036 privileges must match the exact owner-scoped allowlist");
+  fail(/create policy materials_approved_admin_insert[\s\S]*cancelled_at is null[\s\S]*cleanup_pending_at is null[\s\S]*expires_at > now\(\)/i.test(code), "Storage INSERT must reject cancelled, cleanup-pending, and expired reservations");
+  fail(/retryable_at is not null[\s\S]*cleanup_pending_at is not null/i.test(code) && /cleanup_pending_at = null[\s\S]*retryable_at = now\(\)/i.test(code), "Migration 0036 must define mutually exclusive retry states and recover cleanup-pending reservations");
+  fail(/cleanup_pending_at = coalesce\(cleanup_pending_at, now\(\)\)[\s\S]*not exists[\s\S]*material_assets/i.test(functionBody("begin_material_asset_upload_retry_cleanup")), "Retry cleanup must lock only unfinalized owner reservations");
+  fail(functionBody("begin_material_asset_upload_retry_cleanup").includes("cleanup_pending_at = coalesce(cleanup_pending_at, now())") && functionBody("begin_material_asset_upload_retry_cleanup").includes("retryable_at = null"), "Retry cleanup begin must prevent concurrent finalize");
+  fail(functionBody("complete_material_asset_upload_retry_cleanup").includes("cleanup_pending_at = null") && functionBody("complete_material_asset_upload_retry_cleanup").includes("retryable_at = now()") && functionBody("complete_material_asset_upload_retry_cleanup").includes("cleanup_pending_at is not null"), "Successful object deletion must return the same reservation to retryable state");
+  fail(/cleanup_pending_at is not null[\s\S]*or reservations\.cancelled_at is not null[\s\S]*for update skip locked/i.test(functionBody("claim_expired_material_asset_uploads")), "Cleanup must claim retry-pending sessions with row locking");
+  fail(/material_assets AS assets[\s\S]*assets\.upload_reservation_id = reservations\.id/i.test(functionBody("claim_expired_material_asset_uploads")), "Cleanup claims must protect finalized assets");
+  const ownerFunctions = ["reserve_material_asset_upload", "mark_material_asset_upload_retryable", "begin_material_asset_upload_retry_cleanup", "complete_material_asset_upload_retry_cleanup", "cancel_material_asset_upload", "finalize_material_asset_upload"];
+  fail(ownerFunctions.every((name) => /v_user_id uuid := auth\.uid\(\)/i.test(functionBody(name)) && /uploaded_by = v_user_id/i.test(functionBody(name))), "Retry and cancellation RPCs must derive ownership from auth.uid() and apply it to the reservation");
+  fail(/uploaded_by = v_user_id[\s\S]*upload_idempotency_key = p_idempotency_key/i.test(functionBody("reserve_material_asset_upload")) && /uploaded_by = v_user_id[\s\S]*upload_idempotency_key = p_idempotency_key/i.test(functionBody("finalize_material_asset_upload")), "Retry and finalize RPCs must preserve the owner-scoped idempotency key binding");
+  fail(/v_reservation\.product_id <> p_product_id/i.test(functionBody("reserve_material_asset_upload")) && /v_reservation\.original_name is distinct from p_original_name/i.test(functionBody("reserve_material_asset_upload")) && /v_reservation\.mime_type is distinct from p_mime_type/i.test(functionBody("reserve_material_asset_upload")) && /v_reservation\.byte_size is distinct from p_byte_size/i.test(functionBody("reserve_material_asset_upload")), "Retry prepare must preserve the immutable product and file identity binding");
+  fail(/p_actor|p_user_id|p_uploaded_by|p_timestamp|p_created_at|p_updated_at/i.test(code) === false, "Migration 0036 must not accept caller-supplied actor or timestamp values");
+  fail(!/\b(?:grant\s+execute[^;]*\bto\s+(?:anon|public)|grant\s+(?:insert|update|delete|all)\s+on\s+(?:table\s+)?public\.(?:material_assets|material_asset_upload_reservations)|bypassrls|set\s+role|execute\s+(?:immediate|format)|dynamic\s+sql|service_role)\b/i.test(executableCode), "Migration 0036 must not widen privileges or use unsafe execution");
+  fail(!/^(?:do|copy|call|insert|update|delete|truncate|alter\s+system)\b/i.test(statements.join(" ; ")), "Migration 0036 must not contain unrelated executable statements");
 }
 
 /** Canonical catalog search document contract for migration 0030. */
@@ -1802,13 +1876,14 @@ export async function runAudit(): Promise<boolean> {
       "0032_learning_progress_monotonicity.sql",
       "0033_material_direct_upload_sessions.sql",
       "0034_material_upload_cleanup_hardening.sql",
-      "0035_material_upload_idempotency.sql"
+      "0035_material_upload_idempotency.sql",
+      "0036_material_upload_retry_state.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 35 migration files exist in strict topological order",
+      check: "All 36 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -2372,6 +2447,15 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0035_material_upload_idempotency", check: "Binds prepare/finalize retries to one immutable upload attempt", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0035ContractValid) results.push({ category: "0035_material_upload_idempotency", check: "Binds prepare/finalize retries to one immutable upload attempt", passed: true, details: "Owner-scoped unique keys, existing reservation/asset replay, immutable metadata conflicts, and atomic keyed finalization verified" });
+
+    // 36. Audit 0036_material_upload_retry_state.sql
+    const sql0036 = await fs.readFile(path.join(migrationsDir, "0036_material_upload_retry_state.sql"), "utf-8");
+    let migration0036ContractValid = true;
+    try { assertMaterialUploadRetryStateMigrationContract(sql0036); } catch (error) {
+      migration0036ContractValid = false;
+      results.push({ category: "0036_material_upload_retry_state", check: "Preserves reservations across pre-commit failures and hardens owner-scoped cleanup", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0036ContractValid) results.push({ category: "0036_material_upload_retry_state", check: "Preserves reservations across pre-commit failures and hardens owner-scoped cleanup", passed: true, details: "Retryable/cleanup-pending states, exact-path cleanup transitions, finalized-object protection, and private RPC privileges verified" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

@@ -25,7 +25,6 @@ const productId = "${PRODUCT_ID}";
 const reservationId = "${RESERVATION_ID}";
 const storagePath = "${STORAGE_PATH}";
 globalThis.__adminId = scenario.adminId || uuid;
-globalThis.__finalized = false;
 globalThis.__reserveCount = 0;
 globalThis.__finalizeError = Boolean(scenario.finalizeError);
 globalThis.__prepareCommitted = Boolean(scenario.prepareCommitted);
@@ -34,17 +33,20 @@ globalThis.__cancelResult = scenario.cancelResult !== false;
 globalThis.__calls = [];
 
 const authUrl = dataUrl("export async function getAccountAccess() { return { status: 'approved', user: { id: globalThis.__adminId }, profile: { role: 'admin' } }; }");
-const reservation = { reservationId, productId, uploadedBy: uuid, idempotencyKey: "${IDEMPOTENCY_KEY}", storagePath, originalName: 'material.pdf', mimeType: 'application/pdf', byteSize: 5, version: 1, expiresAt: new Date(Date.now() + 3600000).toISOString() };
+const reservation = { reservationId, productId, uploadedBy: uuid, idempotencyKey: "${IDEMPOTENCY_KEY}", storagePath, originalName: 'material.pdf', mimeType: 'application/pdf', byteSize: 5, version: 1, expiresAt: new Date(Date.now() + 3600000).toISOString(), cancelledAt: scenario.cancelledReservation ? new Date().toISOString() : null, retryableAt: null, cleanupPendingAt: null };
 const asset = { id: "a50e8400-e29b-41d4-a716-446655440000", product_id: productId, uploaded_by: uuid, upload_reservation_id: reservationId, upload_idempotency_key: "${IDEMPOTENCY_KEY}", storage_path: storagePath, original_name: 'material.pdf', mime_type: 'application/pdf', byte_size: 5, version: 1, visibility: 'private', created_at: '', updated_at: '' };
 const repoUrl = dataUrl(
   "export class MaterialAssetUploadConflictError extends Error {}\n" +
   "export async function isMaterialProduct() { globalThis.__calls.push('material'); return true; }\n" +
-  "export async function reserveMaterialAssetUpload(input) { globalThis.__calls.push('reserve:' + input.idempotencyKey); if (globalThis.__prepareConflict) throw new MaterialAssetUploadConflictError(); const isNew = globalThis.__reserveCount++ === 0; return { reservationId: '" + reservationId + "', version: 1, status: globalThis.__prepareCommitted ? 'committed' : 'reserved', isNew, storagePath: '" + storagePath + "' }; }\n" +
-  "export async function getMaterialAssetUploadReservation() { globalThis.__calls.push('reservation'); return (globalThis.__adminId === '" + uuid + "' || " + Boolean(scenario.exposeReservation) + ") && !globalThis.__finalized ? " + JSON.stringify(reservation) + " : null; }\n" +
-  "export async function getMaterialAssetByUploadReservation(id, owner) { globalThis.__calls.push('existing:' + owner); return globalThis.__finalized && owner === '" + uuid + "' ? " + JSON.stringify(asset) + " : null; }\n" +
-  "export async function finalizeMaterialAssetUpload() { globalThis.__calls.push('finalize'); if (globalThis.__finalizeError) throw new Error('rpc'); globalThis.__finalized = true; return " + JSON.stringify(asset) + "; }\n" +
+  "export async function reserveMaterialAssetUpload(input) { globalThis.__calls.push('reserve:' + input.idempotencyKey); if (globalThis.__prepareConflict) throw new MaterialAssetUploadConflictError(); const isNew = globalThis.__reserveCount++ === 0; return { reservationId: '" + reservationId + "', version: 1, status: globalThis.__prepareCommitted ? 'committed' : 'reserved', isNew, retryable: false, cleanupPending: false, storagePath: '" + storagePath + "' }; }\n" +
+  "export async function getMaterialAssetUploadReservation() { globalThis.__calls.push('reservation'); return !" + Boolean(scenario.missingReservation) + " && (globalThis.__adminId === '" + uuid + "' || " + Boolean(scenario.exposeReservation) + ") ? " + JSON.stringify(reservation) + " : null; }\n" +
+  "export async function getMaterialAssetByUploadReservation(id, owner) { globalThis.__calls.push('existing:' + owner); return " + Boolean(scenario.committedAsset) + " && owner === '" + uuid + "' ? " + JSON.stringify(asset) + " : null; }\n" +
+  "export async function finalizeMaterialAssetUpload() { globalThis.__calls.push('finalize'); if (globalThis.__finalizeError) throw new Error('rpc'); return " + JSON.stringify(asset) + "; }\n" +
   "export async function releaseMaterialAssetUpload() { globalThis.__calls.push('release'); }\n" +
-  "export async function markMaterialAssetUploadCancelled() { globalThis.__calls.push('cancelled'); return globalThis.__cancelResult; }"
+  "export async function markMaterialAssetUploadCancelled() { globalThis.__calls.push('cancelled'); return globalThis.__cancelResult; }\n" +
+  "export async function markMaterialAssetUploadRetryable() { globalThis.__calls.push('retryable'); return true; }\n" +
+  "export async function beginMaterialAssetUploadRetryCleanup() { globalThis.__calls.push('begin-retry-cleanup'); return " + (scenario.beginCleanup !== false ? "true" : "false") + "; }\n" +
+  "export async function completeMaterialAssetUploadRetryCleanup() { globalThis.__calls.push('complete-retry-cleanup'); return " + (scenario.completeCleanup !== false ? "true" : "false") + "; }"
 );
 const storageUrl = dataUrl(
   "export const MATERIALS_BUCKET = 'materials'; export const MATERIAL_UPLOAD_EXPIRES_IN_SECONDS = 7200;\n" +
@@ -53,9 +55,9 @@ const storageUrl = dataUrl(
   "export function materialSizeLimit() { return 20971520; }\n" +
   "export function sanitizeMaterialFilename() { return 'material.pdf'; }\n" +
   "export function isValidMaterialStoragePathForProductAndVersion() { return true; }\n" +
-  "export async function createMaterialUploadCapability(path) { return { storagePath: path, token: 'token' }; }\n" +
-  "export async function inspectMaterialObject(path, mime, size) { globalThis.__calls.push('inspect'); return { storagePath: path, mimeType: mime, byteSize: size }; }\n" +
-  "export async function removeNewMaterialObject() { globalThis.__calls.push('remove'); }"
+  "export async function createMaterialUploadCapability(path) { if (" + Boolean(scenario.capabilityFailure) + ") throw new Error('capability'); return { storagePath: path, token: 'token' }; }\n" +
+  "export async function inspectMaterialObject(path, mime, size) { globalThis.__calls.push('inspect'); if (" + Boolean(scenario.inspectFailure) + ") throw new Error('inspection'); return { storagePath: path, mimeType: mime, byteSize: size }; }\n" +
+  "export async function removeNewMaterialObject() { globalThis.__calls.push('remove'); if (" + Boolean(scenario.removeFailure) + ") throw new Error('storage'); }"
 );
 const boundedSource = await readFile(path.resolve(process.cwd(), "lib/http/bounded-json.ts"), "utf8");
 const boundedUrl = dataUrl((await transform(boundedSource, { loader: "ts", format: "esm" })).code);
@@ -110,14 +112,17 @@ process.env.CRON_SECRET = "test-cron-secret";
 globalThis.__calls = [];
 globalThis.__claimCount = 0;
 globalThis.__completionCount = 0;
+globalThis.__removeCount = 0;
 globalThis.__completed = false;
 const dataUrl = (source) => "data:text/javascript," + encodeURIComponent(source);
+const claimRows = JSON.stringify(scenario.claimRows ?? [{ reservationId: '850e8400-e29b-41d4-a716-446655440000', claimId: '950e8400-e29b-41d4-a716-446655440000', storagePath: 'materials/750e8400-e29b-41d4-a716-446655440000/v1/850e8400-e29b-41d4-a716-446655440000-material.pdf' }]);
+const completionOverride = Object.prototype.hasOwnProperty.call(scenario, 'completionValue') ? JSON.stringify(scenario.completionValue) : null;
 const repoUrl = dataUrl(
-  "export async function claimExpiredMaterialAssetUploads() { globalThis.__calls.push('claim'); globalThis.__claimCount++; return (" + (scenario.noClaims ? "true" : "false") + " || globalThis.__completed || (" + (scenario.repeatEmpty ? "globalThis.__claimCount > 1" : "false") + ")) ? [] : [{ reservationId: '850e8400-e29b-41d4-a716-446655440000', claimId: '950e8400-e29b-41d4-a716-446655440000', storagePath: 'materials/750e8400-e29b-41d4-a716-446655440000/v1/850e8400-e29b-41d4-a716-446655440000-material.pdf' }]; }\n" +
-  "export async function completeExpiredMaterialAssetUploadCleanup() { globalThis.__calls.push('complete'); globalThis.__completionCount++; if (" + Boolean(scenario.completionError) + ") throw new Error('db'); if (" + Boolean(scenario.completionFalse) + " && !(" + Boolean(scenario.completionFalseOnce) + " && globalThis.__completionCount > 1) ) return false; globalThis.__completed = true; return true; }\n" +
+  "export async function claimExpiredMaterialAssetUploads() { globalThis.__calls.push('claim'); globalThis.__claimCount++; return (" + (scenario.noClaims ? "true" : "false") + " || globalThis.__completed || (" + (scenario.repeatEmpty ? "globalThis.__claimCount > 1" : "false") + ")) ? [] : " + claimRows + "; }\n" +
+  "export async function completeExpiredMaterialAssetUploadCleanup() { globalThis.__calls.push('complete'); globalThis.__completionCount++; if (" + Boolean(scenario.completionError) + ") throw new Error('db'); if (" + (completionOverride ? "true" : "false") + ") return " + (completionOverride ?? "null") + "; if (" + Boolean(scenario.completionFalse) + " && !(" + Boolean(scenario.completionFalseOnce) + " && globalThis.__completionCount > 1) ) return false; globalThis.__completed = true; return true; }\n" +
   "export async function releaseExpiredMaterialAssetUploadCleanup() { globalThis.__calls.push('release'); return true; }"
 );
-const storageUrl = dataUrl("export async function removeNewMaterialObject() { globalThis.__calls.push('remove'); if (" + Boolean(scenario.storageFailure) + ") throw new Error('storage'); }");
+const storageUrl = dataUrl("export async function removeNewMaterialObject() { globalThis.__calls.push('remove'); globalThis.__removeCount++; if (" + Boolean(scenario.storageFailure) + " || (Array.isArray(" + JSON.stringify(scenario.storageFailures ?? null) + ") && " + JSON.stringify(scenario.storageFailures ?? null) + "[globalThis.__removeCount - 1] === true)) throw new Error('storage'); }");
 let source = await readFile(path.resolve(process.cwd(), "app/api/internal/cron/material-upload-cleanup/route.ts"), "utf8");
 source = source.replaceAll("@/lib/repositories/material-asset-repository", repoUrl).replaceAll("@/lib/storage/material-storage", storageUrl);
 const route = await import(dataUrl((await transform(source, { loader: "ts", format: "esm" })).code));
@@ -197,13 +202,14 @@ describe("direct material upload hardening runtime", () => {
       { route: "finalize", adminId: ADMIN_B, body: JSON.stringify({ reservationId: RESERVATION_ID, idempotencyKey: IDEMPOTENCY_KEY }) }
     ]);
     assert.deepEqual(result.results.map((item) => item.status), [200, 200, 409]);
-    assert.equal(result.calls.filter((call) => call === "finalize").length, 1);
+    assert.equal(result.calls.filter((call) => call === "finalize").length, 2);
     assert.equal(result.calls.filter((call) => call === `existing:${ADMIN_B}`).length, 1);
   });
 
   test("cancel cannot delete a reservation owned by another admin", async () => {
-    const result = await runRoute([{ route: "cancel", adminId: ADMIN_B, body: JSON.stringify({ reservationId: RESERVATION_ID }) }], { exposeReservation: true, cancelResult: false });
-    assert.deepEqual(result.results.map((item) => item.status), [409]);
+    const result = await runRoute([{ route: "cancel", adminId: ADMIN_B, body: JSON.stringify({ reservationId: RESERVATION_ID }) }]);
+    assert.deepEqual(result.results.map((item) => item.status), [404]);
+    assert.equal(result.calls.includes(`existing:${ADMIN_B}`), true);
     assert.equal(result.calls.includes("remove"), false);
   });
 
@@ -211,6 +217,71 @@ describe("direct material upload hardening runtime", () => {
     const result = await runRoute([{ route: "finalize", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID, idempotencyKey: IDEMPOTENCY_KEY }) }], { finalizeError: true });
     assert.deepEqual(result.results.map((item) => item.status), [500]);
     assert.equal(result.calls.includes("remove"), false);
+  });
+
+  test("pre-commit inspection failure preserves the reservation and reuses its server path", async () => {
+    const body = JSON.stringify({ originalName: "material.pdf", mimeType: "application/pdf", byteSize: 5, idempotencyKey: IDEMPOTENCY_KEY });
+    const finalizeBody = JSON.stringify({ reservationId: RESERVATION_ID, idempotencyKey: IDEMPOTENCY_KEY });
+    const result = await runRoute([
+      { route: "finalize", adminId: ADMIN_A, body: finalizeBody },
+      { route: "prepare", adminId: ADMIN_A, body }
+    ], { inspectFailure: true });
+    assert.deepEqual(result.results.map((item) => item.status), [500, 200]);
+    assert.deepEqual(result.calls.slice(0, 5), ["reservation", "inspect", "begin-retry-cleanup", "remove", "complete-retry-cleanup"]);
+    assert.equal(result.calls.includes("release"), false);
+    assert.deepEqual(result.results[1].body, {
+      reservationId: RESERVATION_ID,
+      version: 1,
+      status: "reserved",
+      upload: { bucket: "materials", path: STORAGE_PATH, token: "token" },
+      expiresIn: 7200
+    });
+  });
+
+  test("object deletion failure leaves cleanup pending and never releases the reservation", async () => {
+    const result = await runRoute([{ route: "finalize", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID, idempotencyKey: IDEMPOTENCY_KEY }) }], { inspectFailure: true, removeFailure: true });
+    assert.equal(result.results[0].status, 500);
+    assert.deepEqual(result.calls, ["reservation", "inspect", "begin-retry-cleanup", "remove"]);
+    assert.equal(result.calls.includes("release"), false);
+    assert.equal(result.calls.includes("complete-retry-cleanup"), false);
+  });
+
+  test("a concurrent finalize that cannot begin cleanup never deletes the exact path", async () => {
+    const result = await runRoute([{ route: "finalize", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID, idempotencyKey: IDEMPOTENCY_KEY }) }], { inspectFailure: true, beginCleanup: false });
+    assert.equal(result.results[0].status, 500);
+    assert.deepEqual(result.calls, ["reservation", "inspect", "begin-retry-cleanup"]);
+    assert.equal(result.calls.includes("remove"), false);
+  });
+
+  test("prepare capability failure marks a new reservation retryable instead of releasing it", async () => {
+    const result = await runRoute([{ route: "prepare", adminId: ADMIN_A, body: JSON.stringify({ originalName: "material.pdf", mimeType: "application/pdf", byteSize: 5, idempotencyKey: IDEMPOTENCY_KEY }) }], { capabilityFailure: true });
+    assert.equal(result.results[0].status, 500);
+    assert.equal(result.calls.includes("retryable"), true);
+    assert.equal(result.calls.includes("release"), false);
+  });
+
+  test("cancel after commit is a generic conflict and does not mutate storage", async () => {
+    const result = await runRoute([{ route: "cancel", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID }) }], { committedAsset: true, missingReservation: true });
+    assert.equal(result.results[0].status, 409);
+    assert.deepEqual(result.results[0].body, { error: "Material upload is not available." });
+    assert.equal(result.calls.includes("cancelled"), false);
+    assert.equal(result.calls.includes("remove"), false);
+  });
+
+  test("owner retry of a terminal canceled reservation is idempotent", async () => {
+    const result = await runRoute([
+      { route: "cancel", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID }) },
+      { route: "cancel", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID }) }
+    ], { cancelledReservation: true });
+    assert.deepEqual(result.results.map((item) => item.status), [200, 200]);
+    assert.equal(result.calls.includes("cancelled"), false);
+    assert.equal(result.calls.includes("remove"), false);
+  });
+
+  test("owner cancellation transitions the reservation and removes only its exact object", async () => {
+    const result = await runRoute([{ route: "cancel", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID }) }]);
+    assert.equal(result.results[0].status, 200);
+    assert.deepEqual(result.calls, ["reservation", "cancelled", "remove"]);
   });
 
   test("all three exported routes reject malformed and oversized JSON", async () => {
@@ -286,6 +357,28 @@ describe("direct material upload hardening runtime", () => {
     assert.deepEqual(retried.results.map((item) => item.status), [500, 200]);
     assert.deepEqual(retried.results.map((item) => item.body), [{ success: false, cleaned: 0, failed: 1 }, { success: true, cleaned: 1, failed: 0 }]);
     assert.deepEqual(retried.calls, ["claim", "remove", "complete", "release", "claim", "remove", "complete"]);
+  });
+
+  test("cleanup null and malformed completion results are failures, not cleaned items", async () => {
+    for (const completionValue of [null, { completed: true }]) {
+      const result = await runCleanup({ authorized: [true], completionValue });
+      assert.deepEqual(result.results[0].body, { success: false, cleaned: 0, failed: 1 });
+      assert.deepEqual(result.calls, ["claim", "remove", "complete", "release"]);
+    }
+  });
+
+  test("cleanup reports partial batch results without mixing successful and retryable items", async () => {
+    const result = await runCleanup({
+      authorized: [true],
+      claimRows: [
+        { reservationId: RESERVATION_ID, claimId: IDEMPOTENCY_KEY, storagePath: STORAGE_PATH },
+        { reservationId: "a50e8400-e29b-41d4-a716-446655440000", claimId: "b50e8400-e29b-41d4-a716-446655440000", storagePath: `materials/${PRODUCT_ID}/v2/a50e8400-e29b-41d4-a716-446655440000-material.pdf` }
+      ],
+      storageFailures: [false, true]
+    });
+    assert.equal(result.results[0].status, 500);
+    assert.deepEqual(result.results[0].body, { success: false, cleaned: 1, failed: 1 });
+    assert.deepEqual(result.calls, ["claim", "remove", "complete", "remove", "release"]);
   });
 
   test("finalization inspection rejects provider/content mismatches without reading a full object", async () => {

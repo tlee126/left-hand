@@ -2,7 +2,7 @@ import { getAccountAccess } from "@/lib/auth/session";
 import { BoundedJsonError, BoundedJsonErrorCode, readBoundedJson } from "@/lib/http/bounded-json";
 import {
   isMaterialProduct,
-  releaseMaterialAssetUpload,
+  markMaterialAssetUploadRetryable,
   reserveMaterialAssetUpload,
   MaterialAssetUploadConflictError
 } from "@/lib/repositories/material-asset-repository";
@@ -68,13 +68,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (reservation.status === "committed") {
       return Response.json({ reservationId, version: reservation.version, status: "committed" }, { headers: { "Cache-Control": CACHE_CONTROL } });
     }
+    if (reservation.cleanupPending) return response({ error: "Material upload is not available." }, 409);
     const capability = await createMaterialUploadCapability(reservation.storagePath);
     return Response.json({ reservationId, version: reservation.version, status: "reserved", upload: { bucket: MATERIALS_BUCKET, path: capability.storagePath, token: capability.token }, expiresIn: MATERIAL_UPLOAD_EXPIRES_IN_SECONDS }, { headers: { "Cache-Control": CACHE_CONTROL } });
   } catch (error) {
     if (error instanceof BoundedJsonError) return response({ error: error.code === BoundedJsonErrorCode.TooLarge ? "Request body is too large." : "Invalid material upload request." }, error.code === BoundedJsonErrorCode.TooLarge ? 413 : 400);
     if (error instanceof MaterialAssetUploadConflictError) return response({ error: "Material upload is not available." }, 409);
     if (reservationId && reservationCreated) {
-      try { await releaseMaterialAssetUpload(reservationId); } catch { /* keep provider details private */ }
+      try { await markMaterialAssetUploadRetryable(reservationId); } catch { /* retain the reservation for cleanup/reconciliation */ }
     }
     return response({ error: "Unable to prepare material upload." }, 500);
   }

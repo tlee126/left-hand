@@ -4,8 +4,8 @@ import {
   finalizeMaterialAssetUpload,
   getMaterialAssetByUploadReservation,
   getMaterialAssetUploadReservation,
-  releaseMaterialAssetUpload,
-  markMaterialAssetUploadCancelled
+  beginMaterialAssetUploadRetryCleanup,
+  completeMaterialAssetUploadRetryCleanup
 } from "@/lib/repositories/material-asset-repository";
 import {
   inspectMaterialObject,
@@ -52,6 +52,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
   let reservation: Awaited<ReturnType<typeof getMaterialAssetUploadReservation>> = null;
   let finalizeAttempted = false;
+  let cleanupEligible = false;
   try {
     const { id } = await context.params;
     if (!isValidMaterialUuid(id)) return response({ error: "Invalid material upload request." }, 400);
@@ -67,6 +68,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       return response({ error: "Material upload is not available." }, 409);
     }
     if (reservation.productId !== productId || reservation.uploadedBy !== admin.userId || reservation.idempotencyKey !== idempotencyKey || !isSupportedMaterialMimeType(reservation.mimeType) || reservation.byteSize > materialSizeLimit(reservation.mimeType) || !isValidMaterialStoragePathForProductAndVersion(reservation.storagePath, productId, reservation.version) || Date.parse(reservation.expiresAt) <= Date.now()) throw new Error();
+    if (reservation.cancelledAt !== null || reservation.cleanupPendingAt !== null) throw new Error();
+    cleanupEligible = true;
 
     const object = await inspectMaterialObject(reservation.storagePath, reservation.mimeType, reservation.byteSize);
     if (object.storagePath !== reservation.storagePath || object.mimeType !== reservation.mimeType || object.byteSize !== reservation.byteSize) throw new Error();
@@ -76,13 +79,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return Response.json({ success: true, version: asset.version }, { headers: { "Cache-Control": CACHE_CONTROL } });
   } catch (error) {
     if (error instanceof BoundedJsonError) return response({ error: error.code === BoundedJsonErrorCode.TooLarge ? "Request body is too large." : "Invalid material upload request." }, error.code === BoundedJsonErrorCode.TooLarge ? 413 : 400);
-    if (reservation && !finalizeAttempted) {
-      let objectRemoved = false;
-      try { await removeNewMaterialObject(reservation.storagePath); objectRemoved = true; } catch { /* keep provider details private */ }
-      if (objectRemoved) {
-        try { await releaseMaterialAssetUpload(reservation.reservationId); } catch { /* cleanup route will retry */ }
-      } else {
-        try { await markMaterialAssetUploadCancelled(reservation.reservationId); } catch { /* cleanup route will retry */ }
+    if (reservation && !finalizeAttempted && cleanupEligible) {
+      let cleanupStarted = false;
+      try { cleanupStarted = await beginMaterialAssetUploadRetryCleanup(reservation.reservationId); } catch { /* keep the reservation protected */ }
+      if (cleanupStarted) {
+        let objectRemoved = false;
+        try { await removeNewMaterialObject(reservation.storagePath); objectRemoved = true; } catch { /* cleanup remains pending */ }
+        if (objectRemoved) {
+          try { await completeMaterialAssetUploadRetryCleanup(reservation.reservationId); } catch { /* cleanup remains pending */ }
+        }
       }
     }
     return response({ error: "Unable to finalize material upload." }, 500);

@@ -91,8 +91,10 @@ test("missing, wrong, expired, cancelled, and foreign sessions fail without prov
   assert.match(finalize, /if \(!reservation\)/);
   assert.match(finalize, /Date\.parse\(reservation\.expiresAt\) <= Date\.now\(\)/);
   assert.match(finalize, /removeNewMaterialObject/);
-  assert.match(finalize, /releaseMaterialAssetUpload/);
-  assert.match(cancel, /releaseMaterialAssetUpload/);
+  assert.match(finalize, /beginMaterialAssetUploadRetryCleanup/);
+  assert.match(finalize, /completeMaterialAssetUploadRetryCleanup/);
+  assert.doesNotMatch(finalize, /releaseMaterialAssetUpload/);
+  assert.doesNotMatch(cancel, /releaseMaterialAssetUpload/);
   assert.match(finalize, /Unable to finalize material upload/);
 });
 
@@ -170,10 +172,11 @@ test("concurrent version reservation remains delegated to the existing advisory-
   assert.match(migration, /UNIQUE \(product_id, version\)/);
 });
 
-test("failed upload cleanup safely removes the exact object and releases the reservation", async () => {
+test("failed upload cleanup safely removes the exact object while preserving retry state", async () => {
   const [finalize, cancel, storage] = await Promise.all([source(finalizePath), source(cancelPath), source(storagePath)]);
   assert.match(finalize, /removeNewMaterialObject\(reservation\.storagePath\)/);
-  assert.match(finalize, /releaseMaterialAssetUpload\(reservation\.reservationId\)/);
+  assert.match(finalize, /beginMaterialAssetUploadRetryCleanup\(reservation\.reservationId\)/);
+  assert.match(finalize, /completeMaterialAssetUploadRetryCleanup\(reservation\.reservationId\)/);
   assert.match(cancel, /removeNewMaterialObject\(reservation\.storagePath\)/);
   assert.match(storage, /remove\(\[storagePath\]\)/);
 });

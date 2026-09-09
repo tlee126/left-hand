@@ -408,11 +408,13 @@ export type Database = {
           cleanup_attempts: number
           cleanup_claim_id: string | null
           cleanup_claimed_at: string | null
+          cleanup_pending_at: string | null
           expires_at: string
           id: string
           mime_type: string
           original_name: string
           product_id: string
+          retryable_at: string | null
           storage_path: string
           upload_idempotency_key: string | null
           uploaded_by: string
@@ -425,11 +427,13 @@ export type Database = {
           cleanup_attempts?: number
           cleanup_claim_id?: string | null
           cleanup_claimed_at?: string | null
+          cleanup_pending_at?: string | null
           expires_at?: string
           id?: string
           mime_type: string
           original_name: string
           product_id: string
+          retryable_at?: string | null
           storage_path: string
           upload_idempotency_key?: string | null
           uploaded_by: string
@@ -442,11 +446,13 @@ export type Database = {
           cleanup_attempts?: number
           cleanup_claim_id?: string | null
           cleanup_claimed_at?: string | null
+          cleanup_pending_at?: string | null
           expires_at?: string
           id?: string
           mime_type?: string
           original_name?: string
           product_id?: string
+          retryable_at?: string | null
           storage_path?: string
           upload_idempotency_key?: string | null
           uploaded_by?: string
@@ -915,6 +921,18 @@ export type Database = {
         Returns: boolean
       }
       cancel_material_asset_upload: {
+        Args: { p_reservation_id: string }
+        Returns: boolean
+      }
+      mark_material_asset_upload_retryable: {
+        Args: { p_reservation_id: string }
+        Returns: boolean
+      }
+      begin_material_asset_upload_retry_cleanup: {
+        Args: { p_reservation_id: string }
+        Returns: boolean
+      }
+      complete_material_asset_upload_retry_cleanup: {
         Args: { p_reservation_id: string }
         Returns: boolean
       }

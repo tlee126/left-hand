@@ -1,6 +1,6 @@
 import { getAccountAccess } from "@/lib/auth/session";
 import { BoundedJsonError, BoundedJsonErrorCode, readBoundedJson } from "@/lib/http/bounded-json";
-import { getMaterialAssetUploadReservation, markMaterialAssetUploadCancelled, releaseMaterialAssetUpload } from "@/lib/repositories/material-asset-repository";
+import { getMaterialAssetByUploadReservation, getMaterialAssetUploadReservation, markMaterialAssetUploadCancelled } from "@/lib/repositories/material-asset-repository";
 import { isValidMaterialUuid, removeNewMaterialObject } from "@/lib/storage/material-storage";
 
 export const runtime = "nodejs";
@@ -20,12 +20,19 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (body === null || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1 || typeof (body as { reservationId?: unknown }).reservationId !== "string" || !isValidMaterialUuid((body as { reservationId: string }).reservationId)) return response({ error: "Invalid material upload request." }, 400);
     const reservationId = (body as { reservationId: string }).reservationId.toLowerCase();
     const reservation = await getMaterialAssetUploadReservation(reservationId);
-    if (reservation && reservation.productId === id.toLowerCase()) {
+    const productId = id.toLowerCase();
+    if (!reservation) {
+      const committed = access.user && isValidMaterialUuid(access.user.id) ? await getMaterialAssetByUploadReservation(reservationId, access.user.id) : null;
+      return response({ error: "Material upload is not available." }, committed?.product_id === productId ? 409 : 404);
+    }
+    if (reservation.productId !== productId) return response({ error: "Material upload is not available." }, 404);
+    if (reservation.cancelledAt !== null) return Response.json({ success: true }, { headers: { "Cache-Control": "private, no-store" } });
+    if (reservation.cleanupPendingAt !== null) return response({ error: "Material upload is not available." }, 409);
+    {
       try {
         const cancelled = await markMaterialAssetUploadCancelled(reservationId);
         if (!cancelled) return response({ error: "Material upload is not available." }, 409);
         await removeNewMaterialObject(reservation.storagePath);
-        await releaseMaterialAssetUpload(reservationId);
       } catch {
         try { await markMaterialAssetUploadCancelled(reservationId); } catch { /* cleanup route will retry */ }
         return response({ error: "Unable to cancel material upload." }, 500);
