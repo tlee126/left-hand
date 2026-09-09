@@ -440,6 +440,45 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ]) assert.throws(() => assertMaterialUploadCancelCleanupGuardMigrationContract(mutation), /./);
     });
 
+    test("0036/0037 tokenize quoted identifiers without masking executable mutations", async () => {
+      const retrySql = await fs.readFile(path.join(migrationsDir, "0036_material_upload_retry_state.sql"), "utf-8");
+      const guardSql = await fs.readFile(path.join(migrationsDir, "0037_material_upload_cancel_cleanup_guard.sql"), "utf-8");
+      const injectAfterBegin = (sql: string, statement: string) => sql.replace("BEGIN\n  IF v_user_id IS NULL", `BEGIN\n  ${statement}\n  IF v_user_id IS NULL`);
+      const quotedDml = [
+        'DELETE FROM "public"."material_assets";',
+        'UPDATE "public"."material_asset_upload_reservations" SET "cancelled_at" = now();',
+        'INSERT INTO "public"."material_assets" ("product_id") VALUES (gen_random_uuid());',
+        'DELETE FROM public."material_assets";',
+        'UPDATE "public".material_asset_upload_reservations SET "cancelled_at" = now();',
+        'INSERT INTO public."material_assets" ("product_id") VALUES (gen_random_uuid());'
+      ];
+      for (const statement of quotedDml) {
+        assert.throws(() => assertMaterialUploadRetryStateMigrationContract(injectAfterBegin(retrySql, statement)), /./, `quoted DML must be rejected: ${statement}`);
+        assert.throws(() => assertMaterialUploadCancelCleanupGuardMigrationContract(injectAfterBegin(guardSql, statement)), /./, `quoted DML must be rejected in 0037: ${statement}`);
+      }
+      for (const statement of [
+        'DO $nested$ BEGIN DELETE FROM "public"."material_assets"; END $nested$;',
+        'EXECUTE $nested$DELETE FROM "public"."material_assets"$nested$;',
+        'GRANT SELECT ON TABLE "public"."material_assets" TO authenticated;'
+      ]) {
+        assert.throws(() => assertMaterialUploadRetryStateMigrationContract(injectAfterBegin(retrySql, statement)), /./, `nested or privileged quoted SQL must be rejected: ${statement}`);
+      }
+
+      const validQuotedIdentifiers = injectAfterBegin(retrySql, `
+  -- DELETE UPDATE INSERT are comments, not executable DML.
+  PERFORM 'DELETE UPDATE INSERT';
+  PERFORM $literal$DELETE FROM "public"."material_assets"$literal$;
+  "DELETE" := "UPDATE" || "INSERT" || "p_actor";`)
+        .replace("DECLARE\n  v_user_id uuid := auth.uid();", `DECLARE
+  "DELETE" text;
+  "UPDATE" text;
+  "INSERT" text;
+  "p_actor" text;
+  v_user_id uuid := auth.uid();`);
+      assert.doesNotThrow(() => assertMaterialUploadRetryStateMigrationContract(validQuotedIdentifiers));
+      assert.doesNotThrow(() => assertMaterialUploadCancelCleanupGuardMigrationContract(guardSql));
+    });
+
     test("0001_core_schema.sql creates all 8 application tables with primary keys and constraints", async () => {
       const sql = await fs.readFile(path.join(migrationsDir, "0001_core_schema.sql"), "utf-8");
 

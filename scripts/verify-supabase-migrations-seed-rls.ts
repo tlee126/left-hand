@@ -302,6 +302,193 @@ function maskSqlStringLiterals(sql: string): string {
   return masked;
 }
 
+type SqlTokenKind = "word" | "quoted_identifier" | "string" | "dollar_quote" | "symbol";
+
+interface SqlToken {
+  kind: SqlTokenKind;
+  value: string;
+}
+
+interface SqlDmlOperation {
+  kind: "insert" | "update" | "delete";
+  table: string;
+}
+
+function readDollarQuoteTag(sql: string, index: number): string | null {
+  const match = /^(?:\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$)/.exec(sql.slice(index));
+  return match?.[0] ?? null;
+}
+
+/** Tokenizes executable SQL without confusing quoted identifiers with literals. */
+function tokenizeSql(sql: string): SqlToken[] {
+  const tokens: SqlToken[] = [];
+  let index = 0;
+
+  while (index < sql.length) {
+    const character = sql[index];
+    const next = sql[index + 1];
+
+    if (/\s/.test(character)) {
+      index += 1;
+      continue;
+    }
+    if (character === "-" && next === "-") {
+      index += 2;
+      while (index < sql.length && sql[index] !== "\n") index += 1;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      let depth = 1;
+      index += 2;
+      while (index < sql.length && depth > 0) {
+        if (sql[index] === "/" && sql[index + 1] === "*") {
+          depth += 1;
+          index += 2;
+        } else if (sql[index] === "*" && sql[index + 1] === "/") {
+          depth -= 1;
+          index += 2;
+        } else {
+          index += 1;
+        }
+      }
+      if (depth !== 0) throw new Error("SQL contains an unterminated block comment");
+      continue;
+    }
+    if (character === "'") {
+      index += 1;
+      while (index < sql.length) {
+        if (sql[index] === "'" && sql[index + 1] === "'") {
+          index += 2;
+        } else if (sql[index] === "'") {
+          index += 1;
+          break;
+        } else if (sql[index] === "\\" && sql[index + 1] !== undefined) {
+          index += 2;
+        } else {
+          index += 1;
+        }
+      }
+      if (sql[index - 1] !== "'") throw new Error("SQL contains an unterminated single-quoted string");
+      tokens.push({ kind: "string", value: "" });
+      continue;
+    }
+    if (character === '"') {
+      let value = "";
+      index += 1;
+      while (index < sql.length) {
+        if (sql[index] === '"' && sql[index + 1] === '"') {
+          value += '"';
+          index += 2;
+        } else if (sql[index] === '"') {
+          index += 1;
+          break;
+        } else {
+          value += sql[index];
+          index += 1;
+        }
+      }
+      if (sql[index - 1] !== '"') throw new Error("SQL contains an unterminated double-quoted identifier");
+      tokens.push({ kind: "quoted_identifier", value: value.toLowerCase() });
+      continue;
+    }
+    if (character === "$" && readDollarQuoteTag(sql, index)) {
+      const tag = readDollarQuoteTag(sql, index)!;
+      const end = sql.indexOf(tag, index + tag.length);
+      if (end < 0) throw new Error(`SQL contains an unterminated dollar-quoted string ${tag}`);
+      tokens.push({ kind: "dollar_quote", value: "" });
+      index = end + tag.length;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(character)) {
+      const start = index;
+      index += 1;
+      while (index < sql.length && /[A-Za-z0-9_$]/.test(sql[index])) index += 1;
+      tokens.push({ kind: "word", value: sql.slice(start, index).toLowerCase() });
+      continue;
+    }
+    tokens.push({ kind: "symbol", value: character });
+    index += 1;
+  }
+
+  return tokens;
+}
+
+function isWordToken(token: SqlToken | undefined, value?: string): boolean {
+  return token?.kind === "word" && (value === undefined || token.value === value);
+}
+
+function readRelation(tokens: readonly SqlToken[], start: number): { table: string; next: number } | null {
+  const first = tokens[start];
+  if (!first || (first.kind !== "word" && first.kind !== "quoted_identifier")) return null;
+  let next = start + 1;
+  let relation = first.value;
+  if (tokens[next]?.kind === "symbol" && tokens[next]?.value === ".") {
+    const second = tokens[next + 1];
+    if (!second || (second.kind !== "word" && second.kind !== "quoted_identifier")) return null;
+    relation = `${relation}.${second.value}`;
+    next += 2;
+  }
+  return { table: relation.split(".").at(-1)!, next };
+}
+
+function findDmlOperations(tokens: readonly SqlToken[]): SqlDmlOperation[] {
+  const operations: SqlDmlOperation[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const kind = isWordToken(tokens[index], "insert")
+      ? "insert"
+      : isWordToken(tokens[index], "update")
+        ? "update"
+        : isWordToken(tokens[index], "delete")
+          ? "delete"
+          : null;
+    if (!kind) continue;
+
+    let relationStart = index + 1;
+    if (kind === "insert") {
+      if (!isWordToken(tokens[relationStart], "into")) continue;
+      relationStart += 1;
+    } else if (kind === "delete") {
+      if (!isWordToken(tokens[relationStart], "from")) continue;
+      relationStart += 1;
+    } else if (isWordToken(tokens[index - 1], "for")) {
+      continue;
+    } else if (isWordToken(tokens[relationStart], "set")) {
+      continue;
+    } else if (isWordToken(tokens[relationStart], "only")) {
+      relationStart += 1;
+    }
+    const relation = readRelation(tokens, relationStart);
+    if (relation) operations.push({ kind, table: relation.table });
+  }
+  return operations;
+}
+
+function findRelationsAfter(tokens: readonly SqlToken[], keyword: "from" | "join"): string[] {
+  const relations: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (!isWordToken(tokens[index], keyword)) continue;
+    if (isWordToken(tokens[index - 1], "distinct") || isWordToken(tokens[index - 1], "not") && isWordToken(tokens[index - 2], "distinct")) continue;
+    const relation = readRelation(tokens, index + 1);
+    if (relation) relations.push(relation.table);
+  }
+  return relations;
+}
+
+function hasTokenSequence(tokens: readonly SqlToken[], first: string, second?: string): boolean {
+  return tokens.some((token, index) => isWordToken(token, first) && (second === undefined || isWordToken(tokens[index + 1], second)));
+}
+
+function assertNoUnsafeExecutableTokens(tokens: readonly SqlToken[], context: string): void {
+  const unsafe = new Set(["grant", "revoke", "create", "alter", "drop", "truncate", "copy", "call", "bypassrls", "service_role"]);
+  for (const [index, token] of tokens.entries()) {
+    if (token.kind === "word" && unsafe.has(token.value)) throw new Error(`${context} contains unsafe executable token ${token.value}`);
+    if (isWordToken(token, "do") && (isWordToken(tokens[index + 1], "language") || tokens[index + 1]?.kind === "dollar_quote")) throw new Error(`${context} contains unsafe executable token do`);
+    if (isWordToken(token, "execute")) throw new Error(`${context} contains dynamic SQL EXECUTE`);
+    if (isWordToken(token, "set") && isWordToken(tokens[index + 1], "role")) throw new Error(`${context} contains SET ROLE`);
+  }
+  if (hasTokenSequence(tokens, "or", "true")) throw new Error(`${context} contains a permissive predicate`);
+}
+
 function assertNestedFunctionSqlScope(
   statements: readonly string[],
   options: { allowDmlTables: readonly string[]; allowSelectTables: readonly string[]; allowSqlExpressionSelect?: boolean }
@@ -312,26 +499,26 @@ function assertNestedFunctionSqlScope(
   const bodies = extractDollarQuotedFunctionBodies(statements);
   fail(bodies.length > 0, "Migration function body could not be parsed");
   const bodySql = bodies.map((body) => stripSqlCommentsAndSplitStatements(body).join(" ; ")).join(" ; ");
-  const executableSql = maskSqlStringLiterals(bodySql);
-  fail(!/\b(?:execute\s+(?:immediate|format)|execute\s+['$]|set\s+role|alter\s+role|service_role|bypassrls)\b/i.test(executableSql), "Nested function body contains dynamic SQL, role escalation, or privileged-role access");
-  fail(!/\b(?:grant|revoke|create|alter|drop|perform|truncate|copy|call)\b|\bdo\s+(?:(?:language\s+)?plpgsql\b|\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$)/i.test(executableSql), `Nested function body contains executable SQL outside the migration contract: ${executableSql.match(/\b(?:grant|revoke|create|alter|drop|perform|truncate|copy|call)\b|\bdo\s+(?:(?:language\s+)?plpgsql\b|\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$)/i)?.[0] ?? "unknown"}`);
+  const executableTokens = tokenizeSql(bodySql);
+  assertNoUnsafeExecutableTokens(executableTokens, "Nested function body");
+  fail(!executableTokens.some((token) => isWordToken(token, "perform")), "Nested function body contains executable PERFORM outside the migration contract");
 
   const allowedDml = new Set(options.allowDmlTables);
   const allowedSelect = new Set(options.allowSelectTables);
-  for (const match of executableSql.matchAll(/\b(insert\s+into|update(?!\s+set)|delete\s+from)\s+(?:only\s+)?(?:public\.)?([a-z_][a-z0-9_]*)/gi)) {
-    fail(allowedDml.has(match[2].toLowerCase()), `Nested function mutates an out-of-scope table: ${match[2]}`);
+  for (const operation of findDmlOperations(executableTokens)) {
+    fail(allowedDml.has(operation.table), `Nested function mutates an out-of-scope table: ${operation.table}`);
   }
-  for (const match of executableSql.matchAll(/\b(?:from|join)\s+(?:only\s+)?(?:public\.)?([a-z_][a-z0-9_]*)/gi)) {
-    const prefix = executableSql.slice(Math.max(0, (match.index ?? 0) - 24), match.index ?? 0);
-    if (/\b(?:is\s+distinct|is\s+not\s+distinct)\s*$/i.test(prefix)) continue;
-    fail(allowedSelect.has(match[1].toLowerCase()) || ["jsonb_object_keys", "jsonb_array_elements"].includes(match[1].toLowerCase()), `Nested function reads an out-of-scope table: ${match[1]}`);
+  for (const relation of findRelationsAfter(executableTokens, "from").concat(findRelationsAfter(executableTokens, "join"))) {
+    fail(allowedSelect.has(relation) || ["jsonb_object_keys", "jsonb_array_elements"].includes(relation), `Nested function reads an out-of-scope table: ${relation}`);
   }
 
-  for (const match of executableSql.matchAll(/\bselect\b([\s\S]*?)(?=;|$)/gi)) {
-    const selectBody = match[1];
-    const hasAllowedRelation = [...selectBody.matchAll(/\b(?:from|join)\s+(?:only\s+)?(?:public\.)?([a-z_][a-z0-9_]*)/gi)]
-      .some((relation) => allowedSelect.has(relation[1].toLowerCase()));
-    const isApprovedExpression = options.allowSqlExpressionSelect === true && /\b(?:regexp_replace|lower|btrim|coalesce|concat_ws|unaccent|jsonb_array_elements|jsonb_array_elements_text|jsonb_object_keys)\s*\(/i.test(selectBody);
+  for (let index = 0; index < executableTokens.length; index += 1) {
+    if (!isWordToken(executableTokens[index], "select")) continue;
+    const selectTokens = executableTokens.slice(index + 1, executableTokens.findIndex((token, tokenIndex) => tokenIndex > index && token.kind === "symbol" && token.value === ";"));
+    const hasAllowedRelation = findRelationsAfter(selectTokens, "from").concat(findRelationsAfter(selectTokens, "join"))
+      .some((relation) => allowedSelect.has(relation));
+    const isApprovedExpression = options.allowSqlExpressionSelect === true && selectTokens.some((token) =>
+      token.kind === "word" && ["regexp_replace", "lower", "btrim", "coalesce", "concat_ws", "unaccent", "jsonb_array_elements", "jsonb_array_elements_text", "jsonb_object_keys"].includes(token.value));
     fail(hasAllowedRelation || isApprovedExpression, "Nested SELECT is outside the migration contract");
   }
 }
@@ -1243,27 +1430,28 @@ function parseRetrySqlFunction(statement: string): RetrySqlFunction | null {
 }
 
 function retryExecutableBody(body: string): string {
-  return normalizeMigrationStatement(maskSqlStringLiterals(stripSqlCommentsAndSplitStatements(body).join(" ; ")));
+  return normalizeMigrationStatement(stripSqlCommentsAndSplitStatements(body).join(" ; "));
 }
 
-function countSqlDml(body: string, expression: RegExp): number {
-  return [...body.matchAll(expression)].length;
+function retryDmlOperations(body: string): SqlDmlOperation[] {
+  return findDmlOperations(tokenizeSql(body));
 }
 
-function assertRetryFunctionSafety(definition: RetrySqlFunction, expected: { parameters: string; returns: string; dml: readonly [number, number, number]; ownerScoped?: boolean }): void {
+function assertRetryFunctionSafety(definition: RetrySqlFunction, expected: { parameters: string; returns: string; dml: readonly [number, number, number]; allowDmlTables: readonly string[]; ownerScoped?: boolean }): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
   fail(definition.parameters === expected.parameters, `Migration retry RPC ${definition.name} has an unexpected parameter contract`);
   fail(definition.returns === expected.returns, `Migration retry RPC ${definition.name} has an unexpected return contract`);
   fail(definition.securityDefiner && definition.searchPath === "pg_catalog, public", `Migration retry RPC ${definition.name} must use the fixed SECURITY DEFINER boundary`);
   const body = retryExecutableBody(definition.body);
-  fail(!/\b(?:grant|revoke|create|alter|drop|truncate|copy|call|do|bypassrls|set\s+role|alter\s+role|execute\s+(?:immediate|format)|dynamic\s+sql)\b/i.test(body), `Migration retry RPC ${definition.name} contains unsafe executable SQL`);
-  fail(!/\bor\s+true\b/i.test(body), `Migration retry RPC ${definition.name} contains a permissive predicate`);
-  fail(
-    countSqlDml(body, /\binsert\s+into\s+(?:public\.)?[a-z_][a-z0-9_]*/gi) === expected.dml[0]
-      && countSqlDml(body, /(?<!for\s)\bupdate\s+(?:only\s+)?(?:public\.)?[a-z_][a-z0-9_]*/gi) === expected.dml[1]
-      && countSqlDml(body, /\bdelete\s+from\s+(?:only\s+)?(?:public\.)?[a-z_][a-z0-9_]*/gi) === expected.dml[2],
-    `Migration retry RPC ${definition.name} mutates outside its exact DML allowlist`
-  );
+  const operations = retryDmlOperations(definition.body);
+  assertNoUnsafeExecutableTokens(tokenizeSql(definition.body), `Migration retry RPC ${definition.name}`);
+  const dmlCounts = [
+    operations.filter((operation) => operation.kind === "insert").length,
+    operations.filter((operation) => operation.kind === "update").length,
+    operations.filter((operation) => operation.kind === "delete").length
+  ];
+  fail(dmlCounts.every((count, index) => count === expected.dml[index]), `Migration retry RPC ${definition.name} mutates outside its exact DML allowlist`);
+  fail(operations.every((operation) => expected.allowDmlTables.includes(operation.table)), `Migration retry RPC ${definition.name} mutates an out-of-scope table`);
   if (expected.ownerScoped) {
     fail(/\bv_user_id\s+uuid\s*:=\s*auth\.uid\s*\(\s*\)/i.test(body), `Migration retry RPC ${definition.name} must derive its actor from auth.uid()`);
     fail(/\buploaded_by\s*=\s*v_user_id\b/i.test(body) && !/\buploaded_by\s*=\s*v_user_id\s+or\b/i.test(body), `Migration retry RPC ${definition.name} must enforce a non-permissive owner predicate`);
@@ -1312,16 +1500,17 @@ export function assertMaterialUploadRetryStateMigrationContract(sql0036: string)
   fail(statements.every((statement) => expectedPrefixes.some((pattern) => pattern.test(statement))), "Migration 0036 contains a statement outside its exact allowlist");
   fail(expectedFunctionNames.every((name, index) => statements[index + 4].startsWith(`create or replace function public.${name}(`)), "Migration 0036 functions must match the exact state-machine allowlist and order");
   fail(privilegeStatements.length === expectedPrivileges.length && expectedPrivileges.every((statement, index) => privilegeStatements[index] === statement), "Migration 0036 privileges must match the exact owner-scoped allowlist");
-  const functionContracts: Record<string, { parameters: string; returns: string; dml: readonly [number, number, number]; ownerScoped?: boolean }> = {
-    reserve_material_asset_upload: { parameters: "p_product_id uuid, p_original_name text, p_safe_filename text, p_mime_type text, p_byte_size bigint, p_idempotency_key uuid", returns: "jsonb", dml: [1, 1, 0], ownerScoped: true },
-    mark_material_asset_upload_retryable: { parameters: "p_reservation_id uuid", returns: "boolean", dml: [0, 1, 0], ownerScoped: true },
-    begin_material_asset_upload_retry_cleanup: { parameters: "p_reservation_id uuid", returns: "boolean", dml: [0, 1, 0], ownerScoped: true },
-    complete_material_asset_upload_retry_cleanup: { parameters: "p_reservation_id uuid", returns: "boolean", dml: [0, 1, 0], ownerScoped: true },
-    claim_expired_material_asset_uploads: { parameters: "p_limit integer", returns: "table (reservation_id uuid, storage_path text, claim_id uuid)", dml: [0, 1, 0] },
-    complete_expired_material_asset_upload_cleanup: { parameters: "p_reservation_id uuid, p_claim_id uuid", returns: "boolean", dml: [0, 1, 1] },
-    release_expired_material_asset_upload_cleanup: { parameters: "p_reservation_id uuid, p_claim_id uuid", returns: "boolean", dml: [0, 1, 0] },
-    cancel_material_asset_upload: { parameters: "p_reservation_id uuid", returns: "boolean", dml: [0, 1, 0], ownerScoped: true },
-    finalize_material_asset_upload: { parameters: "p_reservation_id uuid, p_idempotency_key uuid", returns: "public.material_assets", dml: [1, 0, 1], ownerScoped: true }
+  const reservationTable = ["material_asset_upload_reservations"];
+  const functionContracts: Record<string, { parameters: string; returns: string; dml: readonly [number, number, number]; allowDmlTables: readonly string[]; ownerScoped?: boolean }> = {
+    reserve_material_asset_upload: { parameters: "p_product_id uuid, p_original_name text, p_safe_filename text, p_mime_type text, p_byte_size bigint, p_idempotency_key uuid", returns: "jsonb", dml: [1, 1, 0], allowDmlTables: reservationTable, ownerScoped: true },
+    mark_material_asset_upload_retryable: { parameters: "p_reservation_id uuid", returns: "boolean", dml: [0, 1, 0], allowDmlTables: reservationTable, ownerScoped: true },
+    begin_material_asset_upload_retry_cleanup: { parameters: "p_reservation_id uuid", returns: "boolean", dml: [0, 1, 0], allowDmlTables: reservationTable, ownerScoped: true },
+    complete_material_asset_upload_retry_cleanup: { parameters: "p_reservation_id uuid", returns: "boolean", dml: [0, 1, 0], allowDmlTables: reservationTable, ownerScoped: true },
+    claim_expired_material_asset_uploads: { parameters: "p_limit integer", returns: "table (reservation_id uuid, storage_path text, claim_id uuid)", dml: [0, 1, 0], allowDmlTables: reservationTable },
+    complete_expired_material_asset_upload_cleanup: { parameters: "p_reservation_id uuid, p_claim_id uuid", returns: "boolean", dml: [0, 1, 1], allowDmlTables: reservationTable },
+    release_expired_material_asset_upload_cleanup: { parameters: "p_reservation_id uuid, p_claim_id uuid", returns: "boolean", dml: [0, 1, 0], allowDmlTables: reservationTable },
+    cancel_material_asset_upload: { parameters: "p_reservation_id uuid", returns: "boolean", dml: [0, 1, 0], allowDmlTables: reservationTable, ownerScoped: true },
+    finalize_material_asset_upload: { parameters: "p_reservation_id uuid, p_idempotency_key uuid", returns: "public.material_assets", dml: [1, 0, 1], allowDmlTables: ["material_asset_upload_reservations", "material_assets"], ownerScoped: true }
   };
   fail(definitions.length === expectedFunctionNames.length && expectedFunctionNames.every((name) => byName.has(name)), "Migration 0036 must contain only its parseable RPC allowlist");
   for (const name of expectedFunctionNames) assertRetryFunctionSafety(byName.get(name)!, functionContracts[name]!);
@@ -1354,7 +1543,7 @@ export function assertMaterialUploadCancelCleanupGuardMigrationContract(sql0037:
   fail(statements.length === 3, "Migration 0037 must contain only the guarded cancel RPC and its exact privileges");
   const definition = parseRetrySqlFunction(rawStatements[0] ?? "");
   fail(definition?.name === "cancel_material_asset_upload", "Migration 0037 must replace only cancel_material_asset_upload");
-  assertRetryFunctionSafety(definition!, { parameters: "p_reservation_id uuid", returns: "boolean", dml: [0, 1, 0], ownerScoped: true });
+  assertRetryFunctionSafety(definition!, { parameters: "p_reservation_id uuid", returns: "boolean", dml: [0, 1, 0], allowDmlTables: ["material_asset_upload_reservations"], ownerScoped: true });
   const body = retryExecutableBody(definition!.body);
   fail(/\bcleanup_claim_id\s+is\s+null\b/i.test(body) && /\bcleanup_pending_at\s+is\s+null\b/i.test(body), "Migration 0037 cancel must reject active or pending cleanup claims");
   fail(/\bnot\s+exists\s*\(\s*select\s+1\s+from\s+public\.material_assets\b/i.test(body), "Migration 0037 cancel must protect finalized assets");
