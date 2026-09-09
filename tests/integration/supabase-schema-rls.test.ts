@@ -38,6 +38,7 @@ import {
   assertLearningProgressBoundaryMigrationContract,
   assertMaterialStorageIntegrityBoundaryMigrationContract,
   assertCatalogCompleteSearchMigrationContract,
+  assertLearningProgressConcurrencyMigrationContract,
   stripSqlCommentsAndSplitStatements,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
@@ -263,6 +264,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       "0028_learning_progress_entitlement_boundary.sql",
       "0029_material_storage_integrity_boundary.sql",
       "0030_catalog_search_complete_fields.sql"
+      ,"0031_learning_progress_concurrency.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -320,6 +322,16 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         /./
       );
       assert.doesNotThrow(() => assertCatalogCompleteSearchMigrationContract(sql.replace("materials.includes", "materials.includes /* literal */")));
+    });
+
+    test("0031 rejects stale writers and backward progress transitions", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0031_learning_progress_concurrency.sql"), "utf-8");
+      assert.doesNotThrow(() => assertLearningProgressConcurrencyMigrationContract(sql));
+      assert.throws(
+        () => assertLearningProgressConcurrencyMigrationContract(sql.replace("p_expected_version integer", "p_user_id uuid")),
+        /./
+      );
+      assert.doesNotThrow(() => assertLearningProgressConcurrencyMigrationContract(`-- p_user_id uuid\n${sql}`));
     });
 
     test("0001_core_schema.sql creates all 8 application tables with primary keys and constraints", async () => {

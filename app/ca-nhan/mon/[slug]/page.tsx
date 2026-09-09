@@ -14,6 +14,7 @@ type LearningProgress = {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+  version: number;
 };
 
 /**
@@ -96,11 +97,8 @@ export default async function SubjectWorkspacePage({
   const productIds = [...workspace.materials.map((material) => material.productId), ...workspace.courses.map((course) => course.productId)];
   let progress: LearningProgress[] = [];
   try {
-    const { getLearningProgressForWorkspace } = await import("@/lib/repositories/learning-progress-repository");
-    const progressByProduct = await Promise.all(
-      [...new Set(productIds)].map((productId) => getLearningProgressForWorkspace(access.user!.id, productId))
-    );
-    progress = progressByProduct.flat();
+    const { getLearningProgressForProducts } = await import("@/lib/repositories/learning-progress-repository");
+    progress = await getLearningProgressForProducts(access.user!.id, [...new Set(productIds)]);
   } catch {
     // Progress is additive to the already-authorized workspace. The client exposes a retryable save state.
     progress = [];

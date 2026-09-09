@@ -124,6 +124,7 @@ function progressRow(overrides: StoredRow = {}): StoredRow {
     completed_at: NOW,
     created_at: NOW,
     updated_at: NOW,
+    version: 1,
     ...overrides
   };
 }
@@ -157,9 +158,10 @@ function resultFor(table: string, filters: Array<[string, unknown]>, operation: 
   if (queryError) return { data: null, error: queryError };
   if (table === "learning_progress") {
     const userId = filters.find(([field]) => field === "user_id")?.[1];
-    const productId = filters.find(([field]) => field === "product_id")?.[1];
+    const productFilter = filters.find(([field]) => field === "product_id")?.[1];
+    const productIds = filters.find(([field]) => field === "product_id[]")?.[1];
     const result = rows.filter((row) => String(row.user_id).toLowerCase() === String(userId).toLowerCase()
-      && String(row.product_id).toLowerCase() === String(productId).toLowerCase());
+      && (Array.isArray(productIds) ? productIds.map(String).includes(String(row.product_id)) : String(row.product_id).toLowerCase() === String(productFilter).toLowerCase()));
     return { data: operation === "many" ? result : result[0] ?? null, error: null };
   }
   if (table === "product_entitlements") {
@@ -195,7 +197,8 @@ function createMockClient() {
         status: args.p_status,
         watched_percent: args.p_watched_percent,
         started_at: args.p_started_at,
-        completed_at: args.p_completed_at
+        completed_at: args.p_completed_at,
+        version: args.p_expected_version === 0 ? 1 : Number(args.p_expected_version) + 1
       };
       const key = [payload.user_id, payload.product_id, payload.item_type, payload.item_id].map(String).join(":");
       const index = rows.findIndex((row) => [row.user_id, row.product_id, row.item_type, row.item_id].map(String).join(":") === key);
@@ -218,6 +221,7 @@ function createMockClient() {
       const query: any = {
         select(...args: unknown[]) { calls.push({ method: "select", table, args }); return query; },
         eq(field: string, value: unknown) { calls.push({ method: "eq", table, args: [field, value] }); filters.push([field, value]); return query; },
+        in(field: string, values: unknown[]) { calls.push({ method: "in", table, args: [field, values] }); filters.push([`${field}[]`, values]); return query; },
         order(...args: unknown[]) { calls.push({ method: "order", table, args }); return query; },
         limit(...args: unknown[]) { calls.push({ method: "limit", table, args }); return query; },
         upsert(payload: StoredRow) {
@@ -280,6 +284,7 @@ const VALID_INPUT = {
   itemId: ITEM_ID,
   status: "completed",
   watchedPercent: 100,
+  expectedVersion: 0,
   startedAt: NOW,
   completedAt: NOW
 };
@@ -365,6 +370,15 @@ test("repository validates exact inputs before creating Supabase and reads bound
   assert.deepEqual(calls, []);
 });
 
+test("workspace progress uses one user-scoped batch query for multiple products", async () => {
+  const repository = (globalThis as any).__learningProgressRepository;
+  rows = [progressRow(), progressRow({ product_id: OTHER_PRODUCT_ID })];
+  const result = await repository.getLearningProgressForProducts(USER_ID, [PRODUCT_ID, OTHER_PRODUCT_ID]);
+  assert.equal(result.length, 2);
+  assert.deepEqual(calls.filter((call: Call) => call.method === "eq").map((call: Call) => call.args), [["user_id", USER_ID]]);
+  assert.deepEqual(calls.find((call: Call) => call.method === "in")?.args, ["product_id", [PRODUCT_ID, OTHER_PRODUCT_ID]]);
+});
+
 test("repository sends the exact permitted RPC payload and repeated saves remain one row", async () => {
   const repository = (globalThis as any).__learningProgressRepository;
   const first = await repository.upsertLearningProgress(USER_ID.toUpperCase(), VALID_INPUT);
@@ -377,7 +391,8 @@ test("repository sends the exact permitted RPC payload and repeated saves remain
     p_status: "completed",
     p_watched_percent: 100,
     p_started_at: NOW,
-    p_completed_at: NOW
+    p_completed_at: NOW,
+    p_expected_version: 0
   }]);
   await repository.upsertLearningProgress(USER_ID, VALID_INPUT);
   assert.equal(rows.length, 1);
@@ -410,7 +425,8 @@ test("API authenticates and validates before entitlement/progress access, then p
     p_status: "completed",
     p_watched_percent: 100,
     p_started_at: NOW,
-    p_completed_at: NOW
+    p_completed_at: NOW,
+    p_expected_version: 0
   }]);
   timeline = [];
   await responseModule.POST(request(VALID_INPUT));
@@ -477,6 +493,13 @@ test("API writes only after binding and entitlement, and maps a progress write f
   assert.equal(rows.length, 0);
 });
 
+test("API exposes a generic conflict when the database rejects a stale progress version", async () => {
+  upsertError = Object.assign(new Error("stale writer internal detail"), { code: "P0002" });
+  const response = await Route.POST(request(VALID_INPUT));
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), { error: "Progress conflict." });
+});
+
 test("API maps repository/database failures to generic responses without raw error leakage", async () => {
   const responseModule = Route;
   queryError = new Error(RAW_ERROR);
@@ -535,7 +558,7 @@ test("page and real workspace client preserve the auth-to-render timeline and pe
       assert.equal(fetchCalls.length, 1);
       assert.equal(String(fetchCalls[0].input), "/api/progress");
       const clientPayload = JSON.parse(String(fetchCalls[0].init?.body));
-      assert.deepEqual(Object.keys(clientPayload).sort(), ["completedAt", "itemId", "itemType", "productId", "startedAt", "status", "watchedPercent"]);
+      assert.deepEqual(Object.keys(clientPayload).sort(), ["completedAt", "expectedVersion", "itemId", "itemType", "productId", "startedAt", "status", "watchedPercent"]);
       assert.equal(clientPayload.productId, PRODUCT_ID);
       assert.equal(clientPayload.itemType, "material");
       assert.equal(clientPayload.itemId, PRODUCT_ID);

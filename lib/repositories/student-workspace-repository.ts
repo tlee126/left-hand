@@ -28,26 +28,34 @@ export async function getAuthorizedStudentWorkspace(userId: string, slug: string
     const { data: productData, error: productError } = await supabase.from("products").select("id, subject_id, kind, title, description").eq("subject_id", canonicalSubjectId).in("kind", ["material", "course"]);
     if (productError) throw new Error();
     const products = ((productData ?? []) as Pick<ProductRow, "id" | "subject_id" | "kind" | "title" | "description">[]).filter((product) => canonicalUuid(product.id) !== null && canonicalUuid(product.subject_id) === canonicalSubjectId);
-    const entitledProducts: Array<Pick<ProductRow, "id" | "kind" | "title" | "description"> & { canonicalId: string }> = [];
-    for (const product of products) {
-      const productId = canonicalUuid(product.id);
-      if (!productId) continue;
-      const { data: entitlement, error: entitlementError } = await supabase
+    const productIds = products.map((product) => canonicalUuid(product.id)).filter((productId): productId is string => productId !== null);
+    const { data: entitlementData, error: entitlementError } = productIds.length
+      ? await supabase
         .from("product_entitlements")
         .select("user_id, product_id, status, expires_at, revoked_at")
         .eq("user_id", canonicalUserId)
-        .eq("product_id", productId)
-        .maybeSingle();
-      if (entitlementError) throw new Error();
-      if (
-        entitlement
+        .in("product_id", productIds)
+      : { data: [], error: null };
+    if (entitlementError) throw new Error();
+    const entitlementsByProductId = new Map<string, (typeof entitlementData)[number]>();
+    for (const entitlement of entitlementData ?? []) {
+      const productId = canonicalUuid(entitlement.product_id);
+      if (productId && entitlementsByProductId.has(productId)) throw new Error();
+      if (productId) entitlementsByProductId.set(productId, entitlement);
+    }
+    const entitledProducts: Array<Pick<ProductRow, "id" | "kind" | "title" | "description"> & { canonicalId: string }> = products.flatMap((product) => {
+      const productId = canonicalUuid(product.id);
+      if (!productId) return [];
+      const entitlement = entitlementsByProductId.get(productId);
+      return entitlement
         && entitlement.status === "active"
         && entitlement.revoked_at === null
         && (entitlement.expires_at === null || Date.parse(entitlement.expires_at) > Date.now())
         && canonicalUuid(entitlement.user_id) === canonicalUserId
         && canonicalUuid(entitlement.product_id) === productId
-      ) entitledProducts.push({ ...product, canonicalId: productId });
-    }
+        ? [{ ...product, canonicalId: productId }]
+        : [];
+    });
     if (!entitledProducts.length) return null;
     const materialProducts = entitledProducts.filter((product) => product.kind === "material");
     const courseProducts = entitledProducts.filter((product) => product.kind === "course");

@@ -44,6 +44,7 @@ function completedProgress(
     itemId,
     status: "completed",
     watchedPercent: 100,
+    expectedVersion: previous?.version ?? 0,
     startedAt: previous?.started_at ?? now,
     completedAt: previous?.completed_at ?? now
   };
@@ -84,7 +85,8 @@ export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProp
       started_at: input.startedAt ?? null,
       completed_at: input.completedAt ?? null,
       created_at: previous?.created_at ?? new Date().toISOString(),
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
+      version: (previous?.version ?? 0) + 1
     };
     setProgress((current) => ({ ...current, [key]: optimistic }));
     setRetryItems((current) => {
@@ -93,6 +95,7 @@ export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProp
       return next;
     });
 
+    let conflict = false;
     try {
       const response = await fetch("/api/progress", {
         method: "POST",
@@ -100,7 +103,14 @@ export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProp
         body: JSON.stringify(input),
         cache: "no-store"
       });
-      if (!response.ok) throw new Error();
+      if (!response.ok) {
+        if (response.status === 409) {
+          conflict = true;
+          setNotice("Tiến độ vừa được cập nhật ở nơi khác. Vui lòng tải lại trang.");
+          throw new Error("PROGRESS_CONFLICT");
+        }
+        throw new Error();
+      }
     } catch {
       setProgress((current) => {
         const next = { ...current };
@@ -108,8 +118,10 @@ export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProp
         else delete next[key];
         return next;
       });
-      setRetryItems((current) => ({ ...current, [key]: input }));
-      setNotice("Tiến độ chưa được lưu. Vui lòng thử lại.");
+      if (!conflict) {
+        setRetryItems((current) => ({ ...current, [key]: input }));
+        setNotice("Tiến độ chưa được lưu. Vui lòng thử lại.");
+      }
     } finally {
       pendingKeys.current.delete(key);
       setPendingKey((current) => current === key ? null : current);

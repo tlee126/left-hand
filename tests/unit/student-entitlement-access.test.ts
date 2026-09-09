@@ -162,6 +162,14 @@ function createSupabaseMock() {
               return query;
             },
             in(field: string, _values: unknown[]) {
+              if (table === "product_entitlements" && field === "product_id") {
+                const lastCall = entitlementCalls[entitlementCalls.length - 1];
+                if (lastCall) lastCall[1] = _values.map(String).join(",");
+                timeline.push("entitlement lookup");
+                if (queryErrors.entitlement) return Promise.resolve({ data: null, error: queryError() });
+                if (entitlementOverride !== UNSET) return Promise.resolve({ data: Array.isArray(entitlementOverride) ? entitlementOverride : entitlementOverride ? [entitlementOverride] : [], error: null });
+                return Promise.resolve({ data: entitlementRows.filter((row) => uuidEquals(row.user_id, filters.find(([name]) => name === "user_id")?.[1]) && _values.some((value) => uuidEquals(row.product_id, value))), error: null });
+              }
               if (table === "products") {
                 timeline.push("product lookup");
                 if (queryErrors.product) return Promise.resolve({ data: null, error: queryError() });

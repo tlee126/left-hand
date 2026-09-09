@@ -1128,6 +1128,20 @@ export function assertCatalogCompleteSearchMigrationContract(sql0030: string): v
   fail(!/\b(?:execute\s+immediate|format\s*\(|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role|truncate|copy\s+|call\s+|\bdo\s+)/i.test(executableCode), "Migration 0030 must not contain executable privilege escalation or unrelated DDL/DML");
 }
 
+/** Exact optimistic-concurrency and monotonic-progress contract for migration 0031. */
+export function assertLearningProgressConcurrencyMigrationContract(sql0031: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const code = stripSqlCommentsAndSplitStatements(sql0031).join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  fail(/alter table public\.learning_progress[\s\S]*add column if not exists version integer not null default 1/i.test(code), "Migration 0031 must add a database version token");
+  fail(/create or replace function public\.save_learning_progress\([\s\S]*p_expected_version integer/i.test(code), "Migration 0031 must require an expected version in the progress RPC");
+  fail(/set search_path = pg_catalog, public/i.test(code) && /auth\.uid\(\)/i.test(executableCode), "Progress concurrency RPC must use fixed search_path and auth.uid()");
+  fail(/on conflict\s*\(user_id, product_id, item_type, item_id\)/i.test(executableCode) && /version\s*=\s*public\.learning_progress\.version\s*\+\s*1/i.test(executableCode), "Progress writes must use a versioned upsert");
+  fail(/where public\.learning_progress\.version = p_expected_version/i.test(executableCode) && /using errcode = 'p0002'/i.test(code), "Stale writers must receive a conflict instead of silently overwriting");
+  fail(/status = 'completed'[\s\S]*p_watched_percent >= public\.learning_progress\.watched_percent/i.test(code), "Completed and watched progress must not move backward");
+  fail(!/\b(?:execute\s+immediate|format\s*\(|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role)\b/i.test(executableCode), "Migration 0031 must not use privilege escalation or dynamic SQL");
+}
+
 /** Pure contract used by the CLI audit and integration tests for migration 0016. */
 export function assertMigration0016Contract(sql0016: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -1706,13 +1720,14 @@ export async function runAudit(): Promise<boolean> {
       "0027_consultation_rpc_private_boundary.sql",
       "0028_learning_progress_entitlement_boundary.sql",
       "0029_material_storage_integrity_boundary.sql",
-      "0030_catalog_search_complete_fields.sql"
+      "0030_catalog_search_complete_fields.sql",
+      "0031_learning_progress_concurrency.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 30 migration files exist in strict topological order",
+      check: "All 31 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -2231,6 +2246,15 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0030_catalog_search_complete_fields", check: "Maintains complete normalized search documents across parent and child fields", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0030ContractValid) results.push({ category: "0030_catalog_search_complete_fields", check: "Maintains complete normalized search documents across parent and child fields", passed: true, details: "Canonical projection, Unicode normalization, field-complete triggers, tutor-subject refresh, and idempotent backfill verified" });
+
+    // 31. Audit 0031_learning_progress_concurrency.sql
+    const sql0031 = await fs.readFile(path.join(migrationsDir, "0031_learning_progress_concurrency.sql"), "utf-8");
+    let migration0031ContractValid = true;
+    try { assertLearningProgressConcurrencyMigrationContract(sql0031); } catch (error) {
+      migration0031ContractValid = false;
+      results.push({ category: "0031_learning_progress_concurrency", check: "Rejects stale progress writers and backward progress transitions", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0031ContractValid) results.push({ category: "0031_learning_progress_concurrency", check: "Rejects stale progress writers and backward progress transitions", passed: true, details: "Version token, expected-version CAS, conflict code, monotonic status/percentage rules, and entitlement-bound RPC preserved" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

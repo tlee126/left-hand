@@ -85,6 +85,7 @@ export type SaveLearningProgressRpcArgs = {
   p_watched_percent: number
   p_started_at: string | null
   p_completed_at: string | null
+  p_expected_version: number
 }
 
 export type Database = {
@@ -448,6 +449,7 @@ export type Database = {
           status: string
           updated_at: string
           user_id: string
+          version: number
           watched_percent: number
         }
         Insert: {
@@ -460,6 +462,7 @@ export type Database = {
           status?: string
           updated_at?: string
           user_id: string
+          version?: number
           watched_percent?: number
         }
         Update: {
@@ -472,6 +475,7 @@ export type Database = {
           status?: string
           updated_at?: string
           user_id?: string
+          version?: number
           watched_percent?: number
         }
         Relationships: [
