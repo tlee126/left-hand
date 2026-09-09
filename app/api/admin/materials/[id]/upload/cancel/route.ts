@@ -19,13 +19,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const body: unknown = await readBoundedJson(request, 8 * 1024);
     if (body === null || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1 || typeof (body as { reservationId?: unknown }).reservationId !== "string" || !isValidMaterialUuid((body as { reservationId: string }).reservationId)) return response({ error: "Invalid material upload request." }, 400);
     const reservationId = (body as { reservationId: string }).reservationId.toLowerCase();
+    const userId = access.user && isValidMaterialUuid(access.user.id) ? access.user.id.toLowerCase() : null;
     const reservation = await getMaterialAssetUploadReservation(reservationId);
     const productId = id.toLowerCase();
     if (!reservation) {
-      const committed = access.user && isValidMaterialUuid(access.user.id) ? await getMaterialAssetByUploadReservation(reservationId, access.user.id) : null;
+      const committed = userId ? await getMaterialAssetByUploadReservation(reservationId, userId) : null;
       return response({ error: "Material upload is not available." }, committed?.product_id === productId ? 409 : 404);
     }
-    if (reservation.productId !== productId) return response({ error: "Material upload is not available." }, 404);
+    if (!userId || reservation.productId !== productId || reservation.uploadedBy !== userId) return response({ error: "Material upload is not available." }, 404);
     if (reservation.cancelledAt !== null) return Response.json({ success: true }, { headers: { "Cache-Control": "private, no-store" } });
     if (reservation.cleanupPendingAt !== null) return response({ error: "Material upload is not available." }, 409);
     {

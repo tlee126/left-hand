@@ -33,7 +33,7 @@ globalThis.__cancelResult = scenario.cancelResult !== false;
 globalThis.__calls = [];
 
 const authUrl = dataUrl("export async function getAccountAccess() { return { status: 'approved', user: { id: globalThis.__adminId }, profile: { role: 'admin' } }; }");
-const reservation = { reservationId, productId, uploadedBy: uuid, idempotencyKey: "${IDEMPOTENCY_KEY}", storagePath, originalName: 'material.pdf', mimeType: 'application/pdf', byteSize: 5, version: 1, expiresAt: new Date(Date.now() + 3600000).toISOString(), cancelledAt: scenario.cancelledReservation ? new Date().toISOString() : null, retryableAt: null, cleanupPendingAt: null };
+const reservation = { reservationId, productId, uploadedBy: uuid, idempotencyKey: "${IDEMPOTENCY_KEY}", storagePath, originalName: 'material.pdf', mimeType: 'application/pdf', byteSize: 5, version: 1, expiresAt: new Date(Date.now() + 3600000).toISOString(), cancelledAt: scenario.cancelledReservation ? new Date().toISOString() : null, retryableAt: null, cleanupPendingAt: scenario.cleanupPendingReservation ? new Date().toISOString() : null };
 const asset = { id: "a50e8400-e29b-41d4-a716-446655440000", product_id: productId, uploaded_by: uuid, upload_reservation_id: reservationId, upload_idempotency_key: "${IDEMPOTENCY_KEY}", storage_path: storagePath, original_name: 'material.pdf', mime_type: 'application/pdf', byte_size: 5, version: 1, visibility: 'private', created_at: '', updated_at: '' };
 const repoUrl = dataUrl(
   "export class MaterialAssetUploadConflictError extends Error {}\n" +
@@ -213,6 +213,14 @@ describe("direct material upload hardening runtime", () => {
     assert.equal(result.calls.includes("remove"), false);
   });
 
+  test("cancel rejects a foreign terminal reservation even if a repository row is exposed", async () => {
+    const result = await runRoute([{ route: "cancel", adminId: ADMIN_B, body: JSON.stringify({ reservationId: RESERVATION_ID }) }], { exposeReservation: true, cancelledReservation: true });
+    assert.deepEqual(result.results.map((item) => item.status), [404]);
+    assert.deepEqual(result.results[0].body, { error: "Material upload is not available." });
+    assert.equal(result.calls.includes("cancelled"), false);
+    assert.equal(result.calls.includes("remove"), false);
+  });
+
   test("a finalize RPC failure never deletes an object that may already be committed", async () => {
     const result = await runRoute([{ route: "finalize", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID, idempotencyKey: IDEMPOTENCY_KEY }) }], { finalizeError: true });
     assert.deepEqual(result.results.map((item) => item.status), [500]);
@@ -282,6 +290,14 @@ describe("direct material upload hardening runtime", () => {
     const result = await runRoute([{ route: "cancel", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID }) }]);
     assert.equal(result.results[0].status, 200);
     assert.deepEqual(result.calls, ["reservation", "cancelled", "remove"]);
+  });
+
+  test("cancel leaves a cleanup-pending reservation to the database cleanup state machine", async () => {
+    const result = await runRoute([{ route: "cancel", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID }) }], { cleanupPendingReservation: true });
+    assert.equal(result.results[0].status, 409);
+    assert.deepEqual(result.results[0].body, { error: "Material upload is not available." });
+    assert.equal(result.calls.includes("cancelled"), false);
+    assert.equal(result.calls.includes("remove"), false);
   });
 
   test("all three exported routes reject malformed and oversized JSON", async () => {

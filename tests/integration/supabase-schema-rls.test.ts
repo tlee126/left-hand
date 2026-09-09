@@ -41,6 +41,7 @@ import {
   assertMaterialUploadCleanupMigrationContract,
   assertMaterialUploadIdempotencyMigrationContract,
   assertMaterialUploadRetryStateMigrationContract,
+  assertMaterialUploadCancelCleanupGuardMigrationContract,
   assertCatalogCompleteSearchMigrationContract,
   assertLearningProgressConcurrencyMigrationContract,
   assertLearningProgressMonotonicityMigrationContract,
@@ -275,6 +276,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ,"0034_material_upload_cleanup_hardening.sql"
       ,"0035_material_upload_idempotency.sql"
       ,"0036_material_upload_retry_state.sql"
+      ,"0037_material_upload_cancel_cleanup_guard.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -397,16 +399,23 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       const sql = await fs.readFile(path.join(migrationsDir, "0036_material_upload_retry_state.sql"), "utf-8");
       assert.doesNotThrow(() => assertMaterialUploadRetryStateMigrationContract(sql));
       assert.doesNotThrow(() => assertMaterialUploadRetryStateMigrationContract(`-- GRANT EXECUTE TO anon;\n${sql}`));
+      assert.doesNotThrow(() => assertMaterialUploadRetryStateMigrationContract(sql.replace("DECLARE\n  v_user_id uuid := auth.uid();\nBEGIN", "DECLARE\n  p_actor uuid;\n  v_user_id uuid := auth.uid();\nBEGIN").replace("Material upload is not permitted", "p_actor BYPASSRLS EXECUTE format")));
       const dangerousMutations = [
         `${sql}\nGRANT EXECUTE ON FUNCTION public.mark_material_asset_upload_retryable(uuid) TO anon;`,
         `${sql}\nGRANT EXECUTE ON FUNCTION public.mark_material_asset_upload_retryable(uuid) TO public;`,
         sql.replace(/REVOKE ALL ON FUNCTION public\.mark_material_asset_upload_retryable\([^;]+;\s*/i, ""),
         sql.replaceAll("uploaded_by = v_user_id", "uploaded_by = uploaded_by"),
-        sql.replace("v_user_id uuid := auth.uid()", "v_user_id uuid := auth.uid(), p_actor uuid"),
+        sql.replace("public.mark_material_asset_upload_retryable(p_reservation_id uuid)", "public.mark_material_asset_upload_retryable(p_reservation_id uuid, p_actor uuid)"),
         sql.replace("p_reservation_id uuid)", "p_reservation_id uuid, p_timestamp timestamptz)"),
         sql.replaceAll("upload_idempotency_key = p_idempotency_key", "upload_idempotency_key = upload_idempotency_key"),
         sql.replace("v_reservation.product_id <> p_product_id", "v_reservation.product_id = p_product_id"),
         sql.replace("assets.upload_reservation_id = reservations.id", "assets.product_id = reservations.product_id"),
+        sql.replace("uploaded_by = v_user_id", "uploaded_by = v_user_id OR true"),
+        sql.replace("BEGIN\n  IF v_user_id IS NULL", "BEGIN\n  UPDATE public.material_asset_upload_reservations SET retryable_at = now();\n  IF v_user_id IS NULL"),
+        sql.replace("BEGIN\n  IF v_user_id IS NULL", "BEGIN\n  INSERT INTO public.material_assets (product_id, storage_path, original_name, mime_type, byte_size, version) VALUES (gen_random_uuid(), 'materials/x', 'x.pdf', 'application/pdf', 1, 1);\n  IF v_user_id IS NULL"),
+        sql.replace("BEGIN\n  IF v_user_id IS NULL", "BEGIN\n  DELETE FROM public.material_asset_upload_reservations;\n  IF v_user_id IS NULL"),
+        sql.replace("BEGIN\n  IF v_user_id IS NULL", "BEGIN\n  GRANT SELECT ON TABLE public.material_assets TO authenticated;\n  IF v_user_id IS NULL"),
+        sql.replace("v_user_id uuid := auth.uid()", "v_user_id uuid := gen_random_uuid()"),
         `${sql}\nALTER TABLE public.material_assets ENABLE ROW LEVEL SECURITY;\nBYPASSRLS;`,
         `${sql}\nSET ROLE postgres;`,
         `${sql}\nEXECUTE 'SELECT 1';`,
@@ -416,6 +425,19 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         `${sql}\nUPDATE public.material_assets SET visibility = 'private';`
       ];
       for (const [index, mutation] of dangerousMutations.entries()) assert.throws(() => assertMaterialUploadRetryStateMigrationContract(mutation), /./, `0036 dangerous mutation ${index} must be rejected`);
+    });
+
+    test("0037 blocks cancellation during retry cleanup without widening RPC privileges", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0037_material_upload_cancel_cleanup_guard.sql"), "utf-8");
+      assert.doesNotThrow(() => assertMaterialUploadCancelCleanupGuardMigrationContract(sql));
+      for (const mutation of [
+        sql.replace("AND cleanup_pending_at IS NULL", ""),
+        sql.replace("uploaded_by = v_user_id", "uploaded_by = v_user_id OR true"),
+        sql.replace("v_user_id uuid := auth.uid()", "v_user_id uuid := gen_random_uuid()"),
+        sql.replace("TO authenticated", "TO anon"),
+        `${sql}\nGRANT EXECUTE ON FUNCTION public.cancel_material_asset_upload(uuid) TO public;`,
+        sql.replace("BEGIN\n  IF v_user_id IS NULL", "BEGIN\n  UPDATE public.material_asset_upload_reservations SET retryable_at = now();\n  IF v_user_id IS NULL")
+      ]) assert.throws(() => assertMaterialUploadCancelCleanupGuardMigrationContract(mutation), /./);
     });
 
     test("0001_core_schema.sql creates all 8 application tables with primary keys and constraints", async () => {
