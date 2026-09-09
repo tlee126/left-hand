@@ -112,6 +112,15 @@ describe("catalog client runtime interactions", () => {
       const initial = { ...pageProps({}), [itemsKey]: [] };
       const elements = render(component, initial);
       const input = find(elements, (element) => element.type === "input" && element.props.placeholder === placeholder);
+      assert.equal(typeof input.props["aria-label"], "string");
+      assert.ok(String(input.props.className).includes("focus-visible"));
+      const clear = find(elements, (element) => element.type === "button" && element.props["aria-label"] === "Xóa tìm kiếm");
+      assert.equal(clear.props.disabled, true);
+      const select = find(elements, (element) => element.type === "select");
+      assert.equal(typeof select.props["aria-label"], "string");
+      const filters = elements.filter((element) => element.type === "button" && element.props["data-filter-active"] !== undefined);
+      assert.ok(filters.length > 0);
+      assert.ok(filters.every((filterButton) => typeof filterButton.props["aria-pressed"] === "boolean" && String(filterButton.props.className).includes("focus-visible")));
       (input.props.onChange as (event: { target: { value: string } }) => void)({ target: { value: " Đặng " } });
       const rerendered = render(component, initial);
       const updatedInput = find(rerendered, (element) => element.type === "input" && element.props.placeholder === placeholder);
