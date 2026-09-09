@@ -1146,6 +1146,28 @@ export function assertMaterialUploadCleanupMigrationContract(sql0034: string): v
   fail(/revoke all on function public\.claim_expired_material_asset_uploads\(integer\) from public, anon, authenticated/i.test(code) && /grant execute on function public\.claim_expired_material_asset_uploads\(integer\) to service_role/i.test(code), "Cleanup claim execution must be private to service_role");
 }
 
+/** Server/database idempotency contract for each direct-upload attempt. */
+export function assertMaterialUploadIdempotencyMigrationContract(sql0035: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const code = stripSqlCommentsAndSplitStatements(sql0035).join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  fail(/alter table public\.material_asset_upload_reservations[\s\S]*add column upload_idempotency_key uuid/i.test(code), "Migration 0035 must bind reservations to an idempotency key");
+  fail(/alter table public\.material_assets[\s\S]*add column upload_idempotency_key uuid/i.test(code), "Migration 0035 must persist the idempotency key on committed assets");
+  fail(/material_asset_upload_reservations_idempotency_key_unique[\s\S]*uploaded_by, upload_idempotency_key[\s\S]*where upload_idempotency_key is not null/i.test(code), "Migration 0035 must uniquely scope active reservations by uploader and key");
+  fail(/material_assets_upload_idempotency_key_unique[\s\S]*uploaded_by, upload_idempotency_key[\s\S]*where uploaded_by is not null and upload_idempotency_key is not null/i.test(code), "Migration 0035 must uniquely scope committed assets by uploader and key");
+  fail(/create or replace function public\.reserve_material_asset_upload\([\s\S]*p_idempotency_key uuid/i.test(code), "Migration 0035 must require the idempotency key in prepare RPC");
+  fail(/uploaded_by = v_user_id[\s\S]*upload_idempotency_key = p_idempotency_key/i.test(code), "Prepare RPC must look up keys in the authenticated owner scope");
+  fail(/status', 'reserved'[\s\S]*is_new', false/i.test(code) && /status', 'committed'[\s\S]*is_new', false/i.test(code), "Prepare RPC must return existing active reservations and committed assets");
+  fail(/return\s+jsonb_build_object\(\s*'status',\s*'conflict'\s*\)/i.test(code), "Prepare RPC must reject immutable metadata conflicts generically");
+  fail(/pg_advisory_xact_lock\(hashtextextended\(v_user_id::text[\s\S]*p_idempotency_key::text/i.test(code), "Prepare RPC must serialize an uploader's idempotency key");
+  fail(/drop function if exists public\.finalize_material_asset_upload\(uuid\)/i.test(code) && /create or replace function public\.finalize_material_asset_upload\(p_reservation_id uuid, p_idempotency_key uuid\)/i.test(code), "Finalization RPC must bind the same idempotency key");
+  fail(/upload_idempotency_key = p_idempotency_key[\s\S]*for update/i.test(code) && /upload_reservation_id = p_reservation_id[\s\S]*uploaded_by = v_user_id[\s\S]*upload_idempotency_key = p_idempotency_key/i.test(code), "Finalization must enforce owner/key identity and return committed duplicates");
+  fail(/upload_reservation_id, upload_idempotency_key, storage_path/i.test(executableCode) && /delete from public\.material_asset_upload_reservations/i.test(executableCode), "Finalization must persist the key and consume the reservation atomically");
+  fail((code.match(/set search_path = pg_catalog, public/gi) ?? []).length === 2, "Migration 0035 functions must use the fixed search_path");
+  fail(!/\b(?:execute\s+(?:immediate|format)|set\s+role|alter\s+role|bypassrls|dynamic\s+sql)\b/i.test(executableCode), "Migration 0035 must not use dynamic SQL or privilege escalation");
+  fail(/grant execute on function public\.reserve_material_asset_upload\(uuid, text, text, text, bigint, uuid\) to authenticated/i.test(code) && /grant execute on function public\.finalize_material_asset_upload\(uuid, uuid\) to authenticated/i.test(code), "Migration 0035 must grant only the authenticated upload boundary");
+}
+
 /** Canonical catalog search document contract for migration 0030. */
 export function assertCatalogCompleteSearchMigrationContract(sql0030: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -1779,13 +1801,14 @@ export async function runAudit(): Promise<boolean> {
       "0031_learning_progress_concurrency.sql",
       "0032_learning_progress_monotonicity.sql",
       "0033_material_direct_upload_sessions.sql",
-      "0034_material_upload_cleanup_hardening.sql"
+      "0034_material_upload_cleanup_hardening.sql",
+      "0035_material_upload_idempotency.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 34 migration files exist in strict topological order",
+      check: "All 35 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -2340,6 +2363,15 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0034_material_upload_cleanup_hardening", check: "Reclaims expired and cancelled direct-upload sessions safely", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0034ContractValid) results.push({ category: "0034_material_upload_cleanup_hardening", check: "Reclaims expired and cancelled direct-upload sessions safely", passed: true, details: "Authenticated cancellation, lock-safe cleanup claims, exact-path retry, and finalized-asset protection verified" });
+
+    // 35. Audit 0035_material_upload_idempotency.sql
+    const sql0035 = await fs.readFile(path.join(migrationsDir, "0035_material_upload_idempotency.sql"), "utf-8");
+    let migration0035ContractValid = true;
+    try { assertMaterialUploadIdempotencyMigrationContract(sql0035); } catch (error) {
+      migration0035ContractValid = false;
+      results.push({ category: "0035_material_upload_idempotency", check: "Binds prepare/finalize retries to one immutable upload attempt", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0035ContractValid) results.push({ category: "0035_material_upload_idempotency", check: "Binds prepare/finalize retries to one immutable upload attempt", passed: true, details: "Owner-scoped unique keys, existing reservation/asset replay, immutable metadata conflicts, and atomic keyed finalization verified" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

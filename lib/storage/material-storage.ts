@@ -1,7 +1,6 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { createClient } from "@/lib/supabase/server";
 import { createServerAdminClient } from "@/lib/supabase/server-admin";
 import {
   MATERIALS_BUCKET,
@@ -121,20 +120,6 @@ export function isValidMaterialStoragePathForProductAndVersion(storagePath: unkn
   if (!Number.isSafeInteger(expectedVersion) || (expectedVersion as number) < 1 || !isValidMaterialUuid(expectedProductId)) return false;
   const parsed = parseMaterialStoragePath(storagePath);
   return parsed !== null && parsed.productId === expectedProductId.toLowerCase() && parsed.version === expectedVersion;
-}
-
-export interface MaterialUploadInput {
-  productId: string;
-  version: number;
-  originalName: string;
-  mimeType: SupportedMaterialMimeType;
-  file: Blob;
-  storagePath: string;
-}
-
-export interface StoredMaterialObject {
-  bucket: typeof MATERIALS_BUCKET;
-  storagePath: string;
 }
 
 export interface MaterialUploadCapability {
@@ -276,28 +261,6 @@ export async function inspectMaterialObject(storagePath: unknown, expectedMimeTy
     return info;
   } catch (error) {
     if (error instanceof MaterialStorageInputError || error instanceof MaterialStorageError) throw error;
-    throw new MaterialStorageError();
-  }
-}
-
-export async function uploadMaterialObject(input: MaterialUploadInput): Promise<StoredMaterialObject> {
-  const productId = canonicalMaterialUuid(input.productId);
-  if (!Number.isSafeInteger(input.version) || input.version < 1 || !isSupportedMaterialMimeType(input.mimeType) || !(input.file instanceof Blob) || input.file.size <= 0 || input.file.size > materialSizeLimit(input.mimeType)) {
-    throw new MaterialStorageInputError();
-  }
-  if (!isValidMaterialStoragePathForProductAndVersion(input.storagePath, productId, input.version)) {
-    throw new MaterialStorageInputError();
-  }
-  const storagePath = input.storagePath;
-  try {
-    const supabase = await createClient();
-    const { error } = await supabase.storage.from(MATERIALS_BUCKET).upload(storagePath, input.file, {
-      contentType: input.mimeType,
-      upsert: false
-    });
-    if (error) throw new Error();
-    return { bucket: MATERIALS_BUCKET, storagePath };
-  } catch {
     throw new MaterialStorageError();
   }
 }

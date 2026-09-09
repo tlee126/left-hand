@@ -3,7 +3,8 @@ import { BoundedJsonError, BoundedJsonErrorCode, readBoundedJson } from "@/lib/h
 import {
   isMaterialProduct,
   releaseMaterialAssetUpload,
-  reserveMaterialAssetUpload
+  reserveMaterialAssetUpload,
+  MaterialAssetUploadConflictError
 } from "@/lib/repositories/material-asset-repository";
 import {
   createMaterialUploadCapability,
@@ -39,11 +40,11 @@ async function requireApprovedAdmin(): Promise<Response | null> {
   }
 }
 
-async function readPrepareBody(request: Request): Promise<{ originalName: string; mimeType: string; byteSize: number } | null> {
+async function readPrepareBody(request: Request): Promise<{ originalName: string; mimeType: string; byteSize: number; idempotencyKey: string } | null> {
   const body = await readBoundedJson(request, MAX_JSON_BYTES);
-  if (!isRecord(body) || Object.keys(body).length !== 3 || typeof body.originalName !== "string" || typeof body.mimeType !== "string" || typeof body.byteSize !== "number") return null;
+  if (!isRecord(body) || Object.keys(body).length !== 4 || typeof body.originalName !== "string" || typeof body.mimeType !== "string" || typeof body.byteSize !== "number" || !isValidMaterialUuid(body.idempotencyKey)) return null;
   if (!Number.isSafeInteger(body.byteSize) || body.byteSize <= 0) return null;
-  return { originalName: body.originalName, mimeType: body.mimeType, byteSize: body.byteSize };
+  return { originalName: body.originalName, mimeType: body.mimeType, byteSize: body.byteSize, idempotencyKey: body.idempotencyKey.toLowerCase() };
 }
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }): Promise<Response> {
@@ -51,6 +52,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (denied) return denied;
 
   let reservationId: string | null = null;
+  let reservationCreated = false;
   try {
     const { id } = await context.params;
     if (!isValidMaterialUuid(id)) return response({ error: "Invalid material upload request." }, 400);
@@ -60,13 +62,18 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const safeFilename = sanitizeMaterialFilename(input.originalName);
     if (!(await isMaterialProduct(productId))) return response({ error: "Material upload is not permitted." }, 404);
 
-    const reservation = await reserveMaterialAssetUpload({ productId, originalName: input.originalName, safeFilename, mimeType: input.mimeType, byteSize: input.byteSize });
+    const reservation = await reserveMaterialAssetUpload({ productId, originalName: input.originalName, safeFilename, mimeType: input.mimeType, byteSize: input.byteSize, idempotencyKey: input.idempotencyKey });
     reservationId = reservation.reservationId;
+    reservationCreated = reservation.isNew;
+    if (reservation.status === "committed") {
+      return Response.json({ reservationId, version: reservation.version, status: "committed" }, { headers: { "Cache-Control": CACHE_CONTROL } });
+    }
     const capability = await createMaterialUploadCapability(reservation.storagePath);
-    return Response.json({ reservationId, version: reservation.version, upload: { bucket: MATERIALS_BUCKET, path: capability.storagePath, token: capability.token }, expiresIn: MATERIAL_UPLOAD_EXPIRES_IN_SECONDS }, { headers: { "Cache-Control": CACHE_CONTROL } });
+    return Response.json({ reservationId, version: reservation.version, status: "reserved", upload: { bucket: MATERIALS_BUCKET, path: capability.storagePath, token: capability.token }, expiresIn: MATERIAL_UPLOAD_EXPIRES_IN_SECONDS }, { headers: { "Cache-Control": CACHE_CONTROL } });
   } catch (error) {
     if (error instanceof BoundedJsonError) return response({ error: error.code === BoundedJsonErrorCode.TooLarge ? "Request body is too large." : "Invalid material upload request." }, error.code === BoundedJsonErrorCode.TooLarge ? 413 : 400);
-    if (reservationId) {
+    if (error instanceof MaterialAssetUploadConflictError) return response({ error: "Material upload is not available." }, 409);
+    if (reservationId && reservationCreated) {
       try { await releaseMaterialAssetUpload(reservationId); } catch { /* keep provider details private */ }
     }
     return response({ error: "Unable to prepare material upload." }, 500);

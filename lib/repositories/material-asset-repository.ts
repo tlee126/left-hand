@@ -15,7 +15,7 @@ import {
 type MaterialAssetRow = Database["public"]["Tables"]["material_assets"]["Row"];
 
 export const MATERIAL_ASSET_COLUMNS = [
-  "id", "product_id", "uploaded_by", "upload_reservation_id", "storage_path", "original_name", "mime_type", "byte_size", "version", "visibility", "created_at", "updated_at"
+  "id", "product_id", "uploaded_by", "upload_reservation_id", "upload_idempotency_key", "storage_path", "original_name", "mime_type", "byte_size", "version", "visibility", "created_at", "updated_at"
 ] as const;
 export const MATERIAL_ASSET_SELECT = MATERIAL_ASSET_COLUMNS.join(", ");
 export const CURRENT_MATERIAL_ASSET_SELECT = ["product_id", "storage_path", "version", "visibility"].join(", ");
@@ -36,10 +36,19 @@ export class MaterialAssetRepositoryError extends Error {
   }
 }
 
+export class MaterialAssetUploadConflictError extends Error {
+  constructor(message = "Material upload is not available.") {
+    super(message);
+    this.name = "MaterialAssetUploadConflictError";
+  }
+}
+
 export interface MaterialAssetUploadReservation {
   reservationId: string;
   version: number;
   storagePath: string;
+  status: "reserved" | "committed";
+  isNew: boolean;
 }
 
 export interface ReserveMaterialAssetUploadInput {
@@ -48,6 +57,7 @@ export interface ReserveMaterialAssetUploadInput {
   safeFilename: string;
   mimeType: string;
   byteSize: number;
+  idempotencyKey: string;
 }
 
 export interface CurrentMaterialAsset {
@@ -65,6 +75,7 @@ export interface MaterialAssetUploadReservationDetails {
   byteSize: number;
   version: number;
   expiresAt: string;
+  idempotencyKey: string | null;
 }
 
 export interface ExpiredMaterialAssetUploadClaim {
@@ -92,6 +103,16 @@ function asPositiveInteger(value: Json | undefined): number {
   return value;
 }
 
+function asBoolean(value: Json | undefined): boolean {
+  if (typeof value !== "boolean") throw new MaterialAssetRepositoryError();
+  return value;
+}
+
+function asUploadStatus(value: Json | undefined): "reserved" | "committed" {
+  if (value !== "reserved" && value !== "committed") throw new MaterialAssetRepositoryError();
+  return value;
+}
+
 export async function isMaterialProduct(productId: string): Promise<boolean> {
   if (!isValidMaterialUuid(productId)) throw new MaterialAssetInputError();
   const canonicalProductId = productId.toLowerCase();
@@ -106,7 +127,7 @@ export async function isMaterialProduct(productId: string): Promise<boolean> {
 }
 
 export async function reserveMaterialAssetUpload(input: ReserveMaterialAssetUploadInput): Promise<MaterialAssetUploadReservation> {
-  if (!isValidMaterialUuid(input.productId) || !isSupportedMaterialMimeType(input.mimeType) || !Number.isSafeInteger(input.byteSize) || input.byteSize <= 0 || input.byteSize > materialSizeLimit(input.mimeType)) throw new MaterialAssetInputError();
+  if (!isValidMaterialUuid(input.productId) || !isValidMaterialUuid(input.idempotencyKey) || !isSupportedMaterialMimeType(input.mimeType) || !Number.isSafeInteger(input.byteSize) || input.byteSize <= 0 || input.byteSize > materialSizeLimit(input.mimeType)) throw new MaterialAssetInputError();
   if (sanitizeMaterialFilename(input.originalName) !== input.safeFilename) throw new MaterialAssetInputError();
 
   try {
@@ -116,17 +137,21 @@ export async function reserveMaterialAssetUpload(input: ReserveMaterialAssetUplo
       p_original_name: input.originalName,
       p_safe_filename: input.safeFilename,
       p_mime_type: input.mimeType,
-      p_byte_size: input.byteSize
+      p_byte_size: input.byteSize,
+      p_idempotency_key: input.idempotencyKey.toLowerCase()
     });
     if (error) throw new Error();
     const row = asObject(data as Json | null);
+    if (row.status === "conflict") throw new MaterialAssetUploadConflictError();
     const reservationId = asString(row.reservation_id);
     const version = asPositiveInteger(row.version);
     const storagePath = asString(row.storage_path);
+    const status = asUploadStatus(row.status);
+    const isNew = asBoolean(row.is_new);
     if (!isValidMaterialUuid(reservationId) || !isValidMaterialStoragePathForProductAndVersion(storagePath, input.productId, version)) throw new Error();
-    return { reservationId, version, storagePath };
+    return { reservationId, version, storagePath, status, isNew };
   } catch (error) {
-    if (error instanceof MaterialAssetInputError) throw error;
+    if (error instanceof MaterialAssetInputError || error instanceof MaterialAssetUploadConflictError) throw error;
     throw new MaterialAssetRepositoryError();
   }
 }
@@ -141,8 +166,9 @@ function validateReservationRow(row: Record<string, Json | undefined>): Material
   const byteSize = asPositiveInteger(row.byte_size);
   const version = asPositiveInteger(row.version);
   const expiresAt = asString(row.expires_at);
-  if (!isValidMaterialUuid(reservationId) || !isValidMaterialUuid(productId) || !isValidMaterialUuid(uploadedBy) || !isSupportedMaterialMimeType(mimeType) || byteSize > materialSizeLimit(mimeType) || !isValidMaterialStoragePathForProductAndVersion(storagePath, productId, version) || !Number.isFinite(Date.parse(expiresAt))) throw new Error();
-  return { reservationId, productId: productId.toLowerCase(), uploadedBy: uploadedBy.toLowerCase(), storagePath, originalName, mimeType, byteSize, version, expiresAt };
+  const idempotencyKey = row.upload_idempotency_key === null || row.upload_idempotency_key === undefined ? null : asString(row.upload_idempotency_key);
+  if (!isValidMaterialUuid(reservationId) || !isValidMaterialUuid(productId) || !isValidMaterialUuid(uploadedBy) || (idempotencyKey !== null && !isValidMaterialUuid(idempotencyKey)) || !isSupportedMaterialMimeType(mimeType) || byteSize > materialSizeLimit(mimeType) || !isValidMaterialStoragePathForProductAndVersion(storagePath, productId, version) || !Number.isFinite(Date.parse(expiresAt))) throw new Error();
+  return { reservationId, productId: productId.toLowerCase(), uploadedBy: uploadedBy.toLowerCase(), storagePath, originalName, mimeType, byteSize, version, expiresAt, idempotencyKey: idempotencyKey?.toLowerCase() ?? null };
 }
 
 export async function getMaterialAssetUploadReservation(reservationId: string): Promise<MaterialAssetUploadReservationDetails | null> {
@@ -151,7 +177,7 @@ export async function getMaterialAssetUploadReservation(reservationId: string): 
     const supabase = await createClient();
     const { data, error } = await supabase
       .from("material_asset_upload_reservations")
-      .select("id, product_id, uploaded_by, storage_path, original_name, mime_type, byte_size, version, expires_at")
+      .select("id, product_id, uploaded_by, upload_idempotency_key, storage_path, original_name, mime_type, byte_size, version, expires_at")
       .eq("id", reservationId.toLowerCase())
       .maybeSingle();
     if (error) throw new Error();
@@ -244,15 +270,15 @@ export async function releaseExpiredMaterialAssetUploadCleanup(reservationId: st
 }
 
 function validateMaterialAssetRow(row: MaterialAsset): MaterialAsset {
-  if (!isValidMaterialUuid(row.id) || !isValidMaterialUuid(row.product_id) || (row.uploaded_by !== null && !isValidMaterialUuid(row.uploaded_by)) || typeof row.storage_path !== "string" || !isSupportedMaterialMimeType(row.mime_type) || !Number.isSafeInteger(row.byte_size) || row.byte_size <= 0 || row.byte_size > materialSizeLimit(row.mime_type) || !Number.isSafeInteger(row.version) || row.version < 1 || row.visibility !== "private" || !isValidMaterialStoragePathForProductAndVersion(row.storage_path, row.product_id, row.version)) throw new Error();
+  if (!isValidMaterialUuid(row.id) || !isValidMaterialUuid(row.product_id) || (row.uploaded_by !== null && !isValidMaterialUuid(row.uploaded_by)) || (row.upload_idempotency_key !== null && !isValidMaterialUuid(row.upload_idempotency_key)) || typeof row.storage_path !== "string" || !isSupportedMaterialMimeType(row.mime_type) || !Number.isSafeInteger(row.byte_size) || row.byte_size <= 0 || row.byte_size > materialSizeLimit(row.mime_type) || !Number.isSafeInteger(row.version) || row.version < 1 || row.visibility !== "private" || !isValidMaterialStoragePathForProductAndVersion(row.storage_path, row.product_id, row.version)) throw new Error();
   return row;
 }
 
-export async function finalizeMaterialAssetUpload(reservationId: string): Promise<MaterialAsset> {
-  if (!isValidMaterialUuid(reservationId)) throw new MaterialAssetInputError();
+export async function finalizeMaterialAssetUpload(reservationId: string, idempotencyKey: string): Promise<MaterialAsset> {
+  if (!isValidMaterialUuid(reservationId) || !isValidMaterialUuid(idempotencyKey)) throw new MaterialAssetInputError();
   try {
     const supabase = await createClient();
-    const { data, error } = await supabase.rpc("finalize_material_asset_upload", { p_reservation_id: reservationId.toLowerCase() });
+    const { data, error } = await supabase.rpc("finalize_material_asset_upload", { p_reservation_id: reservationId.toLowerCase(), p_idempotency_key: idempotencyKey.toLowerCase() });
     if (error || !data || typeof data !== "object" || Array.isArray(data)) throw new Error();
     return validateMaterialAssetRow(data as unknown as MaterialAsset);
   } catch (error) {

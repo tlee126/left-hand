@@ -39,9 +39,11 @@ async function requireApprovedAdmin(): Promise<Response | { userId: string }> {
   }
 }
 
-async function readReservationId(request: Request): Promise<string | null> {
+async function readFinalizeInput(request: Request): Promise<{ reservationId: string; idempotencyKey: string } | null> {
   const body = await readBoundedJson(request, 8 * 1024);
-  return isRecord(body) && Object.keys(body).length === 1 && typeof body.reservationId === "string" && isValidMaterialUuid(body.reservationId) ? body.reservationId.toLowerCase() : null;
+  return isRecord(body) && Object.keys(body).length === 2 && typeof body.reservationId === "string" && isValidMaterialUuid(body.reservationId) && isValidMaterialUuid(body.idempotencyKey)
+    ? { reservationId: body.reservationId.toLowerCase(), idempotencyKey: body.idempotencyKey.toLowerCase() }
+    : null;
 }
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }): Promise<Response> {
@@ -54,22 +56,23 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const { id } = await context.params;
     if (!isValidMaterialUuid(id)) return response({ error: "Invalid material upload request." }, 400);
     const productId = id.toLowerCase();
-    const reservationId = await readReservationId(request);
-    if (!reservationId) return response({ error: "Invalid material upload request." }, 400);
+    const input = await readFinalizeInput(request);
+    if (!input) return response({ error: "Invalid material upload request." }, 400);
+    const { reservationId, idempotencyKey } = input;
 
     reservation = await getMaterialAssetUploadReservation(reservationId);
     if (!reservation) {
       const existing = await getMaterialAssetByUploadReservation(reservationId, admin.userId);
-      if (existing?.product_id === productId && existing.uploaded_by?.toLowerCase() === admin.userId) return Response.json({ success: true, version: existing.version }, { headers: { "Cache-Control": CACHE_CONTROL } });
+      if (existing?.product_id === productId && existing.uploaded_by?.toLowerCase() === admin.userId && existing.upload_idempotency_key?.toLowerCase() === idempotencyKey) return Response.json({ success: true, version: existing.version }, { headers: { "Cache-Control": CACHE_CONTROL } });
       return response({ error: "Material upload is not available." }, 409);
     }
-    if (reservation.productId !== productId || reservation.uploadedBy !== admin.userId || !isSupportedMaterialMimeType(reservation.mimeType) || reservation.byteSize > materialSizeLimit(reservation.mimeType) || !isValidMaterialStoragePathForProductAndVersion(reservation.storagePath, productId, reservation.version) || Date.parse(reservation.expiresAt) <= Date.now()) throw new Error();
+    if (reservation.productId !== productId || reservation.uploadedBy !== admin.userId || reservation.idempotencyKey !== idempotencyKey || !isSupportedMaterialMimeType(reservation.mimeType) || reservation.byteSize > materialSizeLimit(reservation.mimeType) || !isValidMaterialStoragePathForProductAndVersion(reservation.storagePath, productId, reservation.version) || Date.parse(reservation.expiresAt) <= Date.now()) throw new Error();
 
     const object = await inspectMaterialObject(reservation.storagePath, reservation.mimeType, reservation.byteSize);
     if (object.storagePath !== reservation.storagePath || object.mimeType !== reservation.mimeType || object.byteSize !== reservation.byteSize) throw new Error();
     finalizeAttempted = true;
-    const asset = await finalizeMaterialAssetUpload(reservation.reservationId);
-    if (asset.product_id !== productId || asset.storage_path !== reservation.storagePath || asset.mime_type !== reservation.mimeType || asset.byte_size !== reservation.byteSize || asset.version !== reservation.version) throw new Error();
+    const asset = await finalizeMaterialAssetUpload(reservation.reservationId, idempotencyKey);
+    if (asset.product_id !== productId || asset.upload_idempotency_key !== idempotencyKey || asset.storage_path !== reservation.storagePath || asset.mime_type !== reservation.mimeType || asset.byte_size !== reservation.byteSize || asset.version !== reservation.version) throw new Error();
     return Response.json({ success: true, version: asset.version }, { headers: { "Cache-Control": CACHE_CONTROL } });
   } catch (error) {
     if (error instanceof BoundedJsonError) return response({ error: error.code === BoundedJsonErrorCode.TooLarge ? "Request body is too large." : "Invalid material upload request." }, error.code === BoundedJsonErrorCode.TooLarge ? 413 : 400);

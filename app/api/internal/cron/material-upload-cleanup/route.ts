@@ -19,23 +19,34 @@ function hasCronSecret(request: Request): boolean {
   return typeof configured === "string" && configured.length > 0 && authorization === `Bearer ${configured}`;
 }
 
-export async function GET(request: Request): Promise<Response> {
+async function cleanup(request: Request): Promise<Response> {
   if (!hasCronSecret(request)) return unauthorized();
   try {
     const claims = await claimExpiredMaterialAssetUploads(BATCH_SIZE);
+    let cleaned = 0;
     let failed = 0;
     for (const claim of claims) {
       try {
         await removeNewMaterialObject(claim.storagePath);
-        await completeExpiredMaterialAssetUploadCleanup(claim.reservationId, claim.claimId);
+        const completed = await completeExpiredMaterialAssetUploadCleanup(claim.reservationId, claim.claimId);
+        if (completed !== true) throw new Error();
+        cleaned += 1;
       } catch {
         failed += 1;
         try { await releaseExpiredMaterialAssetUploadCleanup(claim.reservationId, claim.claimId); } catch { /* lease expiry permits retry */ }
       }
     }
-    if (failed > 0) return failure();
-    return Response.json({ success: true, cleaned: claims.length }, { headers: { "Cache-Control": "no-store" } });
+    if (failed > 0) return Response.json({ success: false, cleaned, failed }, { status: 500, headers: { "Cache-Control": "no-store" } });
+    return Response.json({ success: true, cleaned, failed: 0 }, { headers: { "Cache-Control": "no-store" } });
   } catch {
     return failure();
   }
+}
+
+export async function POST(request: Request): Promise<Response> {
+  return cleanup(request);
+}
+
+export async function GET(request: Request): Promise<Response> {
+  return cleanup(request);
 }

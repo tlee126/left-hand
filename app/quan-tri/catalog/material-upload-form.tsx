@@ -3,9 +3,10 @@
 import { FormEvent, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/browser";
 import { MAX_PDF_BYTES, MAX_VIDEO_BYTES, MATERIALS_BUCKET, SUPPORTED_MATERIAL_MIME_TYPES } from "@/lib/storage/material-upload-constants";
+import { getOrCreateMaterialUploadAttempt, type MaterialUploadAttempt } from "./material-upload-attempt";
 
 type UploadState = "idle" | "preparing" | "uploading" | "finalizing" | "success" | "error";
-type PrepareResponse = { reservationId?: string; version?: number; upload?: { bucket?: string; path?: string; token?: string } };
+type PrepareResponse = { reservationId?: string; version?: number; status?: "reserved" | "committed"; upload?: { bucket?: string; path?: string; token?: string } };
 
 const accepted = new Set<string>(SUPPORTED_MATERIAL_MIME_TYPES);
 
@@ -26,6 +27,7 @@ export default function MaterialUploadForm({ productId }: { productId: string })
   const [state, setState] = useState<UploadState>("idle");
   const [message, setMessage] = useState<string>("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const attemptRef = useRef<MaterialUploadAttempt | null>(null);
   const active = state === "preparing" || state === "uploading" || state === "finalizing";
 
   async function cancel(reservationId: string): Promise<void> {
@@ -48,6 +50,8 @@ export default function MaterialUploadForm({ productId }: { productId: string })
       return;
     }
 
+    const attempt = getOrCreateMaterialUploadAttempt(attemptRef.current, { productId, originalName: file.name, mimeType: file.type, byteSize: file.size });
+    attemptRef.current = attempt;
     let reservationId = "";
     let cancelRequired = false;
     try {
@@ -56,13 +60,20 @@ export default function MaterialUploadForm({ productId }: { productId: string })
       const prepareResponse = await fetch(`/api/admin/materials/${productId}/upload/prepare`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ originalName: file.name, mimeType: file.type, byteSize: file.size })
+        body: JSON.stringify({ originalName: file.name, mimeType: file.type, byteSize: file.size, idempotencyKey: attempt.idempotencyKey })
       });
       const prepared = await jsonResponse(prepareResponse) as PrepareResponse;
       reservationId = typeof prepared.reservationId === "string" ? prepared.reservationId : "";
+      if (prepared.status === "committed") {
+        setState("success");
+        setMessage("Tải tệp tài liệu thành công.");
+        attemptRef.current = null;
+        if (inputRef.current) inputRef.current.value = "";
+        return;
+      }
       if (reservationId) cancelRequired = true;
       const upload = prepared.upload;
-      if (!reservationId || !upload || upload.bucket !== MATERIALS_BUCKET || typeof upload.path !== "string" || typeof upload.token !== "string") throw new Error("upload-failed");
+      if (prepared.status !== "reserved" || !reservationId || !upload || upload.bucket !== MATERIALS_BUCKET || typeof upload.path !== "string" || typeof upload.token !== "string") throw new Error("upload-failed");
 
       setState("uploading");
       setMessage("Đang tải tệp trực tiếp lên bộ nhớ…");
@@ -71,16 +82,18 @@ export default function MaterialUploadForm({ productId }: { productId: string })
       if (error) {
         cancelRequired = false;
         await cancel(reservationId);
+        attemptRef.current = null;
         throw new Error("upload-failed");
       }
       cancelRequired = false;
 
       setState("finalizing");
       setMessage("Đang xác nhận phiên bản tệp…");
-      const finalizeResponse = await fetch(`/api/admin/materials/${productId}/upload/finalize`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reservationId }) });
+      const finalizeResponse = await fetch(`/api/admin/materials/${productId}/upload/finalize`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reservationId, idempotencyKey: attempt.idempotencyKey }) });
       await jsonResponse(finalizeResponse);
       setState("success");
       setMessage("Tải tệp tài liệu thành công.");
+      attemptRef.current = null;
       if (inputRef.current) inputRef.current.value = "";
     } catch {
       setState("error");
@@ -90,7 +103,7 @@ export default function MaterialUploadForm({ productId }: { productId: string })
   }
 
   return <form onSubmit={submit} className="mt-3 flex flex-wrap items-end gap-3" aria-describedby={`${productId}-material-upload-status`}>
-    <label className="block text-sm font-bold text-ink/65"><span>Tệp PDF hoặc video</span><input ref={inputRef} name="file" type="file" required accept="application/pdf,video/mp4,video/webm,video/quicktime" disabled={active} className="mt-1 block max-w-full text-sm" /></label>
+    <label className="block text-sm font-bold text-ink/65"><span>Tệp PDF hoặc video</span><input ref={inputRef} onChange={() => { attemptRef.current = null; }} name="file" type="file" required accept="application/pdf,video/mp4,video/webm,video/quicktime" disabled={active} className="mt-1 block max-w-full text-sm" /></label>
     <button type="submit" disabled={active} className="inline-flex min-h-11 items-center justify-center rounded-full bg-accent px-5 py-2 text-sm font-extrabold text-white shadow-sm transition hover:bg-[#1258ce] disabled:cursor-not-allowed disabled:opacity-50">{active ? "Đang tải…" : "Tải phiên bản mới"}</button>
     <p id={`${productId}-material-upload-status`} role={state === "error" ? "alert" : "status"} aria-live="polite" className="basis-full text-sm text-ink/65">{message}</p>
   </form>;

@@ -3,12 +3,14 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { describe, test } from "node:test";
 import { BoundedJsonError, BoundedJsonErrorCode, readBoundedJson } from "../../lib/http/bounded-json";
+import { getOrCreateMaterialUploadAttempt } from "../../app/quan-tri/catalog/material-upload-attempt";
 
 const execFileAsync = promisify(execFile);
 const ADMIN_A = "550e8400-e29b-41d4-a716-446655440000";
 const ADMIN_B = "650e8400-e29b-41d4-a716-446655440000";
 const PRODUCT_ID = "750e8400-e29b-41d4-a716-446655440000";
 const RESERVATION_ID = "850e8400-e29b-41d4-a716-446655440000";
+const IDEMPOTENCY_KEY = "950e8400-e29b-41d4-a716-446655440000";
 const STORAGE_PATH = `materials/${PRODUCT_ID}/v1/${RESERVATION_ID}-material.pdf`;
 
 const routeHarness = String.raw`
@@ -24,16 +26,20 @@ const reservationId = "${RESERVATION_ID}";
 const storagePath = "${STORAGE_PATH}";
 globalThis.__adminId = scenario.adminId || uuid;
 globalThis.__finalized = false;
+globalThis.__reserveCount = 0;
 globalThis.__finalizeError = Boolean(scenario.finalizeError);
+globalThis.__prepareCommitted = Boolean(scenario.prepareCommitted);
+globalThis.__prepareConflict = Boolean(scenario.prepareConflict);
 globalThis.__cancelResult = scenario.cancelResult !== false;
 globalThis.__calls = [];
 
 const authUrl = dataUrl("export async function getAccountAccess() { return { status: 'approved', user: { id: globalThis.__adminId }, profile: { role: 'admin' } }; }");
-const reservation = { reservationId, productId, uploadedBy: uuid, storagePath, originalName: 'material.pdf', mimeType: 'application/pdf', byteSize: 5, version: 1, expiresAt: new Date(Date.now() + 3600000).toISOString() };
-const asset = { id: "950e8400-e29b-41d4-a716-446655440000", product_id: productId, uploaded_by: uuid, upload_reservation_id: reservationId, storage_path: storagePath, original_name: 'material.pdf', mime_type: 'application/pdf', byte_size: 5, version: 1, visibility: 'private', created_at: '', updated_at: '' };
+const reservation = { reservationId, productId, uploadedBy: uuid, idempotencyKey: "${IDEMPOTENCY_KEY}", storagePath, originalName: 'material.pdf', mimeType: 'application/pdf', byteSize: 5, version: 1, expiresAt: new Date(Date.now() + 3600000).toISOString() };
+const asset = { id: "a50e8400-e29b-41d4-a716-446655440000", product_id: productId, uploaded_by: uuid, upload_reservation_id: reservationId, upload_idempotency_key: "${IDEMPOTENCY_KEY}", storage_path: storagePath, original_name: 'material.pdf', mime_type: 'application/pdf', byte_size: 5, version: 1, visibility: 'private', created_at: '', updated_at: '' };
 const repoUrl = dataUrl(
+  "export class MaterialAssetUploadConflictError extends Error {}\n" +
   "export async function isMaterialProduct() { globalThis.__calls.push('material'); return true; }\n" +
-  "export async function reserveMaterialAssetUpload() { globalThis.__calls.push('reserve'); return { reservationId: '" + reservationId + "', version: 1, storagePath: '" + storagePath + "' }; }\n" +
+  "export async function reserveMaterialAssetUpload(input) { globalThis.__calls.push('reserve:' + input.idempotencyKey); if (globalThis.__prepareConflict) throw new MaterialAssetUploadConflictError(); const isNew = globalThis.__reserveCount++ === 0; return { reservationId: '" + reservationId + "', version: 1, status: globalThis.__prepareCommitted ? 'committed' : 'reserved', isNew, storagePath: '" + storagePath + "' }; }\n" +
   "export async function getMaterialAssetUploadReservation() { globalThis.__calls.push('reservation'); return (globalThis.__adminId === '" + uuid + "' || " + Boolean(scenario.exposeReservation) + ") && !globalThis.__finalized ? " + JSON.stringify(reservation) + " : null; }\n" +
   "export async function getMaterialAssetByUploadReservation(id, owner) { globalThis.__calls.push('existing:' + owner); return globalThis.__finalized && owner === '" + uuid + "' ? " + JSON.stringify(asset) + " : null; }\n" +
   "export async function finalizeMaterialAssetUpload() { globalThis.__calls.push('finalize'); if (globalThis.__finalizeError) throw new Error('rpc'); globalThis.__finalized = true; return " + JSON.stringify(asset) + "; }\n" +
@@ -103,10 +109,12 @@ const scenario = JSON.parse(process.argv[1]);
 process.env.CRON_SECRET = "test-cron-secret";
 globalThis.__calls = [];
 globalThis.__claimCount = 0;
+globalThis.__completionCount = 0;
+globalThis.__completed = false;
 const dataUrl = (source) => "data:text/javascript," + encodeURIComponent(source);
 const repoUrl = dataUrl(
-  "export async function claimExpiredMaterialAssetUploads() { globalThis.__calls.push('claim'); globalThis.__claimCount++; return (" + (scenario.noClaims ? "true" : "false") + " || (" + (scenario.repeatEmpty ? "globalThis.__claimCount > 1" : "false") + ")) ? [] : [{ reservationId: '850e8400-e29b-41d4-a716-446655440000', claimId: '950e8400-e29b-41d4-a716-446655440000', storagePath: 'materials/750e8400-e29b-41d4-a716-446655440000/v1/850e8400-e29b-41d4-a716-446655440000-material.pdf' }]; }\n" +
-  "export async function completeExpiredMaterialAssetUploadCleanup() { globalThis.__calls.push('complete'); return true; }\n" +
+  "export async function claimExpiredMaterialAssetUploads() { globalThis.__calls.push('claim'); globalThis.__claimCount++; return (" + (scenario.noClaims ? "true" : "false") + " || globalThis.__completed || (" + (scenario.repeatEmpty ? "globalThis.__claimCount > 1" : "false") + ")) ? [] : [{ reservationId: '850e8400-e29b-41d4-a716-446655440000', claimId: '950e8400-e29b-41d4-a716-446655440000', storagePath: 'materials/750e8400-e29b-41d4-a716-446655440000/v1/850e8400-e29b-41d4-a716-446655440000-material.pdf' }]; }\n" +
+  "export async function completeExpiredMaterialAssetUploadCleanup() { globalThis.__calls.push('complete'); globalThis.__completionCount++; if (" + Boolean(scenario.completionError) + ") throw new Error('db'); if (" + Boolean(scenario.completionFalse) + " && !(" + Boolean(scenario.completionFalseOnce) + " && globalThis.__completionCount > 1) ) return false; globalThis.__completed = true; return true; }\n" +
   "export async function releaseExpiredMaterialAssetUploadCleanup() { globalThis.__calls.push('release'); return true; }"
 );
 const storageUrl = dataUrl("export async function removeNewMaterialObject() { globalThis.__calls.push('remove'); if (" + Boolean(scenario.storageFailure) + ") throw new Error('storage'); }");
@@ -116,7 +124,7 @@ const route = await import(dataUrl((await transform(source, { loader: "ts", form
 const results = [];
 for (const authorized of scenario.authorized ?? [true]) {
   const headers = authorized ? { authorization: "Bearer test-cron-secret" } : {};
-  const response = await route.GET(new Request("https://example.test/api/internal/cron/material-upload-cleanup", { headers }));
+  const response = await route.POST(new Request("https://example.test/api/internal/cron/material-upload-cleanup", { method: "POST", headers }));
   results.push({ status: response.status, body: await response.json() });
 }
 console.log(JSON.stringify({ results, calls: globalThis.__calls }));
@@ -154,11 +162,39 @@ async function runInspect(scenario: Record<string, unknown>): Promise<{ ok: bool
 }
 
 describe("direct material upload hardening runtime", () => {
+  test("client upload attempts reuse the key only for the same immutable file identity", () => {
+    const identity = { productId: PRODUCT_ID, originalName: "material.pdf", mimeType: "application/pdf", byteSize: 5 };
+    const first = getOrCreateMaterialUploadAttempt(null, identity, () => IDEMPOTENCY_KEY);
+    const retry = getOrCreateMaterialUploadAttempt(first, identity, () => "a50e8400-e29b-41d4-a716-446655440000");
+    const changed = getOrCreateMaterialUploadAttempt(first, { ...identity, byteSize: 6 }, () => "a50e8400-e29b-41d4-a716-446655440000");
+    assert.equal(retry.idempotencyKey, IDEMPOTENCY_KEY);
+    assert.equal(changed.idempotencyKey, "a50e8400-e29b-41d4-a716-446655440000");
+  });
+
+  test("prepare retries reuse one idempotency key and committed prepare skips a second storage upload", async () => {
+    const body = JSON.stringify({ originalName: "material.pdf", mimeType: "application/pdf", byteSize: 5, idempotencyKey: IDEMPOTENCY_KEY });
+    const retried = await runRoute([
+      { route: "prepare", adminId: ADMIN_A, body },
+      { route: "prepare", adminId: ADMIN_A, body }
+    ]);
+    assert.deepEqual(retried.results.map((item) => item.status), [200, 200]);
+    assert.deepEqual(retried.results.map((item) => (item.body as { reservationId?: string; version?: number; status?: string }).reservationId), [RESERVATION_ID, RESERVATION_ID]);
+    assert.deepEqual(retried.results.map((item) => (item.body as { version?: number }).version), [1, 1]);
+    assert.deepEqual(retried.calls.filter((call) => call.startsWith("reserve:")), [`reserve:${IDEMPOTENCY_KEY}`, `reserve:${IDEMPOTENCY_KEY}`]);
+
+    const committed = await runRoute([{ route: "prepare", adminId: ADMIN_A, body }], { prepareCommitted: true });
+    assert.equal((committed.results[0].body as { status?: string }).status, "committed");
+
+    const conflict = await runRoute([{ route: "prepare", adminId: ADMIN_A, body: JSON.stringify({ originalName: "other.pdf", mimeType: "application/pdf", byteSize: 5, idempotencyKey: IDEMPOTENCY_KEY }) }], { prepareConflict: true });
+    assert.equal(conflict.results[0].status, 409);
+    assert.deepEqual(conflict.results[0].body, { error: "Material upload is not available." });
+  });
+
   test("same-admin duplicate finalize is idempotent and foreign admin replay is rejected", async () => {
     const result = await runRoute([
-      { route: "finalize", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID }) },
-      { route: "finalize", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID }) },
-      { route: "finalize", adminId: ADMIN_B, body: JSON.stringify({ reservationId: RESERVATION_ID }) }
+      { route: "finalize", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID, idempotencyKey: IDEMPOTENCY_KEY }) },
+      { route: "finalize", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID, idempotencyKey: IDEMPOTENCY_KEY }) },
+      { route: "finalize", adminId: ADMIN_B, body: JSON.stringify({ reservationId: RESERVATION_ID, idempotencyKey: IDEMPOTENCY_KEY }) }
     ]);
     assert.deepEqual(result.results.map((item) => item.status), [200, 200, 409]);
     assert.equal(result.calls.filter((call) => call === "finalize").length, 1);
@@ -172,7 +208,7 @@ describe("direct material upload hardening runtime", () => {
   });
 
   test("a finalize RPC failure never deletes an object that may already be committed", async () => {
-    const result = await runRoute([{ route: "finalize", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID }) }], { finalizeError: true });
+    const result = await runRoute([{ route: "finalize", adminId: ADMIN_A, body: JSON.stringify({ reservationId: RESERVATION_ID, idempotencyKey: IDEMPOTENCY_KEY }) }], { finalizeError: true });
     assert.deepEqual(result.results.map((item) => item.status), [500]);
     assert.equal(result.calls.includes("remove"), false);
   });
@@ -233,6 +269,23 @@ describe("direct material upload hardening runtime", () => {
     const finalized = await runCleanup({ authorized: [true], noClaims: true });
     assert.deepEqual(finalized.results.map((item) => item.status), [200]);
     assert.deepEqual(finalized.calls, ["claim"]);
+  });
+
+  test("cleanup completion false or throw is never counted and the claim is retryable", async () => {
+    const incomplete = await runCleanup({ authorized: [true], completionFalse: true });
+    assert.deepEqual(incomplete.results.map((item) => item.status), [500]);
+    assert.deepEqual(incomplete.results[0].body, { success: false, cleaned: 0, failed: 1 });
+    assert.deepEqual(incomplete.calls, ["claim", "remove", "complete", "release"]);
+
+    const thrown = await runCleanup({ authorized: [true], completionError: true });
+    assert.deepEqual(thrown.results.map((item) => item.status), [500]);
+    assert.deepEqual(thrown.results[0].body, { success: false, cleaned: 0, failed: 1 });
+    assert.deepEqual(thrown.calls, ["claim", "remove", "complete", "release"]);
+
+    const retried = await runCleanup({ authorized: [true, true], completionFalse: true, completionFalseOnce: true });
+    assert.deepEqual(retried.results.map((item) => item.status), [500, 200]);
+    assert.deepEqual(retried.results.map((item) => item.body), [{ success: false, cleaned: 0, failed: 1 }, { success: true, cleaned: 1, failed: 0 }]);
+    assert.deepEqual(retried.calls, ["claim", "remove", "complete", "release", "claim", "remove", "complete"]);
   });
 
   test("finalization inspection rejects provider/content mismatches without reading a full object", async () => {

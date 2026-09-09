@@ -346,6 +346,7 @@ export type Database = {
           original_name: string
           product_id: string
           storage_path: string
+          upload_idempotency_key: string | null
           upload_reservation_id: string | null
           updated_at: string
           uploaded_by: string | null
@@ -360,6 +361,7 @@ export type Database = {
           original_name: string
           product_id: string
           storage_path: string
+          upload_idempotency_key?: string | null
           upload_reservation_id?: string | null
           updated_at?: string
           uploaded_by?: string | null
@@ -374,6 +376,7 @@ export type Database = {
           original_name?: string
           product_id?: string
           storage_path?: string
+          upload_idempotency_key?: string | null
           upload_reservation_id?: string | null
           updated_at?: string
           uploaded_by?: string | null
@@ -411,6 +414,7 @@ export type Database = {
           original_name: string
           product_id: string
           storage_path: string
+          upload_idempotency_key: string | null
           uploaded_by: string
           version: number
         }
@@ -427,6 +431,7 @@ export type Database = {
           original_name: string
           product_id: string
           storage_path: string
+          upload_idempotency_key?: string | null
           uploaded_by: string
           version: number
         }
@@ -443,6 +448,7 @@ export type Database = {
           original_name?: string
           product_id?: string
           storage_path?: string
+          upload_idempotency_key?: string | null
           uploaded_by?: string
           version?: number
         }
@@ -891,6 +897,7 @@ export type Database = {
       }
       reserve_material_asset_upload: {
         Args: {
+          p_idempotency_key: string
           p_product_id: string
           p_original_name: string
           p_safe_filename: string
@@ -900,7 +907,7 @@ export type Database = {
         Returns: Json
       }
       finalize_material_asset_upload: {
-        Args: { p_reservation_id: string }
+        Args: { p_idempotency_key: string; p_reservation_id: string }
         Returns: Json
       }
       release_material_asset_upload: {

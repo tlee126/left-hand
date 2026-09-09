@@ -39,6 +39,7 @@ import {
   assertMaterialStorageIntegrityBoundaryMigrationContract,
   assertMaterialDirectUploadMigrationContract,
   assertMaterialUploadCleanupMigrationContract,
+  assertMaterialUploadIdempotencyMigrationContract,
   assertCatalogCompleteSearchMigrationContract,
   assertLearningProgressConcurrencyMigrationContract,
   assertLearningProgressMonotonicityMigrationContract,
@@ -271,6 +272,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ,"0032_learning_progress_monotonicity.sql"
       ,"0033_material_direct_upload_sessions.sql"
       ,"0034_material_upload_cleanup_hardening.sql"
+      ,"0035_material_upload_idempotency.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -361,6 +363,13 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       assert.doesNotThrow(() => assertMaterialUploadCleanupMigrationContract(sql));
       assert.throws(() => assertMaterialUploadCleanupMigrationContract(sql.replace("FOR UPDATE SKIP LOCKED", "FOR UPDATE")), /./);
       assert.throws(() => assertMaterialUploadCleanupMigrationContract(sql.replace("AND NOT EXISTS (", "AND EXISTS (")), /./);
+    });
+
+    test("0035 binds prepare and finalize retries to one immutable upload attempt", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0035_material_upload_idempotency.sql"), "utf-8");
+      assert.doesNotThrow(() => assertMaterialUploadIdempotencyMigrationContract(sql));
+      assert.throws(() => assertMaterialUploadIdempotencyMigrationContract(sql.replaceAll("upload_idempotency_key uuid", "upload_idempotency_key text")), /./);
+      assert.throws(() => assertMaterialUploadIdempotencyMigrationContract(sql.replace("CREATE OR REPLACE FUNCTION public.finalize_material_asset_upload(p_reservation_id uuid, p_idempotency_key uuid)", "CREATE OR REPLACE FUNCTION public.finalize_material_asset_upload(p_reservation_id uuid, p_idempotency_key text)")), /./);
     });
 
     test("0001_core_schema.sql creates all 8 application tables with primary keys and constraints", async () => {
