@@ -77,6 +77,16 @@ export type ConsultationIntakeRpcArgs = {
   p_selected_subject_slug: string | null
 }
 
+export type SaveLearningProgressRpcArgs = {
+  p_product_id: string
+  p_item_type: "material" | "lesson"
+  p_item_id: string
+  p_status: "not_started" | "in_progress" | "completed"
+  p_watched_percent: number
+  p_started_at: string | null
+  p_completed_at: string | null
+}
+
 export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
@@ -807,6 +817,10 @@ export type Database = {
       }
       submit_consultation_intake: {
         Args: ConsultationIntakeRpcArgs
+        Returns: Json
+      }
+      save_learning_progress: {
+        Args: SaveLearningProgressRpcArgs
         Returns: Json
       }
     }

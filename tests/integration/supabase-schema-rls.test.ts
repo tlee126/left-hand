@@ -35,6 +35,7 @@ import {
   assertConsultationWorkflowTriggerCleanupMigrationContract,
   assertConsultationIntakeAccessBoundaryMigrationContract,
   assertConsultationRpcPrivateBoundaryMigrationContract,
+  assertLearningProgressBoundaryMigrationContract,
   stripSqlCommentsAndSplitStatements,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
@@ -256,7 +257,8 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       "0024_consultation_workflow_hardening.sql",
       "0025_consultation_workflow_trigger_order.sql",
       "0026_consultation_intake_access_boundary.sql",
-      "0027_consultation_rpc_private_boundary.sql"
+      "0027_consultation_rpc_private_boundary.sql",
+      "0028_learning_progress_entitlement_boundary.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -285,6 +287,15 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         ...snapshots,
         "0017_profile_on_auth_signup.sql": snapshots["0017_profile_on_auth_signup.sql"].replace(/\n/, "\n\n")
       }), /canonical SHA-256 mismatch|must remain unchanged/i);
+    });
+
+    test("0028 closes direct progress DML and enforces entitlement/item binding", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0028_learning_progress_entitlement_boundary.sql"), "utf-8");
+      assert.doesNotThrow(() => assertLearningProgressBoundaryMigrationContract(sql));
+      assert.throws(
+        () => assertLearningProgressBoundaryMigrationContract(sql.replace("auth.uid()", "p_user_id")),
+        /./
+      );
     });
 
     test("0001_core_schema.sql creates all 8 application tables with primary keys and constraints", async () => {

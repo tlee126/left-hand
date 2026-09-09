@@ -1055,6 +1055,31 @@ export function assertMigration0015Contract(sql0015: string): void {
   fail(!/\b(?:grant|revoke)\s+[^;]*\bon\s+(?!table\s+public\.learning_progress\b)[a-z_][a-z0-9_.]*/i.test(code), "Migration 0015 must not alter cross-table privileges");
 }
 
+/** Exact entitlement, item-binding, and RPC privilege contract for migration 0028. */
+export function assertLearningProgressBoundaryMigrationContract(sql0028: string): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const statements = stripSqlCommentsAndSplitStatements(sql0028).map(normalizeMigrationStatement);
+  const signature = "uuid, text, uuid, text, numeric, timestamptz, timestamptz";
+  fail(statements.length === 4, "Migration 0028 must contain exactly its four boundary statements");
+  fail(statements[0] === "revoke insert, update on table public.learning_progress from anon, public, authenticated", "Migration 0028 must revoke direct progress INSERT and UPDATE");
+  fail(
+    /^create or replace function public\.save_learning_progress\(/i.test(statements[1])
+      && /p_product_id uuid, p_item_type text, p_item_id uuid, p_status text, p_watched_percent numeric, p_started_at timestamptz, p_completed_at timestamptz/i.test(statements[1])
+      && /returns public\.learning_progress language plpgsql security definer/i.test(statements[1])
+      && /set search_path = pg_catalog, public/i.test(statements[1])
+      && statements[1].endsWith("$function$"),
+    "Migration 0028 must define the exact fixed progress RPC"
+  );
+  fail(statements[2] === `revoke all on function public.save_learning_progress(${signature}) from public, anon`, "Migration 0028 must revoke public and anonymous RPC execution");
+  fail(statements[3] === `grant execute on function public.save_learning_progress(${signature}) to authenticated`, "Migration 0028 must grant RPC execution only to authenticated");
+  const executableCode = maskSqlStringLiterals(statements.join(" ; "));
+  fail(/auth\.uid\(\)|product_entitlements|materials|course_lessons|on conflict\s*\(/i.test(executableCode), "Migration 0028 must bind auth identity, entitlement, item ownership, and idempotency");
+  fail(!/\b(?:execute\s+(?:immediate|format)|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role)\b/i.test(executableCode), "Migration 0028 must not use dynamic SQL or privilege escalation");
+  fail(!/p_user_id|p_actor|p_uploaded_by/i.test(executableCode), "Migration 0028 must not accept caller-supplied identity");
+}
+
 /** Pure contract used by the CLI audit and integration tests for migration 0016. */
 export function assertMigration0016Contract(sql0016: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -1631,12 +1656,13 @@ export async function runAudit(): Promise<boolean> {
       "0025_consultation_workflow_trigger_order.sql",
       "0026_consultation_intake_access_boundary.sql",
       "0027_consultation_rpc_private_boundary.sql"
+      ,"0028_learning_progress_entitlement_boundary.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 27 migration files exist in strict topological order",
+      check: "All 28 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -2128,6 +2154,15 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0027_consultation_rpc_private_boundary", check: "Removes public RPC execution and leaves only service_role execution", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0027ContractValid) results.push({ category: "0027_consultation_rpc_private_boundary", check: "Removes public RPC execution and leaves only service_role execution", passed: true, details: "anon and authenticated direct RPC access is revoked; only the server-only service role is granted" });
+
+    // 28. Audit 0028_learning_progress_entitlement_boundary.sql
+    const sql0028 = await fs.readFile(path.join(migrationsDir, "0028_learning_progress_entitlement_boundary.sql"), "utf-8");
+    let migration0028ContractValid = true;
+    try { assertLearningProgressBoundaryMigrationContract(sql0028); } catch (error) {
+      migration0028ContractValid = false;
+      results.push({ category: "0028_learning_progress_entitlement_boundary", check: "Closes direct learning-progress DML and enforces entitlement/item binding", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0028ContractValid) results.push({ category: "0028_learning_progress_entitlement_boundary", check: "Closes direct learning-progress DML and enforces entitlement/item binding", passed: true, details: "Direct INSERT/UPDATE revoked; auth.uid(), active entitlement, material/lesson binding, idempotency, and fixed RPC privileges verified" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

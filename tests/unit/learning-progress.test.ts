@@ -183,6 +183,27 @@ function resultFor(table: string, filters: Array<[string, unknown]>, operation: 
 
 function createMockClient() {
   return {
+    rpc(name: string, args: Record<string, unknown>) {
+      calls.push({ method: "rpc", args: [name, args] });
+      timeline.push("progress write");
+      if (upsertError) return Promise.resolve({ data: null, error: upsertError });
+      const payload = {
+        user_id: USER_ID,
+        product_id: args.p_product_id,
+        item_type: args.p_item_type,
+        item_id: args.p_item_id,
+        status: args.p_status,
+        watched_percent: args.p_watched_percent,
+        started_at: args.p_started_at,
+        completed_at: args.p_completed_at
+      };
+      const key = [payload.user_id, payload.product_id, payload.item_type, payload.item_id].map(String).join(":");
+      const index = rows.findIndex((row) => [row.user_id, row.product_id, row.item_type, row.item_id].map(String).join(":") === key);
+      const saved = { ...progressRow(), ...payload, updated_at: NOW, created_at: index >= 0 ? rows[index].created_at : NOW };
+      if (index >= 0) rows[index] = saved;
+      else rows.push(saved);
+      return Promise.resolve({ data: saved, error: null });
+    },
     from(table: string) {
       calls.push({ method: "from", table, args: [] });
       if (table === "materials" || table === "course_lessons") {
@@ -344,21 +365,20 @@ test("repository validates exact inputs before creating Supabase and reads bound
   assert.deepEqual(calls, []);
 });
 
-test("repository sends the exact permitted upsert payload and repeated saves remain one row", async () => {
+test("repository sends the exact permitted RPC payload and repeated saves remain one row", async () => {
   const repository = (globalThis as any).__learningProgressRepository;
   const first = await repository.upsertLearningProgress(USER_ID.toUpperCase(), VALID_INPUT);
   assert.equal(first.user_id, USER_ID);
-  const upsert = calls.find((call: Call) => call.method === "upsert");
-  assert.deepEqual(upsert?.args, [{
-    user_id: USER_ID,
-    product_id: PRODUCT_ID,
-    item_type: "lesson",
-    item_id: ITEM_ID,
-    status: "completed",
-    watched_percent: 100,
-    started_at: NOW,
-    completed_at: NOW
-  }, { onConflict: "user_id,product_id,item_type,item_id" }]);
+  const rpc = calls.find((call: Call) => call.method === "rpc");
+  assert.deepEqual(rpc?.args, ["save_learning_progress", {
+    p_product_id: PRODUCT_ID,
+    p_item_type: "lesson",
+    p_item_id: ITEM_ID,
+    p_status: "completed",
+    p_watched_percent: 100,
+    p_started_at: NOW,
+    p_completed_at: NOW
+  }]);
   await repository.upsertLearningProgress(USER_ID, VALID_INPUT);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].user_id, USER_ID);
@@ -383,16 +403,15 @@ test("API authenticates and validates before entitlement/progress access, then p
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { success: true });
   assert.deepEqual(timeline, ["auth", "validation", "subject", "product", "entitlement", "progress write"]);
-  assert.deepEqual(calls.filter((call: Call) => call.method === "upsert")[0]?.args[0], {
-    user_id: USER_ID,
-    product_id: PRODUCT_ID,
-    item_type: "lesson",
-    item_id: ITEM_ID,
-    status: "completed",
-    watched_percent: 100,
-    started_at: NOW,
-    completed_at: NOW
-  });
+  assert.deepEqual(calls.filter((call: Call) => call.method === "rpc")[0]?.args, ["save_learning_progress", {
+    p_product_id: PRODUCT_ID,
+    p_item_type: "lesson",
+    p_item_id: ITEM_ID,
+    p_status: "completed",
+    p_watched_percent: 100,
+    p_started_at: NOW,
+    p_completed_at: NOW
+  }]);
   timeline = [];
   await responseModule.POST(request(VALID_INPUT));
   assert.equal(rows.length, 1);
@@ -402,7 +421,7 @@ test("API authenticates and validates before entitlement/progress access, then p
     access = status === "unauthenticated" ? { status, user: null, profile: null } : { status, user: { id: USER_ID }, profile: null };
     response = await responseModule.POST(request(VALID_INPUT));
     assert.equal(response.status, status === "unauthenticated" ? 401 : 403);
-    assert.equal(calls.some((call: Call) => call.method === "upsert"), false);
+    assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
     assert.equal(calls.some((call: Call) => call.table === "product_entitlements"), false);
   }
 });
@@ -431,7 +450,7 @@ test("API rejects arbitrary fields, invalid progress values, expired/revoked/wro
     entitlement = invalidEntitlement;
     const response = await responseModule.POST(request(VALID_INPUT));
     assert.equal(response.status, 404);
-    assert.equal(calls.some((call: Call) => call.method === "upsert"), false);
+    assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
   }
   reset();
   entitlement = activeEntitlement();
@@ -439,13 +458,13 @@ test("API rejects arbitrary fields, invalid progress values, expired/revoked/wro
   const wrongItem = await responseModule.POST(request(VALID_INPUT));
   assert.equal(wrongItem.status, 404);
   assert.equal(calls.some((call: Call) => call.table === "product_entitlements"), false);
-  assert.equal(calls.some((call: Call) => call.method === "upsert"), false);
+  assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
 
   reset();
   const wrongProductBinding = await responseModule.POST(request({ ...VALID_INPUT, productId: OTHER_PRODUCT_ID }));
   assert.equal(wrongProductBinding.status, 404);
   assert.equal(calls.some((call: Call) => call.table === "product_entitlements"), false);
-  assert.equal(calls.some((call: Call) => call.method === "upsert"), false);
+  assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
 });
 
 test("API writes only after binding and entitlement, and maps a progress write failure generically", async () => {

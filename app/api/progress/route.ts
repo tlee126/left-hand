@@ -5,6 +5,7 @@ import { getActiveProductEntitlement } from "@/lib/repositories/product-entitlem
 import {
   isLearningProgressItemForProduct,
   LearningProgressInputError,
+  LearningProgressConflictError,
   LearningProgressRepositoryError,
   upsertLearningProgress,
   validateLearningProgressInput
@@ -89,6 +90,7 @@ export async function POST(request: Request): Promise<Response> {
     return success();
   } catch (error) {
     if (error instanceof LearningProgressInputError) return response({ error: "Invalid progress data." }, 400);
+    if (error instanceof LearningProgressConflictError) return response({ error: "Progress conflict." }, 409);
     if (error instanceof LearningProgressRepositoryError) return response({ error: "Progress is unavailable." }, 500);
     return response({ error: "Progress is unavailable." }, 500);
   }

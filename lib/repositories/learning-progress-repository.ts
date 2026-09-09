@@ -4,7 +4,6 @@ import { createClient } from "@/lib/supabase/server";
 import type { Database } from "@/lib/supabase/database.types";
 
 type LearningProgressRow = Database["public"]["Tables"]["learning_progress"]["Row"];
-type LearningProgressInsert = Database["public"]["Tables"]["learning_progress"]["Insert"];
 
 export type LearningProgressItemType = "material" | "lesson";
 export type LearningProgressStatus = "not_started" | "in_progress" | "completed";
@@ -63,6 +62,13 @@ export class LearningProgressRepositoryError extends Error {
   constructor(message = "Learning progress operation failed.") {
     super(message);
     this.name = "LearningProgressRepositoryError";
+  }
+}
+
+export class LearningProgressConflictError extends Error {
+  constructor(message = "Learning progress conflict.") {
+    super(message);
+    this.name = "LearningProgressConflictError";
   }
 }
 
@@ -232,7 +238,7 @@ export async function isLearningProgressItemForProduct(
   }
 }
 
-/** Upserts only progress fields; the caller supplies the authenticated session user separately. */
+/** Writes only through the database entitlement boundary; user identity comes from auth.uid(). */
 export async function upsertLearningProgress(
   userId: string,
   input: UpsertLearningProgressInput
@@ -243,28 +249,27 @@ export async function upsertLearningProgress(
 
   try {
     const supabase = await createClient();
-    const payload: LearningProgressInsert = {
-      user_id: canonicalUserId,
-      product_id: validated.productId,
-      item_type: validated.itemType,
-      item_id: validated.itemId,
-      status: validated.status,
-      watched_percent: validated.watchedPercent,
-      started_at: validated.startedAt,
-      completed_at: validated.completedAt
-    };
-    const { data, error } = await supabase
-      .from("learning_progress")
-      .upsert(payload, { onConflict: "user_id,product_id,item_type,item_id" })
-      .select(LEARNING_PROGRESS_SELECT)
-      .single();
+    const { data, error } = await supabase.rpc("save_learning_progress", {
+      p_product_id: validated.productId,
+      p_item_type: validated.itemType,
+      p_item_id: validated.itemId,
+      p_status: validated.status,
+      p_watched_percent: validated.watchedPercent,
+      p_started_at: validated.startedAt ?? null,
+      p_completed_at: validated.completedAt ?? null
+    });
 
-    if (error || !isValidProgressRow(data)) return repositoryFailure();
-    if (canonicalUuid(data.user_id) !== canonicalUserId || canonicalUuid(data.product_id) !== validated.productId) return repositoryFailure();
-    if (data.item_type !== validated.itemType || canonicalUuid(data.item_id) !== validated.itemId) return repositoryFailure();
-    return data;
+    if (error) {
+      if ((error as { code?: string }).code === "P0002") throw new LearningProgressConflictError();
+      return repositoryFailure();
+    }
+    const row = (Array.isArray(data) ? data[0] : data) as unknown;
+    if (!isValidProgressRow(row)) return repositoryFailure();
+    if (canonicalUuid(row.user_id) !== canonicalUserId || canonicalUuid(row.product_id) !== validated.productId) return repositoryFailure();
+    if (row.item_type !== validated.itemType || canonicalUuid(row.item_id) !== validated.itemId) return repositoryFailure();
+    return row;
   } catch (error) {
-    if (error instanceof LearningProgressInputError || error instanceof LearningProgressRepositoryError) throw error;
+    if (error instanceof LearningProgressInputError || error instanceof LearningProgressRepositoryError || error instanceof LearningProgressConflictError) throw error;
     return repositoryFailure();
   }
 }
