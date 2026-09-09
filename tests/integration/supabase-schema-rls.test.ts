@@ -37,6 +37,7 @@ import {
   assertConsultationRpcPrivateBoundaryMigrationContract,
   assertLearningProgressBoundaryMigrationContract,
   assertMaterialStorageIntegrityBoundaryMigrationContract,
+  assertCatalogCompleteSearchMigrationContract,
   stripSqlCommentsAndSplitStatements,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
@@ -260,13 +261,14 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       "0026_consultation_intake_access_boundary.sql",
       "0027_consultation_rpc_private_boundary.sql",
       "0028_learning_progress_entitlement_boundary.sql",
-      "0029_material_storage_integrity_boundary.sql"
+      "0029_material_storage_integrity_boundary.sql",
+      "0030_catalog_search_complete_fields.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
     });
 
-    test("the canonical history verifier rejects a content mutation in every migration 0001-0023", async () => {
+    test("the canonical history verifier rejects a content mutation in every migration 0001-0027", async () => {
       const snapshots: Record<string, string> = {};
       for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
         snapshots[filename] = await fs.readFile(path.join(migrationsDir, filename), "utf-8");
@@ -308,6 +310,16 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         /./
       );
       assert.doesNotThrow(() => assertMaterialStorageIntegrityBoundaryMigrationContract(`-- EXECUTE format\n${sql}`));
+    });
+
+    test("0030 maintains complete normalized search documents and trigger coverage", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0030_catalog_search_complete_fields.sql"), "utf-8");
+      assert.doesNotThrow(() => assertCatalogCompleteSearchMigrationContract(sql));
+      assert.throws(
+        () => assertCatalogCompleteSearchMigrationContract(`${sql}\nDO $$ BEGIN EXECUTE 'SELECT 1'; END $$;`),
+        /./
+      );
+      assert.doesNotThrow(() => assertCatalogCompleteSearchMigrationContract(sql.replace("materials.includes", "materials.includes /* literal */")));
     });
 
     test("0001_core_schema.sql creates all 8 application tables with primary keys and constraints", async () => {
@@ -1414,7 +1426,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       assert.doesNotThrow(() => assertMigration0017Contract(commented));
     });
 
-    test("rejects whitespace, comments, grants, DDL, DML, function, trigger, policy, and index mutations in every immutable migration 0001-0023", async () => {
+    test("rejects whitespace, comments, grants, DDL, DML, function, trigger, policy, and index mutations in every immutable migration 0001-0027", async () => {
       const snapshots: Record<string, string> = {};
       for (const filename of IMMUTABLE_MIGRATION_FILENAMES) {
         snapshots[filename] = await fs.readFile(path.join(migrationsDir, filename), "utf-8");

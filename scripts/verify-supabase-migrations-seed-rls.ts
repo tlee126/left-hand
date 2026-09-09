@@ -43,7 +43,11 @@ const immutableMigrationHashes = {
   "0020_catalog_mutation_access_boundary.sql": "87d0666521f557f2e759afe9022f327b308040a1b068a513f2a02f8a6022699d",
   "0021_catalog_search_normalization.sql": "e4712ed14e58d2da24350c0bab1349f26845d5e4024eac635fee872a4cf15d09",
   "0022_catalog_integrity_boundary.sql": "060255c2e7e8649dab3f544ef6f8df6cf2abb850067bc38c95f1a98517b8b446",
-  "0023_catalog_search_child_fields.sql": "68a2aff1ac320bb76ba6bb7d0711e035ac67f4db1728fc3034a1a73dc8669786"
+  "0023_catalog_search_child_fields.sql": "68a2aff1ac320bb76ba6bb7d0711e035ac67f4db1728fc3034a1a73dc8669786",
+  "0024_consultation_workflow_hardening.sql": "622f9ba3a657f2f3bab31d8503b545a24e9502c2158bbf4b87a3e263dba28b10",
+  "0025_consultation_workflow_trigger_order.sql": "b9d970dff674bd05b7f27c0d3a8d04ced7d4ee738e7f524e7029e2aa0a58acb7",
+  "0026_consultation_intake_access_boundary.sql": "dc4121d4b7f61f4f765b529238bf747fb989cbd558b2d9fee267c9905d30330f",
+  "0027_consultation_rpc_private_boundary.sql": "774388ad8fdc272930e563657ae90ceafe64a997c44e23f40e0925d52aae478e"
 } as const;
 
 export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
@@ -1102,6 +1106,28 @@ export function assertMaterialStorageIntegrityBoundaryMigrationContract(sql0029:
   fail(!/grant\s+(?:insert|update|delete|all)\s+on\s+(?:table\s+)?public\.(?:material_assets|material_asset_upload_reservations)/i.test(executableCode), "Migration 0029 must not grant direct material mutation");
 }
 
+/** Canonical catalog search document contract for migration 0030. */
+export function assertCatalogCompleteSearchMigrationContract(sql0030: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const code = stripSqlCommentsAndSplitStatements(sql0030).join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  const requiredFields = [
+    "subjects.category", "subjects.faculty_group", "subjects.color_theme",
+    "materials.pages", "materials.tags", "materials.includes", "materials.suitable_for",
+    "courses.format", "courses.sessions", "courses.duration", "courses.schedule", "courses.enrollment_status", "courses.mentor", "courses.tags", "courses.curriculum", "courses.suitable_for", "courses.preparation",
+    "tutors.name", "tutors.faculty", "tutors.format", "tutors.availability", "tutors.short_bio", "tutors.strengths", "tutors.tags", "tutors.suitable_for", "tutors.support_methods"
+  ];
+  fail(/create or replace function public\.catalog_product_search_text\(p_product_id uuid\)/i.test(code), "Migration 0030 must define one canonical product search projection");
+  fail(requiredFields.every((field) => new RegExp(field.replace(".", "\\."), "i").test(code)), "Migration 0030 must include every subject and child searchable field");
+  fail(/normalize_catalog_search\(public\.catalog_product_search_text/i.test(code) && /update public\.products/i.test(code), "Migration 0030 must normalize and backfill product search documents");
+  for (const trigger of ["trg_refresh_product_search_document", "trg_refresh_products_for_subject_search", "trg_refresh_subject_search_document", "trg_refresh_material_search_document", "trg_refresh_course_search_document", "trg_refresh_tutor_search_document"]) {
+    fail(new RegExp(trigger, "i").test(code), `Migration 0030 must maintain ${trigger}`);
+  }
+  fail(/update of [^\n]*includes[^\n]*suitable_for/i.test(code) && /update of [^\n]*curriculum[^\n]*preparation/i.test(code), "Migration 0030 must refresh on child field changes");
+  fail(/extensions\.unaccent/i.test(code) || /normalize_catalog_search/i.test(code), "Migration 0030 must preserve Unicode normalization");
+  fail(!/\b(?:execute\s+immediate|format\s*\(|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role|truncate|copy\s+|call\s+|\bdo\s+)/i.test(executableCode), "Migration 0030 must not contain executable privilege escalation or unrelated DDL/DML");
+}
+
 /** Pure contract used by the CLI audit and integration tests for migration 0016. */
 export function assertMigration0016Contract(sql0016: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -1679,13 +1705,14 @@ export async function runAudit(): Promise<boolean> {
       "0026_consultation_intake_access_boundary.sql",
       "0027_consultation_rpc_private_boundary.sql",
       "0028_learning_progress_entitlement_boundary.sql",
-      "0029_material_storage_integrity_boundary.sql"
+      "0029_material_storage_integrity_boundary.sql",
+      "0030_catalog_search_complete_fields.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 29 migration files exist in strict topological order",
+      check: "All 30 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -1705,7 +1732,7 @@ export async function runAudit(): Promise<boolean> {
       immutableHistoryValid = false;
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0023 match their canonical LF-normalized SHA-256 snapshots",
+      check: "Migrations 0001-0027 match their canonical LF-normalized SHA-256 snapshots",
         passed: false,
         details: error instanceof Error ? error.message : String(error)
       });
@@ -1713,9 +1740,9 @@ export async function runAudit(): Promise<boolean> {
     if (immutableHistoryValid) {
       results.push({
         category: "Migration History",
-        check: "Migrations 0001-0023 match their canonical LF-normalized SHA-256 snapshots",
+        check: "Migrations 0001-0027 match their canonical LF-normalized SHA-256 snapshots",
         passed: true,
-        details: "Every immutable migration from 0001 through 0023 is content-locked"
+        details: "Every immutable migration from 0001 through 0027 is content-locked"
       });
     }
 
@@ -2195,6 +2222,15 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0029_material_storage_integrity_boundary", check: "Reserves material versions atomically and binds private storage to metadata", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0029ContractValid) results.push({ category: "0029_material_storage_integrity_boundary", check: "Reserves material versions atomically and binds private storage to metadata", passed: true, details: "Direct metadata DML revoked; reservation RPCs use auth.uid(), fixed search_path, path binding, and transaction-locked version allocation" });
+
+    // 30. Audit 0030_catalog_search_complete_fields.sql
+    const sql0030 = await fs.readFile(path.join(migrationsDir, "0030_catalog_search_complete_fields.sql"), "utf-8");
+    let migration0030ContractValid = true;
+    try { assertCatalogCompleteSearchMigrationContract(sql0030); } catch (error) {
+      migration0030ContractValid = false;
+      results.push({ category: "0030_catalog_search_complete_fields", check: "Maintains complete normalized search documents across parent and child fields", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0030ContractValid) results.push({ category: "0030_catalog_search_complete_fields", check: "Maintains complete normalized search documents across parent and child fields", passed: true, details: "Canonical projection, Unicode normalization, field-complete triggers, tutor-subject refresh, and idempotent backfill verified" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
