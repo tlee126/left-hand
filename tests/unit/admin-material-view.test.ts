@@ -1,12 +1,44 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { hasCurrentMaterialAsset, openMaterialDocument } from "../../app/quan-tri/catalog/material-view-button";
+import { hasCurrentMaterialAsset, isVideoMaterialMimeType, materialViewLabel, openMaterialDocument } from "../../app/quan-tri/catalog/material-view-button";
 
 test("material view button visibility follows current asset presence", () => {
   assert.equal(hasCurrentMaterialAsset(undefined), false);
   assert.equal(hasCurrentMaterialAsset(null), false);
   assert.equal(hasCurrentMaterialAsset(0), false);
   assert.equal(hasCurrentMaterialAsset(2), true);
+});
+
+test("material view labels use the stored MIME type", () => {
+  assert.equal(materialViewLabel("application/pdf"), "Xem tài liệu");
+  assert.equal(materialViewLabel("video/mp4"), "Xem video");
+  assert.equal(materialViewLabel("video/webm"), "Xem video");
+  assert.equal(materialViewLabel("video/quicktime"), "Xem video");
+  assert.equal(isVideoMaterialMimeType("video/mp4"), true);
+  assert.equal(isVideoMaterialMimeType("video/webm"), true);
+  assert.equal(isVideoMaterialMimeType("video/quicktime"), true);
+  assert.equal(isVideoMaterialMimeType("application/pdf"), false);
+});
+
+test("material video viewer calls the signed-url API with the product id and opens the signed URL", async () => {
+  const opened = { location: { href: "" }, close: () => undefined };
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  globalThis.window = {
+    open: () => opened,
+    location: { assign: () => assert.fail("video popup should not use fallback") }
+  } as unknown as Window & typeof globalThis;
+  globalThis.fetch = async (input) => {
+    assert.equal(input, "/api/materials/2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64/signed-url");
+    return Response.json({ url: "https://storage.example/video.mp4?signed=1" });
+  };
+  try {
+    await openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64");
+    assert.equal(opened.location.href, "https://storage.example/video.mp4?signed=1");
+  } finally {
+    globalThis.window = originalWindow;
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("material viewer opens the popup before fetching and navigates it to the signed url", async () => {

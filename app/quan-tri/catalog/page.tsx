@@ -89,7 +89,8 @@ function formInput(kind: Kind, data: FormData): FormInput {
   }));
 }
 
-function valueOf(values: object, key: string): unknown {
+function valueOf(values: unknown, key: string): unknown {
+  if (typeof values !== "object" || values === null) return undefined;
   return Object.getOwnPropertyDescriptor(values, key)?.value;
 }
 
@@ -143,12 +144,12 @@ export default async function AdminCatalogPage({ searchParams }: { searchParams?
   const [subjectResult, materialResult, courseResult, tutorResult] = results;
   const subjects = subjectResult.status === "fulfilled" ? subjectResult.value : [];
   const materialIds = materialResult.status === "fulfilled" ? materialResult.value.map((row) => row.id).filter(isValidUuid) : [];
-  const materialVersions = await import("@/lib/repositories/material-asset-repository")
-    .then(({ listCurrentMaterialAssetVersions }) => listCurrentMaterialAssetVersions(materialIds))
+  const materialAssets = await import("@/lib/repositories/material-asset-repository")
+    .then(({ listCurrentMaterialAssetMetadata }) => listCurrentMaterialAssetMetadata(materialIds))
     .catch(() => null);
   const sections = [
     { kind: "subject" as const, result: subjectResult, rows: subjects.map((row) => ({ id: row.id, title: row.name, values: { ...row } })), remove: deleteSubjectAction },
-    { kind: "material" as const, result: materialResult, rows: materialResult.status === "fulfilled" ? materialResult.value.map((row) => ({ id: row.id, title: row.title, values: { ...row, ...row.materials, material_asset_version: materialVersions?.[row.id] } })) : [], remove: deleteMaterialAction },
+    { kind: "material" as const, result: materialResult, rows: materialResult.status === "fulfilled" ? materialResult.value.map((row) => ({ id: row.id, title: row.title, values: { ...row, ...row.materials, material_asset: materialAssets?.[row.id] } })) : [], remove: deleteMaterialAction },
     { kind: "course" as const, result: courseResult, rows: courseResult.status === "fulfilled" ? courseResult.value.map((row) => ({ id: row.id, title: row.title, values: { ...row, ...row.courses } })) : [], remove: deleteCourseAction },
     { kind: "tutor" as const, result: tutorResult, rows: tutorResult.status === "fulfilled" ? tutorResult.value.map((row) => ({ id: row.id, title: row.title, values: { ...row, ...row.tutors } })) : [], remove: deleteTutorAction }
   ];
@@ -169,7 +170,7 @@ export default async function AdminCatalogPage({ searchParams }: { searchParams?
       {result.status === "rejected" ? <p role="alert" className="surface-card p-5 text-sm text-ink/65">Không thể tải danh mục lúc này. Vui lòng thử lại sau.</p> : rows.length === 0 ? <p className="notebook-card notebook-paper-lines rounded-2xl p-6 text-sm text-ink/65">Chưa có {labels[kind].toLowerCase()} trong trang này.</p> : rows.slice(0, 20).map((row) => <article key={row.id} className="surface-card min-w-0 p-5 sm:p-6">
         <h3 className="break-words text-lg font-black [overflow-wrap:anywhere]">{row.title}</h3>
         {"publication_status" in row.values ? <p className="mt-2 text-sm text-ink/65">{optionLabels[String(row.values.publication_status)] ?? "Trạng thái chưa xác định"}</p> : null}
-        {kind === "material" && materialVersions !== null && isValidUuid(row.id) ? <div className="mt-4 border-t border-ink/10 pt-4"><p className="text-sm font-bold text-ink/65">{typeof valueOf(row.values, "material_asset_version") === "number" ? `Phiên bản tệp hiện tại: v${String(valueOf(row.values, "material_asset_version"))}` : "Chưa có tệp được tải lên."}</p>{typeof valueOf(row.values, "material_asset_version") === "number" ? <MaterialViewButton productId={row.id} /> : null}<MaterialUploadForm productId={row.id} /></div> : null}
+        {kind === "material" && materialAssets !== null && isValidUuid(row.id) ? <div className="mt-4 border-t border-ink/10 pt-4"><p className="text-sm font-bold text-ink/65">{typeof valueOf(valueOf(row.values, "material_asset"), "version") === "number" ? `Phiên bản tệp hiện tại: v${String(valueOf(valueOf(row.values, "material_asset"), "version"))}` : "Chưa có tệp được tải lên."}</p>{typeof valueOf(valueOf(row.values, "material_asset"), "version") === "number" ? <MaterialViewButton productId={row.id} mimeType={String(valueOf(valueOf(row.values, "material_asset"), "mimeType") ?? "")} /> : null}<MaterialUploadForm productId={row.id} /></div> : null}
         {isValidUuid(row.id) ? <><details className="mt-4 min-w-0"><summary className="cursor-pointer text-sm font-bold text-accent">Chỉnh sửa · {row.title}</summary><Editor kind={kind} id={row.id} values={row.values} subjects={subjects} /></details>
           <details className="mt-4 border-t border-ink/10 pt-4"><summary className="cursor-pointer text-sm font-bold text-rose-700">Xóa · {row.title}</summary><form action={remove.bind(null, row.id)} className="mt-3 space-y-3"><p className="text-sm text-ink/65">Thao tác xóa không thể hoàn tác. Nếu nội dung đang được sử dụng, yêu cầu có thể không thực hiện được.</p><label className="flex items-center gap-2 text-sm text-ink/65"><input type="checkbox" required />Tôi xác nhận xóa bản ghi này</label><button type="submit" className="min-h-11 rounded-full border border-rose-200 px-5 py-2 text-sm font-extrabold text-rose-700">Xác nhận xóa</button></form></details></> : <p className="mt-3 text-sm text-ink/65">Không thể chỉnh sửa bản ghi này.</p>}
       </article>)}

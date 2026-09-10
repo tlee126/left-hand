@@ -69,6 +69,11 @@ export interface CurrentMaterialAsset {
   storagePath: string;
 }
 
+export interface CurrentMaterialAssetVersion {
+  version: number;
+  mimeType: string;
+}
+
 export interface MaterialAssetUploadReservationDetails {
   reservationId: string;
   productId: string;
@@ -378,6 +383,24 @@ export async function listCurrentMaterialAssetVersions(productIds: readonly stri
     if (error) throw new Error();
     return (data ?? []).reduce<Record<string, number>>((result, row) => {
       if (result[row.product_id] === undefined) result[row.product_id] = row.version;
+      return result;
+    }, {});
+  } catch {
+    throw new MaterialAssetRepositoryError();
+  }
+}
+
+export async function listCurrentMaterialAssetMetadata(productIds: readonly string[]): Promise<Record<string, CurrentMaterialAssetVersion>> {
+  validateProductIds(productIds);
+  if (productIds.length === 0) return {};
+  try {
+    const supabase = await createClient();
+    const { data, error } = await supabase.from("material_assets").select("product_id, version, mime_type").in("product_id", [...productIds]).order("version", { ascending: false });
+    if (error) throw new Error();
+    return (data ?? []).reduce<Record<string, CurrentMaterialAssetVersion>>((result, row) => {
+      if (result[row.product_id] === undefined && isSupportedMaterialMimeType(row.mime_type)) {
+        result[row.product_id] = { version: row.version, mimeType: row.mime_type };
+      }
       return result;
     }, {});
   } catch {
