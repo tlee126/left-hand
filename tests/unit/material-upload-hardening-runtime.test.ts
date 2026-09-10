@@ -31,6 +31,7 @@ globalThis.__prepareCommitted = Boolean(scenario.prepareCommitted);
 globalThis.__prepareConflict = Boolean(scenario.prepareConflict);
 globalThis.__cancelResult = scenario.cancelResult !== false;
 globalThis.__calls = [];
+globalThis.__rpcPayloads = [];
 globalThis.__userScopedClient = { kind: 'user-scoped', accessToken: 'admin-jwt' };
 
 const authUrl = dataUrl("export async function getAccountAccess(client) { if (client && client !== globalThis.__userScopedClient) throw new Error('wrong auth client'); if (" + Boolean(scenario.unauthenticated) + ") return { status: 'unauthenticated', user: null, profile: null }; if (" + Boolean(scenario.unauthorized) + ") return { status: 'pending', user: { id: globalThis.__adminId }, profile: { role: 'admin' } }; if (client) globalThis.__calls.push('auth:user-scoped'); return { status: 'approved', user: { id: globalThis.__adminId }, profile: { role: 'admin' } }; }");
@@ -40,7 +41,7 @@ const asset = { id: "a50e8400-e29b-41d4-a716-446655440000", product_id: productI
 const repoUrl = dataUrl(
   "export class MaterialAssetUploadConflictError extends Error {}\n" +
   "export async function isMaterialProduct(productId, client) { if (client !== globalThis.__userScopedClient) throw new Error('wrong repository client'); globalThis.__calls.push('material:user-scoped'); return true; }\n" +
-  "export async function reserveMaterialAssetUpload(input, client) { if (client !== globalThis.__userScopedClient) throw new Error('service-role client used'); globalThis.__calls.push('reserve:user-scoped:' + input.idempotencyKey); if (globalThis.__prepareConflict) throw new MaterialAssetUploadConflictError(); const isNew = globalThis.__reserveCount++ === 0; return { reservationId: '" + reservationId + "', version: 1, status: globalThis.__prepareCommitted ? 'committed' : 'reserved', isNew, retryable: false, cleanupPending: false, storagePath: '" + storagePath + "' }; }\n" +
+  "export async function reserveMaterialAssetUpload(input, client) { if (client !== globalThis.__userScopedClient) throw new Error('service-role client used'); globalThis.__rpcPayloads.push(input); globalThis.__calls.push('reserve:user-scoped:' + input.idempotencyKey); if (globalThis.__prepareConflict) throw new MaterialAssetUploadConflictError(); const isNew = globalThis.__reserveCount++ === 0; return { reservationId: '" + reservationId + "', version: 1, status: globalThis.__prepareCommitted ? 'committed' : 'reserved', isNew, retryable: false, cleanupPending: false, storagePath: '" + storagePath + "' }; }\n" +
   "export async function getMaterialAssetUploadReservation() { globalThis.__calls.push('reservation'); return !" + Boolean(scenario.missingReservation) + " && (globalThis.__adminId === '" + uuid + "' || " + Boolean(scenario.exposeReservation) + ") ? " + JSON.stringify(reservation) + " : null; }\n" +
   "export async function getMaterialAssetByUploadReservation(id, owner) { globalThis.__calls.push('existing:' + owner); return " + Boolean(scenario.committedAsset) + " && owner === '" + uuid + "' ? " + JSON.stringify(asset) + " : null; }\n" +
   "export async function finalizeMaterialAssetUpload() { globalThis.__calls.push('finalize'); if (globalThis.__finalizeError) throw new Error('rpc'); return " + JSON.stringify(asset) + "; }\n" +
@@ -52,10 +53,10 @@ const repoUrl = dataUrl(
 );
 const storageUrl = dataUrl(
   "export const MATERIALS_BUCKET = 'materials'; export const MATERIAL_UPLOAD_EXPIRES_IN_SECONDS = 7200;\n" +
-  "export function isSupportedMaterialMimeType(v) { return v === 'application/pdf'; }\n" +
+  "export function isSupportedMaterialMimeType(v) { return ['application/pdf','video/mp4','video/webm','video/quicktime'].includes(v); }\n" +
   "export function isValidMaterialUuid(v) { return typeof v === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(v); }\n" +
-  "export function materialSizeLimit() { return 20971520; }\n" +
-  "export function sanitizeMaterialFilename() { return 'material.pdf'; }\n" +
+  "export function materialSizeLimit(v) { return v === 'application/pdf' ? 20971520 : 524288000; }\n" +
+  "export function sanitizeMaterialFilename(value) { const normalized = value.normalize('NFKD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase(); const match = /\\.([a-z0-9]+)$/.exec(normalized); if (!match) throw new Error('invalid filename'); const base = normalized.slice(0, -(match[1].length + 1)).replace(/[^a-z0-9_-]+/g, '-').replace(/[-_]{2,}/g, '-').replace(/^-+|-+$/g, ''); return base + '.' + match[1]; }\n" +
   "export function isValidMaterialStoragePathForProductAndVersion() { return true; }\n" +
   "export async function createMaterialUploadCapability(path) { if (" + Boolean(scenario.capabilityFailure) + ") throw new Error('capability'); return { storagePath: path, token: 'token' }; }\n" +
   "export async function inspectMaterialObject(path, mime, size) { globalThis.__calls.push('inspect'); if (" + Boolean(scenario.inspectFailure) + ") throw new Error('inspection'); return { storagePath: path, mimeType: mime, byteSize: size }; }\n" +
@@ -98,12 +99,12 @@ for (const item of scenario.calls || [{ route: scenario.route, adminId: scenario
   const response = await route.POST(request(bodyFor(item.body), item.contentLength), { params: Promise.resolve({ id: productId }) });
   results.push({ status: response.status, body: await response.json() });
 }
-console.log(JSON.stringify({ results, calls: globalThis.__calls }));
+console.log(JSON.stringify({ results, calls: globalThis.__calls, rpcPayloads: globalThis.__rpcPayloads }));
 `;
 
-async function runRoute(calls: unknown[], options: Record<string, unknown> = {}): Promise<{ results: Array<{ status: number; body: unknown }>; calls: string[] }> {
+async function runRoute(calls: unknown[], options: Record<string, unknown> = {}): Promise<{ results: Array<{ status: number; body: unknown }>; calls: string[]; rpcPayloads: unknown[] }> {
   const { stdout } = await execFileAsync(process.execPath, ["--import", "tsx/esm", "-e", routeHarness, JSON.stringify({ calls, ...options })], { cwd: process.cwd(), maxBuffer: 1024 * 1024 });
-  return JSON.parse(stdout.trim()) as { results: Array<{ status: number; body: unknown }>; calls: string[] };
+  return JSON.parse(stdout.trim()) as { results: Array<{ status: number; body: unknown }>; calls: string[]; rpcPayloads: unknown[] };
 }
 
 const cleanupHarness = String.raw`
@@ -196,6 +197,38 @@ describe("direct material upload hardening runtime", () => {
     const conflict = await runRoute([{ route: "prepare", adminId: ADMIN_A, body: JSON.stringify({ originalName: "other.pdf", mimeType: "application/pdf", byteSize: 5, idempotencyKey: IDEMPOTENCY_KEY }) }], { prepareConflict: true });
     assert.equal(conflict.results[0].status, 409);
     assert.deepEqual(conflict.results[0].body, { error: "Material upload is not available." });
+  });
+
+  test("prepare normalizes the production filename and sends the exact RPC contract", async () => {
+    const result = await runRoute([{ route: "prepare", adminId: ADMIN_A, body: JSON.stringify({ originalName: "03-Project Test Plan.pdf", mimeType: "application/pdf", byteSize: 1048576, idempotencyKey: IDEMPOTENCY_KEY.toUpperCase() }) }]);
+    assert.equal(result.results[0].status, 200);
+    assert.deepEqual(result.rpcPayloads[0], {
+      productId: PRODUCT_ID,
+      originalName: "03-Project Test Plan.pdf",
+      safeFilename: "03-project-test-plan.pdf",
+      mimeType: "application/pdf",
+      byteSize: 1048576,
+      idempotencyKey: IDEMPOTENCY_KEY
+    });
+  });
+
+  test("prepare returns 400 for every invalid metadata category before the RPC", async () => {
+    const valid = { originalName: "material.pdf", mimeType: "application/pdf", byteSize: 5, idempotencyKey: IDEMPOTENCY_KEY };
+    const cases = [
+      { ...valid, mimeType: "application/octet-stream" },
+      { ...valid, byteSize: 0 },
+      { ...valid, byteSize: -1 },
+      { ...valid, byteSize: 1.5 },
+      { ...valid, idempotencyKey: "" },
+      { ...valid, idempotencyKey: "not-a-uuid" },
+      { ...valid, originalName: "" },
+      { ...valid, byteSize: 20 * 1024 * 1024 + 1 },
+      { ...valid, mimeType: "video/mp4", byteSize: 500 * 1024 * 1024 + 1 },
+      { ...valid, originalName: "no-extension" }
+    ];
+    const result = await runRoute(cases.map((item) => ({ route: "prepare", adminId: ADMIN_A, body: JSON.stringify(item) })));
+    assert.deepEqual(result.results.map((item) => item.status), cases.map(() => 400));
+    assert.deepEqual(result.rpcPayloads, []);
   });
 
   test("prepare rejects unauthenticated and unapproved callers before the owner-bound RPC", async () => {

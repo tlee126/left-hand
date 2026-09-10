@@ -38,7 +38,7 @@ export class MaterialStorageError extends Error {
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const SAFE_FILENAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,199}$/;
+export const SAFE_MATERIAL_FILENAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,199}$/;
 const UNSAFE_FILENAME_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\\/:\u2215\u2044\u29f8\uff0f\uff3c]/;
 const ENCODED_TRAVERSAL_PATTERN = /%(?:2f|5c|2e)/i;
 const MATERIAL_STORAGE_UUID = `[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}`;
@@ -60,7 +60,7 @@ export function canonicalMaterialUuid(value: unknown): string {
   return value.toLowerCase();
 }
 
-export function sanitizeMaterialFilename(value: unknown): string {
+export function canonicalizeMaterialSafeFilename(value: unknown): string {
   if (typeof value !== "string" || value.length === 0 || value.length > 200) {
     throw new MaterialStorageInputError();
   }
@@ -76,12 +76,22 @@ export function sanitizeMaterialFilename(value: unknown): string {
   if (UNSAFE_FILENAME_CHARACTER_PATTERN.test(normalized) || normalized.includes("..")) {
     throw new MaterialStorageInputError();
   }
-  const sanitized = normalized.replace(/[^a-z0-9._-]+/g, "-").replace(/[-.]{2,}/g, "-").replace(/^-+|-+$/g, "");
-  if (!SAFE_FILENAME_PATTERN.test(sanitized) || sanitized.includes("..") || !sanitized.includes(".")) {
+  const extensionMatch = /\.([a-z0-9]+)$/i.exec(normalized);
+  const extension = extensionMatch?.[1] ?? "";
+  let basename = extensionMatch ? normalized.slice(0, -(extension.length + 1)) : normalized;
+  basename = basename.replace(/[^a-z0-9_-]+/g, "-").replace(/[-_]{2,}/g, "-").replace(/^-+|-+$/g, "");
+  if (!extension || !basename) throw new MaterialStorageInputError();
+  const maxBasenameLength = 200 - extension.length - 1;
+  basename = basename.slice(0, maxBasenameLength).replace(/[-_]+$/g, "");
+  const sanitized = `${basename}.${extension}`;
+  if (!SAFE_MATERIAL_FILENAME_PATTERN.test(sanitized) || sanitized.includes("..")) {
     throw new MaterialStorageInputError();
   }
   return sanitized;
 }
+
+/** Backwards-compatible name for the canonical server-side filename contract. */
+export const sanitizeMaterialFilename = canonicalizeMaterialSafeFilename;
 
 export function materialStoragePath(productId: unknown, version: unknown, originalName: unknown, id = randomUUID()): string {
   const canonicalProductId = canonicalMaterialUuid(productId);
