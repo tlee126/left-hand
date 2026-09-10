@@ -4,23 +4,38 @@ import { useState } from "react";
 
 const VIEW_ERROR = "Không thể mở tài liệu. Vui lòng thử lại sau.";
 
+function isValidMaterialUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.trim() !== value || /\s/.test(value)) return false;
+
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export function hasCurrentMaterialAsset(version: unknown): version is number {
   return typeof version === "number" && Number.isSafeInteger(version) && version > 0;
 }
 
 export async function openMaterialDocument(productId: string): Promise<void> {
   const target = window.open("about:blank", "_blank", "noopener,noreferrer");
-  if (!target) throw new Error("Trình duyệt đã chặn tab mới.");
 
   try {
     const response = await fetch(`/api/materials/${encodeURIComponent(productId)}/signed-url`, {
       headers: { Accept: "application/json" }
     });
     const payload = await response.json().catch(() => null) as { url?: unknown } | null;
-    if (!response.ok || typeof payload?.url !== "string" || payload.url.length === 0) throw new Error(VIEW_ERROR);
-    target.location.href = payload.url;
+    if (!response.ok || !isValidMaterialUrl(payload?.url)) throw new Error(VIEW_ERROR);
+
+    if (target) {
+      target.location.href = payload.url;
+    } else {
+      window.location.assign(payload.url);
+    }
   } catch {
-    target.close();
+    target?.close();
     throw new Error(VIEW_ERROR);
   }
 }
