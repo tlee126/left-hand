@@ -386,21 +386,11 @@ export async function listCurrentMaterialAssetVersions(productIds: readonly stri
 }
 
 /** Returns the newest valid private asset for one material product after route authorization. */
-export async function getCurrentMaterialAsset(productId: string, correlationId: string): Promise<CurrentMaterialAsset | null> {
+export async function getCurrentMaterialAsset(productId: string): Promise<CurrentMaterialAsset | null> {
   if (!isValidMaterialUuid(productId)) throw new MaterialAssetInputError();
   const canonicalProductId = productId.toLowerCase();
-  let adminClientInitialized = false;
-  let queryCompleted = false;
-  let dataExists = false;
-  let rawSupabaseError: { code: unknown; message: unknown; details: unknown; hint: unknown } = {
-    code: null,
-    message: null,
-    details: null,
-    hint: null
-  };
   try {
     const supabase = createServerAdminClient();
-    adminClientInitialized = true;
     const { data, error } = await supabase
       .from("material_assets")
       .select("product_id, storage_path, version, visibility")
@@ -409,22 +399,6 @@ export async function getCurrentMaterialAsset(productId: string, correlationId: 
       .order("version", { ascending: false })
       .limit(1)
       .maybeSingle();
-    queryCompleted = true;
-    dataExists = data !== null && data !== undefined;
-    rawSupabaseError = {
-      code: error?.code ?? null,
-      message: error?.message ?? null,
-      details: error?.details ?? null,
-      hint: error?.hint ?? null
-    };
-    console.info("MATERIAL_ASSET_REPOSITORY_QUERY_V1", {
-      correlationId,
-      productId: canonicalProductId,
-      adminClientInitialized,
-      queryCompleted,
-      dataExists,
-      rawSupabaseError
-    });
     if (error) throw new Error();
     if (!data) return null;
     const row = data as unknown as Pick<MaterialAssetRow, "product_id" | "storage_path" | "version" | "visibility">;
@@ -432,18 +406,6 @@ export async function getCurrentMaterialAsset(productId: string, correlationId: 
     return { productId: row.product_id.toLowerCase(), storagePath: row.storage_path };
   } catch (error) {
     if (error instanceof MaterialAssetInputError) throw error;
-    console.error("MATERIAL_ASSET_REPOSITORY_ERROR_V1", {
-      correlationId,
-      productId: canonicalProductId,
-      adminClientInitialized,
-      queryCompleted,
-      dataExists,
-      rawSupabaseError,
-      catchError: {
-        name: error instanceof Error ? error.name : typeof error,
-        message: error instanceof Error ? error.message : String(error)
-      }
-    });
     throw new MaterialAssetRepositoryError();
   }
 }

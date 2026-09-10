@@ -1,6 +1,4 @@
 import "server-only";
-import { randomUUID } from "node:crypto";
-
 import { getAccountAccess } from "@/lib/auth/session";
 import { getCurrentMaterialAsset } from "@/lib/repositories/material-asset-repository";
 import { getActiveProductEntitlement } from "@/lib/repositories/product-entitlement-repository";
@@ -29,22 +27,6 @@ function unavailable(): Response {
 
 function normalizedUuid(value: unknown): string | null {
   return isValidMaterialUuid(value) ? value.toLowerCase() : null;
-}
-
-function diagnosticError(error: unknown): { code: string | null; message: string | null } {
-  const value = error as { code?: unknown; message?: unknown } | null;
-  const redact = (input: unknown): string | null => {
-    if (typeof input !== "string") return null;
-    return input
-      .replace(/https?:\/\/\S+/gi, "[REDACTED_URL]")
-      .replace(/\b(Bearer\s+)[^\s]+/gi, "$1[REDACTED]")
-      .replace(/\b(service_role|anon|access_token|refresh_token|authorization|token|secret|key)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
-      .slice(0, 500);
-  };
-  return {
-    code: redact(value?.code),
-    message: redact(value?.message)
-  };
 }
 
 function isValidEntitlement(value: unknown, expectedUserId: string, expectedProductId: string): boolean {
@@ -78,25 +60,12 @@ export async function GET(
   _request: Request,
   context: { params: Promise<{ id: string }> }
 ): Promise<Response> {
-  const correlationId = randomUUID();
   let access;
   try {
     access = await getAccountAccess();
   } catch {
-    console.info("MATERIAL_SIGNED_URL_ACCESS_V1", {
-      correlationId,
-      access: { status: "error" },
-      profile: { role: null },
-      userId: { exists: false }
-    });
     return errorResponse(401);
   }
-  console.info("MATERIAL_SIGNED_URL_ACCESS_V1", {
-    correlationId,
-    access: { status: access.status },
-    profile: { role: access.profile?.role ?? null },
-    userId: { exists: Boolean(access.user?.id) }
-  });
   if (access.status === "unauthenticated") return errorResponse(401);
 
   const { id } = await context.params;
@@ -116,45 +85,19 @@ export async function GET(
 
   let asset;
   try {
-    asset = await getCurrentMaterialAsset(productId, correlationId);
-  } catch (error) {
-    console.info("MATERIAL_SIGNED_URL_ASSET_V1", {
-      correlationId,
-      asset: { exists: false },
-      productId,
-      storagePath: null,
-      repositoryError: diagnosticError(error)
-    });
+    asset = await getCurrentMaterialAsset(productId);
+  } catch {
     return unavailable();
   }
-  console.info("MATERIAL_SIGNED_URL_ASSET_V1", {
-    correlationId,
-    asset: { exists: asset !== null && asset !== undefined },
-    productId: typeof asset === "object" && asset !== null && "productId" in asset ? asset.productId : null,
-    storagePath: typeof asset === "object" && asset !== null && "storagePath" in asset ? asset.storagePath : null,
-    repositoryError: null
-  });
   if (!isValidAssetForProduct(asset, productId)) return unavailable();
 
   try {
     const url = await createMaterialSignedUrl(asset.storagePath, productId);
-    console.info("MATERIAL_SIGNED_URL_STORAGE_V1", {
-      correlationId,
-      storagePath: asset.storagePath,
-      signedUrl: { exists: Boolean(url) },
-      storageError: null
-    });
     return Response.json(
       { url, expiresIn: MATERIAL_SIGNED_URL_EXPIRES_IN_SECONDS },
       { headers: { "Cache-Control": CACHE_CONTROL } }
     );
-  } catch (error) {
-    console.info("MATERIAL_SIGNED_URL_STORAGE_V1", {
-      correlationId,
-      storagePath: asset.storagePath,
-      signedUrl: { exists: false },
-      storageError: diagnosticError(error)
-    });
+  } catch {
     return unavailable();
   }
 }

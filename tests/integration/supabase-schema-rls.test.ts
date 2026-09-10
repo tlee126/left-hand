@@ -279,6 +279,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ,"0036_material_upload_retry_state.sql"
       ,"0037_material_upload_cancel_cleanup_guard.sql"
       ,"0038_fix_material_upload_filename_regex.sql"
+      ,"0039_grant_material_assets_select_to_service_role.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -1985,5 +1986,10 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       const nested = sql.replace("BEGIN", "BEGIN\n    TRUNCATE TABLE public.products;\n    COPY public.products FROM STDIN;\n    CALL public.leaked_proc();\n    DO $$ BEGIN DELETE FROM public.products; END $$;");
       assert.throws(() => contract(nested), /./, file);
     }
+  });
+
+  test("migration 0039 grants service_role select on material_assets", async () => {
+    const sql = await fs.readFile(path.resolve(process.cwd(), "supabase/migrations/0039_grant_material_assets_select_to_service_role.sql"), "utf8");
+    assert.match(sql, /^GRANT SELECT ON TABLE public\.material_assets TO service_role;\s*$/i);
   });
 });
