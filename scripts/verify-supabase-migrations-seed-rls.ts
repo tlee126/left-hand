@@ -1550,6 +1550,18 @@ export function assertMaterialUploadCancelCleanupGuardMigrationContract(sql0037:
   fail(statements.slice(1).length === expectedPrivileges.length && expectedPrivileges.every((statement, index) => statements[index + 1] === statement), "Migration 0037 must revoke public/anon and grant only authenticated execution");
 }
 
+/** Exact filename-regex correction and privilege contract for migration 0038. */
+export function assertMaterialUploadFilenameRegexMigrationContract(sql0038: string): void {
+  const statements = stripSqlCommentsAndSplitStatements(sql0038).map(normalizeMigrationStatement);
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const functionStatement = statements.find((statement) => statement.startsWith("create or replace function public.reserve_material_asset_upload(")) || "";
+  fail(statements.length === 3, "Migration 0038 must contain only the corrected reserve RPC and its exact privileges");
+  fail(/^create or replace function public\.reserve_material_asset_upload\(\s*p_product_id uuid, p_original_name text, p_safe_filename text, p_mime_type text, p_byte_size bigint, p_idempotency_key uuid\s*\)/i.test(functionStatement), "Migration 0038 must preserve the keyed reserve RPC signature");
+  fail(/or p_original_name ~ e'\\\\.\\\\.'/i.test(functionStatement) && /or p_safe_filename ~ e'\\\\.\\\\.'/i.test(functionStatement) && /or p_safe_filename !~ e'\\\\.'/i.test(functionStatement), "Migration 0038 must use the exact escaped filename regex expressions");
+  fail(!/p_original_name ~ '\\\\.\\\\.'|p_safe_filename ~ '\\\\.\\\\.'|p_safe_filename !~ '\\\\.'/i.test(functionStatement), "Migration 0038 must not retain the over-escaped regex expressions");
+  fail(statements[1] === "revoke all on function public.reserve_material_asset_upload(uuid, text, text, text, bigint, uuid) from public, anon" && statements[2] === "grant execute on function public.reserve_material_asset_upload(uuid, text, text, text, bigint, uuid) to authenticated", "Migration 0038 privileges must remain unchanged");
+}
+
 /** Canonical catalog search document contract for migration 0030. */
 export function assertCatalogCompleteSearchMigrationContract(sql0030: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -2186,13 +2198,14 @@ export async function runAudit(): Promise<boolean> {
       "0034_material_upload_cleanup_hardening.sql",
       "0035_material_upload_idempotency.sql",
       "0036_material_upload_retry_state.sql",
-      "0037_material_upload_cancel_cleanup_guard.sql"
+      "0037_material_upload_cancel_cleanup_guard.sql",
+      "0038_fix_material_upload_filename_regex.sql"
     ];
 
     const hasAll = expected.every((exp) => sqlFiles.includes(exp));
     results.push({
       category: "Migrations",
-      check: "All 37 migration files exist in strict topological order",
+      check: "All 38 migration files exist in strict topological order",
       passed: hasAll && sqlFiles.length === expected.length,
       details: sqlFiles.join(", ")
     });
@@ -2774,6 +2787,15 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0037_material_upload_cancel_cleanup_guard", check: "Keeps retry-cleanup reservations out of cancellation races", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0037ContractValid) results.push({ category: "0037_material_upload_cancel_cleanup_guard", check: "Keeps retry-cleanup reservations out of cancellation races", passed: true, details: "Database cancel transition rejects cleanup-pending/claimed and finalized reservations" });
+
+    // 38. Audit 0038_fix_material_upload_filename_regex.sql
+    const sql0038 = await fs.readFile(path.join(migrationsDir, "0038_fix_material_upload_filename_regex.sql"), "utf-8");
+    let migration0038ContractValid = true;
+    try { assertMaterialUploadFilenameRegexMigrationContract(sql0038); } catch (error) {
+      migration0038ContractValid = false;
+      results.push({ category: "0038_fix_material_upload_filename_regex", check: "Corrects material upload filename regex expressions without changing upload logic", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0038ContractValid) results.push({ category: "0038_fix_material_upload_filename_regex", check: "Corrects material upload filename regex expressions without changing upload logic", passed: true, details: "Exact regex correction, keyed RPC signature, and existing privileges verified" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
