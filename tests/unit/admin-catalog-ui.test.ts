@@ -16,6 +16,7 @@ const modules = Object.fromEntries(["auth", "repo", "actions", "nav", "jsx", "li
 const domainSubjectsModule = "data:text/javascript," + encodeURIComponent("export const CATEGORIES = ['Kế toán','Kinh tế','Thống kê','Marketing','Quản trị','Tài chính','MIS','Luật','Ngoại ngữ']; export const COLOR_THEMES = ['accounting','economics','statistics','marketing','management','finance','law','mis','languages'];");
 const domainProductTypesModule = "data:text/javascript," + encodeURIComponent("export const DELIVERY_KINDS = ['digital_download','live_session','recorded_video','one_on_one_tutoring']; export const PUBLICATION_STATUSES = ['draft','published','archived']; export const COURSE_FORMATS = ['online','offline','video','zoom']; export const ENROLLMENT_STATUSES = ['open','coming-soon','full']; export const TUTOR_FORMATS = ['1:1 & Nhóm nhỏ (Online/Offline)','1:1 (Online/Offline quận 7)','1:1 & Nhóm nhỏ (Online)','1:1 (Online qua Google Meet)','1:1 & Nhóm nhỏ (Offline/Online)','1:1 (Online)','1:1 & Nhóm nhỏ (Online/Offline Q7)']; export const isValidVND = value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 2147483647;");
 const materialUploadModule = "data:text/javascript," + encodeURIComponent("export default () => ({type: 'div', props: {children: 'MATERIAL_UPLOAD_FORM'}});");
+const materialViewModule = "data:text/javascript," + encodeURIComponent("export default () => ({type: 'button', props: {type: 'button', children: 'Xem tài liệu'}});");
 mock.module(modules.auth, { namedExports: { getAccountAccess: async () => { timeline.push("guard"); return access; } } });
 mock.module(modules.nav, { namedExports: {
  redirect: (url) => { timeline.push("redirect"); throw Error("REDIRECT:" + url); },
@@ -55,7 +56,7 @@ async function load(file) {
  }
  const database = await transform(await readFile("lib/supabase/database.types.ts", "utf8"), {loader: "ts", format: "esm"});
  source = source.replaceAll("@/lib/supabase/database.types", "data:text/javascript," + encodeURIComponent(database.code));
- for (const [from, to] of [["@/lib/auth/session", "auth"], ["@/lib/repositories/admin-catalog-repository", "repo"], ["@/lib/domain/subjects", domainSubjectsModule], ["@/lib/domain/product-types", domainProductTypesModule], ["./actions", "actions"], ["./material-upload-form", materialUploadModule], ["next/navigation", "nav"], ["next/link", "link"]]) source = source.replaceAll(from, to.startsWith("data:") ? to : modules[to]);
+ for (const [from, to] of [["@/lib/auth/session", "auth"], ["@/lib/repositories/admin-catalog-repository", "repo"], ["@/lib/domain/subjects", domainSubjectsModule], ["@/lib/domain/product-types", domainProductTypesModule], ["./actions", "actions"], ["./material-upload-form", materialUploadModule], ["./material-view-button", materialViewModule], ["next/navigation", "nav"], ["next/link", "link"]]) source = source.replaceAll(from, to.startsWith("data:") ? to : modules[to]);
  const result = await transform(source, {loader: "tsx", format: "esm", jsx: "automatic"});
  return (await import("data:text/javascript," + encodeURIComponent(result.code.replaceAll("react/jsx-runtime", modules.jsx)))).default;
 }

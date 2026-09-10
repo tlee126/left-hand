@@ -2199,14 +2199,22 @@ export async function runAudit(): Promise<boolean> {
       "0035_material_upload_idempotency.sql",
       "0036_material_upload_retry_state.sql",
       "0037_material_upload_cancel_cleanup_guard.sql",
-      "0038_fix_material_upload_filename_regex.sql"
+      "0038_fix_material_upload_filename_regex.sql",
+      "0039_grant_material_assets_select_to_service_role.sql"
     ];
 
-    const hasAll = expected.every((exp) => sqlFiles.includes(exp));
+    const migrationNumbers = sqlFiles.map((filename) => {
+      const match = /^(\d{4})_.+\.sql$/.exec(filename);
+      return match ? Number(match[1]) : NaN;
+    });
+    const hasStrictSequentialNumbers = migrationNumbers.length === expected.length
+      && migrationNumbers.every((number, index) => number === index + 1);
+    const matchesCanonicalList = sqlFiles.length === expected.length
+      && expected.every((filename, index) => sqlFiles[index] === filename);
     results.push({
       category: "Migrations",
-      check: "All 38 migration files exist in strict topological order",
-      passed: hasAll && sqlFiles.length === expected.length,
+      check: "All 39 migration files exist with complete strict numerical order",
+      passed: matchesCanonicalList && hasStrictSequentialNumbers,
       details: sqlFiles.join(", ")
     });
 
@@ -2796,6 +2804,10 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0038_fix_material_upload_filename_regex", check: "Corrects material upload filename regex expressions without changing upload logic", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0038ContractValid) results.push({ category: "0038_fix_material_upload_filename_regex", check: "Corrects material upload filename regex expressions without changing upload logic", passed: true, details: "Exact regex correction, keyed RPC signature, and existing privileges verified" });
+
+    const sql0039 = await fs.readFile(path.join(migrationsDir, "0039_grant_material_assets_select_to_service_role.sql"), "utf-8");
+    const migration0039ContractValid = /^GRANT SELECT ON TABLE public\.material_assets TO service_role;\s*$/i.test(sql0039);
+    results.push({ category: "0039_grant_material_assets_select_to_service_role", check: "Persists service_role read access for material assets", passed: migration0039ContractValid, details: migration0039ContractValid ? "Exact SELECT grant verified" : "Migration must contain only the exact service_role SELECT grant" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
