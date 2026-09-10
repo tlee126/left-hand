@@ -34,6 +34,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 type UserScopedSupabaseClient = SupabaseClient<Database>;
 
+class MaterialUploadMetadataError extends Error {
+  constructor(readonly fields: readonly string[], readonly reason: string) {
+    super("Invalid material upload metadata.");
+    this.name = "MaterialUploadMetadataError";
+  }
+}
+
+function logMetadataFailure(fields: readonly string[], reason: string): void {
+  console.error("Material upload metadata rejected", { fields, reason });
+}
+
 async function requireApprovedAdmin(supabase: UserScopedSupabaseClient): Promise<Response | { client: UserScopedSupabaseClient }> {
   try {
     const access = await getAccountAccess(supabase as unknown as AccountAccessClient);
@@ -47,8 +58,12 @@ async function requireApprovedAdmin(supabase: UserScopedSupabaseClient): Promise
 
 async function readPrepareBody(request: Request): Promise<{ originalName: string; mimeType: string; byteSize: number; idempotencyKey: string } | null> {
   const body = await readBoundedJson(request, MAX_JSON_BYTES);
-  if (!isRecord(body) || Object.keys(body).length !== 4 || typeof body.originalName !== "string" || typeof body.mimeType !== "string" || typeof body.byteSize !== "number" || !isValidMaterialUuid(body.idempotencyKey)) return null;
-  if (!Number.isSafeInteger(body.byteSize) || body.byteSize <= 0) return null;
+  if (!isRecord(body) || Object.keys(body).length !== 4) throw new MaterialUploadMetadataError(["body"], "expected exactly four metadata fields");
+  if (typeof body.originalName !== "string" || body.originalName.length === 0 || body.originalName.length > 200) throw new MaterialUploadMetadataError(["originalName"], "must be 1-200 characters");
+  if (typeof body.mimeType !== "string" || !isSupportedMaterialMimeType(body.mimeType)) throw new MaterialUploadMetadataError(["mimeType"], "unsupported MIME type");
+  if (typeof body.byteSize !== "number" || !Number.isSafeInteger(body.byteSize) || body.byteSize <= 0) throw new MaterialUploadMetadataError(["byteSize"], "must be a positive safe integer");
+  if (body.byteSize > materialSizeLimit(body.mimeType)) throw new MaterialUploadMetadataError(["byteSize"], "exceeds the MIME-specific limit");
+  if (!isValidMaterialUuid(body.idempotencyKey)) throw new MaterialUploadMetadataError(["idempotencyKey"], "must be a UUID");
   return { originalName: body.originalName, mimeType: body.mimeType, byteSize: body.byteSize, idempotencyKey: body.idempotencyKey.toLowerCase() };
 }
 
@@ -71,8 +86,18 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (!isValidMaterialUuid(id)) return response({ error: "Invalid material upload request." }, 400);
     const productId = id.toLowerCase();
     const input = await readPrepareBody(request);
-    if (!input || !isSupportedMaterialMimeType(input.mimeType) || input.byteSize > materialSizeLimit(input.mimeType)) return response({ error: "Invalid material upload request." }, 400);
-    const safeFilename = sanitizeMaterialFilename(input.originalName);
+    if (!input) throw new MaterialUploadMetadataError(["body"], "missing metadata");
+    if (!isSupportedMaterialMimeType(input.mimeType) || input.byteSize > materialSizeLimit(input.mimeType)) {
+      throw new MaterialUploadMetadataError(["mimeType", "byteSize"], "unsupported MIME or size limit");
+    }
+    let safeFilename: string;
+    try {
+      safeFilename = sanitizeMaterialFilename(input.originalName);
+    } catch {
+      throw new MaterialUploadMetadataError(["originalName", "safeFilename"], "cannot produce a database-compatible filename");
+    }
+    // The RPC payload is intentionally explicit: originalName is retained for display,
+    // while safeFilename is the canonical storage-path component.
     if (!(await isMaterialProduct(productId, admin.client))) return response({ error: "Material upload is not permitted." }, 404);
 
     const reservation = await reserveMaterialAssetUpload({ productId, originalName: input.originalName, safeFilename, mimeType: input.mimeType, byteSize: input.byteSize, idempotencyKey: input.idempotencyKey }, admin.client);
@@ -86,6 +111,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return Response.json({ reservationId, version: reservation.version, status: "reserved", upload: { bucket: MATERIALS_BUCKET, path: capability.storagePath, token: capability.token }, expiresIn: MATERIAL_UPLOAD_EXPIRES_IN_SECONDS }, { headers: { "Cache-Control": CACHE_CONTROL } });
   } catch (error) {
     if (error instanceof BoundedJsonError) return response({ error: error.code === BoundedJsonErrorCode.TooLarge ? "Request body is too large." : "Invalid material upload request." }, error.code === BoundedJsonErrorCode.TooLarge ? 413 : 400);
+    if (error instanceof MaterialUploadMetadataError) {
+      logMetadataFailure(error.fields, error.reason);
+      return response({ error: "Invalid material upload metadata." }, 400);
+    }
+    if (error instanceof Error && error.name === "MaterialAssetInputError") return response({ error: "Invalid material upload metadata." }, 400);
     if (error instanceof MaterialAssetUploadConflictError) return response({ error: "Material upload is not available." }, 409);
     if (reservationId && reservationCreated) {
       try { await markMaterialAssetUploadRetryable(reservationId, admin.client); } catch { /* retain the reservation for cleanup/reconciliation */ }

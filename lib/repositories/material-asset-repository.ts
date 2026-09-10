@@ -157,7 +157,7 @@ export async function reserveMaterialAssetUpload(input: ReserveMaterialAssetUplo
       p_byte_size: input.byteSize,
       p_idempotency_key: input.idempotencyKey.toLowerCase()
     });
-    if (error) throw new Error();
+    if (error) throw error;
     const row = asObject(data as Json | null);
     if (row.status === "conflict") throw new MaterialAssetUploadConflictError();
     const reservationId = asString(row.reservation_id);
@@ -172,8 +172,16 @@ export async function reserveMaterialAssetUpload(input: ReserveMaterialAssetUplo
     return { reservationId, version, storagePath, status, isNew, retryable, cleanupPending };
   } catch (error) {
     if (error instanceof MaterialAssetInputError || error instanceof MaterialAssetUploadConflictError) throw error;
+    if (isSupabaseInputContractError(error)) {
+      console.error("Material upload RPC rejected input contract", { code: "22023", field: "rpc_input_contract" });
+      throw new MaterialAssetInputError("Invalid material upload metadata.");
+    }
     throw new MaterialAssetRepositoryError();
   }
+}
+
+function isSupabaseInputContractError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "22023";
 }
 
 function validateReservationRow(row: Record<string, Json | undefined>): MaterialAssetUploadReservationDetails {
