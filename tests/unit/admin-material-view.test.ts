@@ -84,32 +84,41 @@ test("material viewer accepts a valid http url", async () => {
 });
 
 test("material viewer rejects unsafe or malformed urls and closes the popup", async () => {
-  const invalidUrls = [
+  const invalidUrls: unknown[] = [
     "",
     "   ",
     " https://storage.example/material.pdf",
     "https://storage.example/material.pdf ",
+    "https://example.com/material file.pdf",
     "https://[malformed",
     "javascript:alert(1)",
     "data:application/pdf;base64,ZmFrZQ==",
     "blob:https://storage.example/asset-id",
     "file:///tmp/material.pdf",
-    "/materials/material.pdf"
+    "ftp://storage.example/material.pdf",
+    "custom://storage.example/material.pdf",
+    "/materials/material.pdf",
+    undefined,
+    null,
+    42,
+    { url: "https://storage.example/material.pdf" }
   ];
 
   for (const invalidUrl of invalidUrls) {
     let closed = false;
     let assigned = false;
+    let popupHref = "";
     const originalWindow = globalThis.window;
     const originalFetch = globalThis.fetch;
     globalThis.window = {
-      open: () => ({ location: { href: "" }, close: () => { closed = true; } }),
+      open: () => ({ location: { get href() { return popupHref; }, set href(value: string) { popupHref = value; } }, close: () => { closed = true; } }),
       location: { assign: () => { assigned = true; } }
     } as unknown as Window & typeof globalThis;
     globalThis.fetch = async () => Response.json({ url: invalidUrl });
     try {
       await assert.rejects(openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64"), /Không thể mở tài liệu/);
       assert.equal(closed, true, `popup should close for ${JSON.stringify(invalidUrl)}`);
+      assert.equal(popupHref, "", `popup should not navigate for ${JSON.stringify(invalidUrl)}`);
       assert.equal(assigned, false, `fallback should not run for ${JSON.stringify(invalidUrl)}`);
     } finally {
       globalThis.window = originalWindow;

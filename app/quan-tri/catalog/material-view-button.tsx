@@ -5,7 +5,7 @@ import { useState } from "react";
 const VIEW_ERROR = "Không thể mở tài liệu. Vui lòng thử lại sau.";
 
 function isValidMaterialUrl(value: unknown): value is string {
-  if (typeof value !== "string" || value.length === 0 || value.trim() !== value) return false;
+  if (typeof value !== "string" || value.length === 0 || value.trim() !== value || /\s/.test(value)) return false;
 
   try {
     const url = new URL(value);
