@@ -1,4 +1,7 @@
-import { getAccountAccess } from "@/lib/auth/session";
+import { getAccountAccess, type AccountAccessClient } from "@/lib/auth/session";
+import { createClient } from "@/lib/supabase/server";
+import type { Database } from "@/lib/supabase/database.types";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { BoundedJsonError, BoundedJsonErrorCode, readBoundedJson } from "@/lib/http/bounded-json";
 import {
   isMaterialProduct,
@@ -29,12 +32,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-async function requireApprovedAdmin(): Promise<Response | null> {
+type UserScopedSupabaseClient = SupabaseClient<Database>;
+
+async function requireApprovedAdmin(supabase: UserScopedSupabaseClient): Promise<Response | { client: UserScopedSupabaseClient }> {
   try {
-    const access = await getAccountAccess();
+    const access = await getAccountAccess(supabase as unknown as AccountAccessClient);
     if (access.status === "unauthenticated") return response({ error: "Authentication required." }, 401);
     if (access.status !== "approved" || access.profile?.role !== "admin") return response({ error: "Upload is not permitted." }, 403);
-    return null;
+    return { client: supabase };
   } catch {
     return response({ error: "Unable to prepare material upload." }, 500);
   }
@@ -48,8 +53,16 @@ async function readPrepareBody(request: Request): Promise<{ originalName: string
 }
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }): Promise<Response> {
-  const denied = await requireApprovedAdmin();
-  if (denied) return denied;
+  let supabase: UserScopedSupabaseClient;
+  try {
+    // createClient() is the existing SSR client: it carries the request's
+    // authenticated session JWT into every downstream database call.
+    supabase = await createClient();
+  } catch {
+    return response({ error: "Unable to prepare material upload." }, 500);
+  }
+  const admin = await requireApprovedAdmin(supabase);
+  if (admin instanceof Response) return admin;
 
   let reservationId: string | null = null;
   let reservationCreated = false;
@@ -60,9 +73,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const input = await readPrepareBody(request);
     if (!input || !isSupportedMaterialMimeType(input.mimeType) || input.byteSize > materialSizeLimit(input.mimeType)) return response({ error: "Invalid material upload request." }, 400);
     const safeFilename = sanitizeMaterialFilename(input.originalName);
-    if (!(await isMaterialProduct(productId))) return response({ error: "Material upload is not permitted." }, 404);
+    if (!(await isMaterialProduct(productId, admin.client))) return response({ error: "Material upload is not permitted." }, 404);
 
-    const reservation = await reserveMaterialAssetUpload({ productId, originalName: input.originalName, safeFilename, mimeType: input.mimeType, byteSize: input.byteSize, idempotencyKey: input.idempotencyKey });
+    const reservation = await reserveMaterialAssetUpload({ productId, originalName: input.originalName, safeFilename, mimeType: input.mimeType, byteSize: input.byteSize, idempotencyKey: input.idempotencyKey }, admin.client);
     reservationId = reservation.reservationId;
     reservationCreated = reservation.isNew;
     if (reservation.status === "committed") {
@@ -75,7 +88,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (error instanceof BoundedJsonError) return response({ error: error.code === BoundedJsonErrorCode.TooLarge ? "Request body is too large." : "Invalid material upload request." }, error.code === BoundedJsonErrorCode.TooLarge ? 413 : 400);
     if (error instanceof MaterialAssetUploadConflictError) return response({ error: "Material upload is not available." }, 409);
     if (reservationId && reservationCreated) {
-      try { await markMaterialAssetUploadRetryable(reservationId); } catch { /* retain the reservation for cleanup/reconciliation */ }
+      try { await markMaterialAssetUploadRetryable(reservationId, admin.client); } catch { /* retain the reservation for cleanup/reconciliation */ }
     }
     return response({ error: "Unable to prepare material upload." }, 500);
   }
