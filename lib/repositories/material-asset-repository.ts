@@ -91,6 +91,23 @@ export interface ExpiredMaterialAssetUploadClaim {
   claimId: string;
 }
 
+function logMaterialUploadRpcArgumentDiagnostics(field: "p_original_name" | "p_safe_filename", value: string, correlationId?: string): void {
+  const bytes = Buffer.from(value, "utf8");
+  const databaseRegexValid = field === "p_original_name"
+    ? value.length > 0 && value.length <= 200 && !/[/\\]/.test(value) && !/[\u0000-\u001f\u007f]/.test(value) && !/\.\./.test(value)
+    : /^[a-z0-9][a-z0-9._-]{0,199}$/.test(value) && !/\.\./.test(value) && /\./.test(value);
+  console.info({
+    field,
+    valueJson: JSON.stringify(value),
+    characterLength: value.length,
+    utf8ByteLength: bytes.length,
+    utf8BytesHex: bytes.toString("hex"),
+    databaseRegexValid,
+    correlationId: correlationId ?? "unknown",
+    VERCEL_GIT_COMMIT_SHA: process.env.VERCEL_GIT_COMMIT_SHA ?? "unknown"
+  });
+}
+
 function validateProductIds(productIds: readonly string[]): void {
   if (!Array.isArray(productIds) || productIds.some((productId) => !isValidMaterialUuid(productId))) throw new MaterialAssetInputError();
 }
@@ -141,7 +158,7 @@ export async function isMaterialProduct(productId: string, client?: UserScopedSu
   }
 }
 
-export async function reserveMaterialAssetUpload(input: ReserveMaterialAssetUploadInput, client?: UserScopedSupabaseClient): Promise<MaterialAssetUploadReservation> {
+export async function reserveMaterialAssetUpload(input: ReserveMaterialAssetUploadInput, client?: UserScopedSupabaseClient, correlationId?: string): Promise<MaterialAssetUploadReservation> {
   if (!isValidMaterialUuid(input.productId) || !isValidMaterialUuid(input.idempotencyKey) || !isSupportedMaterialMimeType(input.mimeType) || !Number.isSafeInteger(input.byteSize) || input.byteSize <= 0 || input.byteSize > materialSizeLimit(input.mimeType)) throw new MaterialAssetInputError();
   if (sanitizeMaterialFilename(input.originalName) !== input.safeFilename) throw new MaterialAssetInputError();
 
@@ -149,14 +166,17 @@ export async function reserveMaterialAssetUpload(input: ReserveMaterialAssetUplo
     // This RPC is owner-bound: its SQL derives uploaded_by from auth.uid().
     // Never replace this with the service-role client, whose auth.uid() is NULL.
     const supabase = client ?? (await createClient());
-    const { data, error } = await supabase.rpc("reserve_material_asset_upload", {
+    const rpcArgs = {
       p_product_id: input.productId.toLowerCase(),
       p_original_name: input.originalName,
       p_safe_filename: input.safeFilename,
       p_mime_type: input.mimeType,
       p_byte_size: input.byteSize,
       p_idempotency_key: input.idempotencyKey.toLowerCase()
-    });
+    };
+    logMaterialUploadRpcArgumentDiagnostics("p_original_name", rpcArgs.p_original_name, correlationId);
+    logMaterialUploadRpcArgumentDiagnostics("p_safe_filename", rpcArgs.p_safe_filename, correlationId);
+    const { data, error } = await supabase.rpc("reserve_material_asset_upload", rpcArgs);
     if (error) throw error;
     const row = asObject(data as Json | null);
     if (row.status === "conflict") throw new MaterialAssetUploadConflictError();

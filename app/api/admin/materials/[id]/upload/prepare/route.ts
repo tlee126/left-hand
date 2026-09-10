@@ -45,6 +45,10 @@ function logMetadataFailure(fields: readonly string[], reason: string): void {
   console.error("Material upload metadata rejected", { fields, reason });
 }
 
+function correlationId(request: Request): string {
+  return request.headers.get("x-request-id") || crypto.randomUUID();
+}
+
 async function requireApprovedAdmin(supabase: UserScopedSupabaseClient): Promise<Response | { client: UserScopedSupabaseClient }> {
   try {
     const access = await getAccountAccess(supabase as unknown as AccountAccessClient);
@@ -68,6 +72,7 @@ async function readPrepareBody(request: Request): Promise<{ originalName: string
 }
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }): Promise<Response> {
+  const requestCorrelationId = correlationId(request);
   let supabase: UserScopedSupabaseClient;
   try {
     // createClient() is the existing SSR client: it carries the request's
@@ -100,7 +105,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     // while safeFilename is the canonical storage-path component.
     if (!(await isMaterialProduct(productId, admin.client))) return response({ error: "Material upload is not permitted." }, 404);
 
-    const reservation = await reserveMaterialAssetUpload({ productId, originalName: input.originalName, safeFilename, mimeType: input.mimeType, byteSize: input.byteSize, idempotencyKey: input.idempotencyKey }, admin.client);
+    const reservation = await reserveMaterialAssetUpload({ productId, originalName: input.originalName, safeFilename, mimeType: input.mimeType, byteSize: input.byteSize, idempotencyKey: input.idempotencyKey }, admin.client, requestCorrelationId);
     reservationId = reservation.reservationId;
     reservationCreated = reservation.isNew;
     if (reservation.status === "committed") {
