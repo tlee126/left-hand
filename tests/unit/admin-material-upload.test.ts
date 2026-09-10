@@ -31,6 +31,20 @@ test("approved admin can prepare an upload through JSON-only server metadata", a
   assert.doesNotMatch(code, /formData|arrayBuffer|new File|Blob/);
 });
 
+test("prepare passes the authenticated SSR client through auth, repository, and owner-bound RPC", async () => {
+  const [route, repository] = await Promise.all([source(preparePath), source(repositoryPath)]);
+  assert.match(route, /supabase = await createClient\(\)/);
+  assert.match(route, /getAccountAccess\(supabase as unknown as AccountAccessClient\)/);
+  assert.match(route, /isMaterialProduct\(productId, admin\.client\)/);
+  assert.match(route, /reserveMaterialAssetUpload\([\s\S]*admin\.client\)/);
+  assert.match(route, /markMaterialAssetUploadRetryable\(reservationId, admin\.client\)/);
+  assert.match(repository, /reserveMaterialAssetUpload\(input: ReserveMaterialAssetUploadInput, client\?/);
+  assert.match(repository, /const supabase = client \?\? \(await createClient\(\)\)/);
+  assert.match(repository, /owner-bound[\s\S]*service-role client/);
+  const reservationFunction = repository.match(/export async function reserveMaterialAssetUpload[\s\S]*?\n\}\n\nfunction validateReservationRow/ )?.[0] ?? "";
+  assert.doesNotMatch(reservationFunction, /createServerAdminClient/);
+});
+
 test("unauthorized users cannot prepare or finalize", async () => {
   const [prepare, finalize, cancel] = await Promise.all([source(preparePath), source(finalizePath), source(cancelPath)]);
   for (const code of [prepare, finalize, cancel]) {
@@ -41,7 +55,7 @@ test("unauthorized users cannot prepare or finalize", async () => {
 
 test("nonexistent and foreign materials are rejected by trusted material and session binding", async () => {
   const [prepare, finalize] = await Promise.all([source(preparePath), source(finalizePath)]);
-  assert.match(prepare, /isMaterialProduct\(productId\)/);
+  assert.match(prepare, /isMaterialProduct\(productId, admin\.client\)/);
   assert.match(finalize, /reservation\.productId !== productId/);
   assert.match(finalize, /existing\?\.product_id === productId/);
 });

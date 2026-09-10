@@ -3,6 +3,7 @@ import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import { createServerAdminClient } from "@/lib/supabase/server-admin";
 import type { Database, Json } from "@/lib/supabase/database.types";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   isSupportedMaterialMimeType,
   isValidMaterialStoragePathForProduct,
@@ -13,6 +14,7 @@ import {
 } from "@/lib/storage/material-storage";
 
 type MaterialAssetRow = Database["public"]["Tables"]["material_assets"]["Row"];
+type UserScopedSupabaseClient = SupabaseClient<Database>;
 
 export const MATERIAL_ASSET_COLUMNS = [
   "id", "product_id", "uploaded_by", "upload_reservation_id", "upload_idempotency_key", "storage_path", "original_name", "mime_type", "byte_size", "version", "visibility", "created_at", "updated_at"
@@ -126,11 +128,11 @@ function asUploadStatus(value: Json | undefined): "reserved" | "committed" {
   return value;
 }
 
-export async function isMaterialProduct(productId: string): Promise<boolean> {
+export async function isMaterialProduct(productId: string, client?: UserScopedSupabaseClient): Promise<boolean> {
   if (!isValidMaterialUuid(productId)) throw new MaterialAssetInputError();
   const canonicalProductId = productId.toLowerCase();
   try {
-    const supabase = await createClient();
+    const supabase = client ?? (await createClient());
     const { data, error } = await supabase.from("materials").select("product_id").eq("product_id", canonicalProductId).maybeSingle();
     if (error) throw new Error();
     return data !== null;
@@ -139,12 +141,14 @@ export async function isMaterialProduct(productId: string): Promise<boolean> {
   }
 }
 
-export async function reserveMaterialAssetUpload(input: ReserveMaterialAssetUploadInput): Promise<MaterialAssetUploadReservation> {
+export async function reserveMaterialAssetUpload(input: ReserveMaterialAssetUploadInput, client?: UserScopedSupabaseClient): Promise<MaterialAssetUploadReservation> {
   if (!isValidMaterialUuid(input.productId) || !isValidMaterialUuid(input.idempotencyKey) || !isSupportedMaterialMimeType(input.mimeType) || !Number.isSafeInteger(input.byteSize) || input.byteSize <= 0 || input.byteSize > materialSizeLimit(input.mimeType)) throw new MaterialAssetInputError();
   if (sanitizeMaterialFilename(input.originalName) !== input.safeFilename) throw new MaterialAssetInputError();
 
   try {
-    const supabase = await createClient();
+    // This RPC is owner-bound: its SQL derives uploaded_by from auth.uid().
+    // Never replace this with the service-role client, whose auth.uid() is NULL.
+    const supabase = client ?? (await createClient());
     const { data, error } = await supabase.rpc("reserve_material_asset_upload", {
       p_product_id: input.productId.toLowerCase(),
       p_original_name: input.originalName,
@@ -249,10 +253,10 @@ export async function markMaterialAssetUploadCancelled(reservationId: string): P
   }
 }
 
-export async function markMaterialAssetUploadRetryable(reservationId: string): Promise<boolean> {
+export async function markMaterialAssetUploadRetryable(reservationId: string, client?: UserScopedSupabaseClient): Promise<boolean> {
   if (!isValidMaterialUuid(reservationId)) throw new MaterialAssetInputError();
   try {
-    const supabase = await createClient();
+    const supabase = client ?? (await createClient());
     const { data, error } = await supabase.rpc("mark_material_asset_upload_retryable", { p_reservation_id: reservationId.toLowerCase() });
     if (error || typeof data !== "boolean") throw new Error();
     return data;
