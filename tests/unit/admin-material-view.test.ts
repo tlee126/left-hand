@@ -9,17 +9,26 @@ test("material view button visibility follows current asset presence", () => {
   assert.equal(hasCurrentMaterialAsset(2), true);
 });
 
-test("material viewer calls signed-url with the product id and opens its url", async () => {
+test("material viewer opens the popup before fetching and navigates it to the signed url", async () => {
+  const events: string[] = [];
   const opened = { location: { href: "" }, close: () => undefined };
   const originalWindow = globalThis.window;
   const originalFetch = globalThis.fetch;
-  globalThis.window = { open: () => opened } as unknown as Window & typeof globalThis;
+  globalThis.window = {
+    open: () => {
+      events.push("open");
+      return opened;
+    },
+    location: { assign: () => events.push("fallback") }
+  } as unknown as Window & typeof globalThis;
   globalThis.fetch = async (input) => {
+    events.push("fetch");
     assert.equal(input, "/api/materials/2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64/signed-url");
     return Response.json({ url: "https://storage.example/signed-url" });
   };
   try {
     await openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64");
+    assert.deepEqual(events, ["open", "fetch"]);
     assert.equal(opened.location.href, "https://storage.example/signed-url");
   } finally {
     globalThis.window = originalWindow;
@@ -27,17 +36,80 @@ test("material viewer calls signed-url with the product id and opens its url", a
   }
 });
 
-test("material viewer handles API errors without crashing", async () => {
-  let closed = false;
+test("material viewer falls back to the current tab when the popup is blocked", async () => {
+  const events: string[] = [];
   const originalWindow = globalThis.window;
   const originalFetch = globalThis.fetch;
-  globalThis.window = { open: () => ({ location: { href: "" }, close: () => { closed = true; } }) } as unknown as Window & typeof globalThis;
+  globalThis.window = {
+    open: () => {
+      events.push("open");
+      return null;
+    },
+    location: {
+      assign: (url: string) => {
+        events.push(`assign:${url}`);
+      }
+    }
+  } as unknown as Window & typeof globalThis;
+  globalThis.fetch = async (input) => {
+    events.push("fetch");
+    assert.equal(input, "/api/materials/2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64/signed-url");
+    return Response.json({ url: "https://storage.example/signed-url" });
+  };
+  try {
+    await openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64");
+    assert.deepEqual(events, ["open", "fetch", "assign:https://storage.example/signed-url"]);
+  } finally {
+    globalThis.window = originalWindow;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("material viewer handles API errors without navigating to an invalid url", async () => {
+  let closed = false;
+  let assigned = false;
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  globalThis.window = {
+    open: () => ({ location: { href: "" }, close: () => { closed = true; } }),
+    location: { assign: () => { assigned = true; } }
+  } as unknown as Window & typeof globalThis;
   globalThis.fetch = async () => new Response(null, { status: 404 });
   try {
     await assert.rejects(openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64"), /Không thể mở tài liệu/);
     assert.equal(closed, true);
+    assert.equal(assigned, false);
   } finally {
     globalThis.window = originalWindow;
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("material viewer does not log the signed url or token", async () => {
+  const signedUrl = "https://storage.example/signed-url?token=secret-token";
+  const logged: unknown[][] = [];
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const originalError = console.error;
+  globalThis.window = {
+    open: () => ({ location: { href: "" }, close: () => undefined }),
+    location: { assign: () => undefined }
+  } as unknown as Window & typeof globalThis;
+  globalThis.fetch = async () => Response.json({ url: signedUrl });
+  console.log = (...args: unknown[]) => logged.push(args);
+  console.warn = (...args: unknown[]) => logged.push(args);
+  console.error = (...args: unknown[]) => logged.push(args);
+  try {
+    await openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64");
+    assert.equal(logged.flat().some((value) => String(value).includes(signedUrl)), false);
+    assert.equal(logged.flat().some((value) => String(value).includes("secret-token")), false);
+  } finally {
+    globalThis.window = originalWindow;
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    console.warn = originalWarn;
+    console.error = originalError;
   }
 });

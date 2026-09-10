@@ -10,7 +10,6 @@ export function hasCurrentMaterialAsset(version: unknown): version is number {
 
 export async function openMaterialDocument(productId: string): Promise<void> {
   const target = window.open("about:blank", "_blank", "noopener,noreferrer");
-  if (!target) throw new Error("Trình duyệt đã chặn tab mới.");
 
   try {
     const response = await fetch(`/api/materials/${encodeURIComponent(productId)}/signed-url`, {
@@ -18,9 +17,14 @@ export async function openMaterialDocument(productId: string): Promise<void> {
     });
     const payload = await response.json().catch(() => null) as { url?: unknown } | null;
     if (!response.ok || typeof payload?.url !== "string" || payload.url.length === 0) throw new Error(VIEW_ERROR);
-    target.location.href = payload.url;
+
+    if (target) {
+      target.location.href = payload.url;
+    } else {
+      window.location.assign(payload.url);
+    }
   } catch {
-    target.close();
+    target?.close();
     throw new Error(VIEW_ERROR);
   }
 }
