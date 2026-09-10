@@ -56,7 +56,7 @@ const storageUrl = dataUrl(
   "export function isSupportedMaterialMimeType(v) { return ['application/pdf','video/mp4','video/webm','video/quicktime'].includes(v); }\n" +
   "export function isValidMaterialUuid(v) { return typeof v === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(v); }\n" +
   "export function materialSizeLimit(v) { return v === 'application/pdf' ? 20971520 : 524288000; }\n" +
-  "export function sanitizeMaterialFilename(value) { const normalized = value.normalize('NFKD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase(); const match = /\\.([a-z0-9]+)$/.exec(normalized); if (!match) throw new Error('invalid filename'); const base = normalized.slice(0, -(match[1].length + 1)).replace(/[^a-z0-9_-]+/g, '-').replace(/[-_]{2,}/g, '-').replace(/^-+|-+$/g, ''); return base + '.' + match[1]; }\n" +
+  "export function sanitizeMaterialFilename(value) { const normalized = value.normalize('NFKD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase(); if (/[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029\\\\/]/.test(normalized) || normalized.includes('..')) throw new Error('invalid filename'); const match = /\\.([a-z0-9]+)$/.exec(normalized); if (!match || !['pdf','mp4','webm','mov'].includes(match[1])) throw new Error('invalid filename'); const base = normalized.slice(0, -(match[1].length + 1)).replace(/[^a-z0-9_-]+/g, '-').replace(/[-_]{2,}/g, '-').replace(/^-+|-+$/g, ''); if (!base) throw new Error('invalid filename'); return base + '.' + match[1]; }\n" +
   "export function isValidMaterialStoragePathForProductAndVersion() { return true; }\n" +
   "export async function createMaterialUploadCapability(path) { if (" + Boolean(scenario.capabilityFailure) + ") throw new Error('capability'); return { storagePath: path, token: 'token' }; }\n" +
   "export async function inspectMaterialObject(path, mime, size) { globalThis.__calls.push('inspect'); if (" + Boolean(scenario.inspectFailure) + ") throw new Error('inspection'); return { storagePath: path, mimeType: mime, byteSize: size }; }\n" +
@@ -200,15 +200,15 @@ describe("direct material upload hardening runtime", () => {
   });
 
   test("prepare normalizes the production filename and sends the exact RPC contract", async () => {
-    const result = await runRoute([{ route: "prepare", adminId: ADMIN_A, body: JSON.stringify({ originalName: "03-Project Test Plan.pdf", mimeType: "application/pdf", byteSize: 1048576, idempotencyKey: IDEMPOTENCY_KEY.toUpperCase() }) }]);
+    const result = await runRoute([{ route: "prepare", adminId: ADMIN_A, body: JSON.stringify({ originalName: "03-Project Test Plan.pdf", mimeType: "application/pdf", byteSize: 87133, idempotencyKey: "21a892eb-ce15-4a28-8a89-9600000520be" }) }]);
     assert.equal(result.results[0].status, 200);
     assert.deepEqual(result.rpcPayloads[0], {
       productId: PRODUCT_ID,
       originalName: "03-Project Test Plan.pdf",
       safeFilename: "03-project-test-plan.pdf",
       mimeType: "application/pdf",
-      byteSize: 1048576,
-      idempotencyKey: IDEMPOTENCY_KEY
+      byteSize: 87133,
+      idempotencyKey: "21a892eb-ce15-4a28-8a89-9600000520be"
     });
   });
 
@@ -224,7 +224,11 @@ describe("direct material upload hardening runtime", () => {
       { ...valid, originalName: "" },
       { ...valid, byteSize: 20 * 1024 * 1024 + 1 },
       { ...valid, mimeType: "video/mp4", byteSize: 500 * 1024 * 1024 + 1 },
-      { ...valid, originalName: "no-extension" }
+      { ...valid, originalName: "no-extension" },
+      { ...valid, originalName: "material.exe" },
+      { ...valid, originalName: "material..pdf" },
+      { ...valid, originalName: "material/part.pdf" },
+      { ...valid, originalName: "material\u0000.pdf" }
     ];
     const result = await runRoute(cases.map((item) => ({ route: "prepare", adminId: ADMIN_A, body: JSON.stringify(item) })));
     assert.deepEqual(result.results.map((item) => item.status), cases.map(() => 400));

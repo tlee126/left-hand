@@ -39,7 +39,8 @@ export class MaterialStorageError extends Error {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const SAFE_MATERIAL_FILENAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,199}$/;
-const UNSAFE_FILENAME_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\\/:\u2215\u2044\u29f8\uff0f\uff3c]/;
+const UNSAFE_FILENAME_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\\/\u2215\u2044\u29f8\uff0f\uff3c]/;
+const ALLOWED_MATERIAL_EXTENSIONS = new Set(["pdf", "mp4", "webm", "mov"]);
 const ENCODED_TRAVERSAL_PATTERN = /%(?:2f|5c|2e)/i;
 const MATERIAL_STORAGE_UUID = `[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}`;
 const MATERIAL_STORAGE_PATH_PATTERN = new RegExp(
@@ -79,6 +80,7 @@ export function canonicalizeMaterialSafeFilename(value: unknown): string {
   const extensionMatch = /\.([a-z0-9]+)$/i.exec(normalized);
   const extension = extensionMatch?.[1] ?? "";
   let basename = extensionMatch ? normalized.slice(0, -(extension.length + 1)) : normalized;
+  if (!ALLOWED_MATERIAL_EXTENSIONS.has(extension)) throw new MaterialStorageInputError();
   basename = basename.replace(/[^a-z0-9_-]+/g, "-").replace(/[-_]{2,}/g, "-").replace(/^-+|-+$/g, "");
   if (!extension || !basename) throw new MaterialStorageInputError();
   const maxBasenameLength = 200 - extension.length - 1;
