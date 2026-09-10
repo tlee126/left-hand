@@ -4,6 +4,17 @@ import { useState } from "react";
 
 const VIEW_ERROR = "Không thể mở tài liệu. Vui lòng thử lại sau.";
 
+function isValidMaterialUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.trim() !== value) return false;
+
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export function hasCurrentMaterialAsset(version: unknown): version is number {
   return typeof version === "number" && Number.isSafeInteger(version) && version > 0;
 }
@@ -16,7 +27,7 @@ export async function openMaterialDocument(productId: string): Promise<void> {
       headers: { Accept: "application/json" }
     });
     const payload = await response.json().catch(() => null) as { url?: unknown } | null;
-    if (!response.ok || typeof payload?.url !== "string" || payload.url.length === 0) throw new Error(VIEW_ERROR);
+    if (!response.ok || !isValidMaterialUrl(payload?.url)) throw new Error(VIEW_ERROR);
 
     if (target) {
       target.location.href = payload.url;

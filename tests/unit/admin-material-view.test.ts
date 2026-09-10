@@ -65,6 +65,77 @@ test("material viewer falls back to the current tab when the popup is blocked", 
   }
 });
 
+test("material viewer accepts a valid http url", async () => {
+  const opened = { location: { href: "" }, close: () => undefined };
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  globalThis.window = {
+    open: () => opened,
+    location: { assign: () => assert.fail("valid popup url should not use fallback") }
+  } as unknown as Window & typeof globalThis;
+  globalThis.fetch = async () => Response.json({ url: "http://storage.example/material.pdf" });
+  try {
+    await openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64");
+    assert.equal(opened.location.href, "http://storage.example/material.pdf");
+  } finally {
+    globalThis.window = originalWindow;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("material viewer rejects unsafe or malformed urls and closes the popup", async () => {
+  const invalidUrls = [
+    "",
+    "   ",
+    " https://storage.example/material.pdf",
+    "https://storage.example/material.pdf ",
+    "https://[malformed",
+    "javascript:alert(1)",
+    "data:application/pdf;base64,ZmFrZQ==",
+    "blob:https://storage.example/asset-id",
+    "file:///tmp/material.pdf",
+    "/materials/material.pdf"
+  ];
+
+  for (const invalidUrl of invalidUrls) {
+    let closed = false;
+    let assigned = false;
+    const originalWindow = globalThis.window;
+    const originalFetch = globalThis.fetch;
+    globalThis.window = {
+      open: () => ({ location: { href: "" }, close: () => { closed = true; } }),
+      location: { assign: () => { assigned = true; } }
+    } as unknown as Window & typeof globalThis;
+    globalThis.fetch = async () => Response.json({ url: invalidUrl });
+    try {
+      await assert.rejects(openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64"), /Không thể mở tài liệu/);
+      assert.equal(closed, true, `popup should close for ${JSON.stringify(invalidUrl)}`);
+      assert.equal(assigned, false, `fallback should not run for ${JSON.stringify(invalidUrl)}`);
+    } finally {
+      globalThis.window = originalWindow;
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
+test("material viewer does not fall back when a blocked popup receives an invalid url", async () => {
+  let assigned = false;
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  globalThis.window = {
+    open: () => null,
+    location: { assign: () => { assigned = true; } }
+  } as unknown as Window & typeof globalThis;
+  globalThis.fetch = async () => Response.json({ url: "javascript:alert(1)" });
+  try {
+    await assert.rejects(openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64"), /Không thể mở tài liệu/);
+    assert.equal(assigned, false);
+  } finally {
+    globalThis.window = originalWindow;
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("material viewer handles API errors without navigating to an invalid url", async () => {
   let closed = false;
   let assigned = false;
