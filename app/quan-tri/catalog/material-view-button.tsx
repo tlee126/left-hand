@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 const VIEW_ERROR = "Không thể mở tài liệu. Vui lòng thử lại sau.";
+const VIDEO_MIME_TYPES = new Set(["video/mp4", "video/webm", "video/quicktime"]);
 
 function isValidMaterialUrl(value: unknown): value is string {
   if (typeof value !== "string" || value.length === 0 || value.trim() !== value || /\s/.test(value)) return false;
@@ -17,6 +18,14 @@ function isValidMaterialUrl(value: unknown): value is string {
 
 export function hasCurrentMaterialAsset(version: unknown): version is number {
   return typeof version === "number" && Number.isSafeInteger(version) && version > 0;
+}
+
+export function isVideoMaterialMimeType(mimeType: unknown): boolean {
+  return typeof mimeType === "string" && VIDEO_MIME_TYPES.has(mimeType);
+}
+
+export function materialViewLabel(mimeType: unknown): "Xem tài liệu" | "Xem video" {
+  return isVideoMaterialMimeType(mimeType) ? "Xem video" : "Xem tài liệu";
 }
 
 export async function openMaterialDocument(productId: string): Promise<void> {
@@ -40,7 +49,7 @@ export async function openMaterialDocument(productId: string): Promise<void> {
   }
 }
 
-export default function MaterialViewButton({ productId }: { productId: string }) {
+export default function MaterialViewButton({ productId, mimeType }: { productId: string; mimeType: string }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -58,7 +67,7 @@ export default function MaterialViewButton({ productId }: { productId: string })
 
   return <div className="mt-3 space-y-2">
     <button type="button" onClick={handleClick} disabled={loading} className="inline-flex min-h-11 items-center justify-center rounded-full border border-accent px-5 py-2 text-sm font-extrabold text-accent transition hover:bg-accent/10 disabled:cursor-wait disabled:opacity-60">
-      {loading ? "Đang mở tài liệu…" : "Xem tài liệu"}
+      {loading ? `Đang mở ${isVideoMaterialMimeType(mimeType) ? "video" : "tài liệu"}…` : materialViewLabel(mimeType)}
     </button>
     {error ? <p role="alert" className="text-sm font-semibold text-rose-700">{error}</p> : null}
   </div>;
