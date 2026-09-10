@@ -116,7 +116,7 @@ export async function GET(
 
   let asset;
   try {
-    asset = await getCurrentMaterialAsset(productId);
+    asset = await getCurrentMaterialAsset(productId, correlationId);
   } catch (error) {
     console.info("MATERIAL_SIGNED_URL_ASSET_V1", {
       correlationId,
