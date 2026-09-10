@@ -94,7 +94,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     try {
       safeFilename = sanitizeMaterialFilename(input.originalName);
     } catch {
-      throw new MaterialUploadMetadataError(["originalName", "safeFilename"], "cannot produce a database-compatible filename");
+      throw new MaterialUploadMetadataError(["originalName"], "cannot produce a database-compatible filename");
     }
     // The RPC payload is intentionally explicit: originalName is retained for display,
     // while safeFilename is the canonical storage-path component.
