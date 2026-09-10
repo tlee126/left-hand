@@ -42,6 +42,7 @@ import {
   assertMaterialUploadIdempotencyMigrationContract,
   assertMaterialUploadRetryStateMigrationContract,
   assertMaterialUploadCancelCleanupGuardMigrationContract,
+  assertMaterialUploadFilenameRegexMigrationContract,
   assertCatalogCompleteSearchMigrationContract,
   assertLearningProgressConcurrencyMigrationContract,
   assertLearningProgressMonotonicityMigrationContract,
@@ -277,6 +278,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ,"0035_material_upload_idempotency.sql"
       ,"0036_material_upload_retry_state.sql"
       ,"0037_material_upload_cancel_cleanup_guard.sql"
+      ,"0038_fix_material_upload_filename_regex.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -438,6 +440,11 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
         `${sql}\nGRANT EXECUTE ON FUNCTION public.cancel_material_asset_upload(uuid) TO public;`,
         sql.replace("BEGIN\n  IF v_user_id IS NULL", "BEGIN\n  UPDATE public.material_asset_upload_reservations SET retryable_at = now();\n  IF v_user_id IS NULL")
       ]) assert.throws(() => assertMaterialUploadCancelCleanupGuardMigrationContract(mutation), /./);
+    });
+
+    test("0038 corrects material upload filename regex without changing the RPC contract", async () => {
+      const sql = await fs.readFile(path.join(migrationsDir, "0038_fix_material_upload_filename_regex.sql"), "utf8");
+      assert.doesNotThrow(() => assertMaterialUploadFilenameRegexMigrationContract(sql));
     });
 
     test("0036/0037 tokenize quoted identifiers without masking executable mutations", async () => {
