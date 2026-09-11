@@ -111,6 +111,7 @@ mock.module(repositoryModule, {
     deleteAdminSubject: async (...args) => recordRepository("deleteAdminSubject", args),
     createAdminMaterial: async (...args) => recordRepository("createAdminMaterial", args),
     updateAdminMaterial: async (...args) => recordRepository("updateAdminMaterial", args),
+    updateAdminMaterialDownloadPermission: async (...args) => recordRepository("updateAdminMaterialDownloadPermission", args),
     deleteAdminMaterial: async (...args) => recordRepository("deleteAdminMaterial", args),
     createAdminCourse: async (...args) => recordRepository("createAdminCourse", args),
     updateAdminCourse: async (...args) => recordRepository("updateAdminCourse", args),

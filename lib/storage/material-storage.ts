@@ -308,6 +308,25 @@ export async function createMaterialSignedUrl(storagePath: unknown, expectedProd
   }
 }
 
+/** Proxies a private object for an authorized application viewer without returning its provider URL. */
+export async function fetchMaterialObjectForViewer(storagePath: unknown, expectedProductId: unknown, rangeHeader?: string | null): Promise<Response> {
+  if (typeof rangeHeader === "string" && rangeHeader !== "" && !/^bytes=\d*-\d*$/.test(rangeHeader)) {
+    throw new MaterialStorageInputError();
+  }
+  const signedUrl = await createMaterialSignedUrl(storagePath, expectedProductId);
+  try {
+    const response = await fetch(signedUrl, {
+      cache: "no-store",
+      headers: rangeHeader ? { Range: rangeHeader } : undefined
+    });
+    if (!response.ok || !response.body) throw new Error();
+    return response;
+  } catch (error) {
+    if (error instanceof MaterialStorageInputError) throw error;
+    throw new MaterialStorageError();
+  }
+}
+
 export function materialSizeLimit(mimeType: SupportedMaterialMimeType): number {
   return mimeType === "application/pdf" ? MAX_PDF_BYTES : MAX_VIDEO_BYTES;
 }

@@ -1,7 +1,6 @@
 import "server-only";
 import { getAccountAccess } from "@/lib/auth/session";
 import { getCurrentMaterialAsset } from "@/lib/repositories/material-asset-repository";
-import { getActiveProductEntitlement } from "@/lib/repositories/product-entitlement-repository";
 import {
   createMaterialSignedUrl,
   isValidMaterialStoragePathForProduct,
@@ -73,15 +72,11 @@ export async function GET(
   const productId = id.toLowerCase();
 
   if (access.status !== "approved" || !access.user || !isValidMaterialUuid(access.user.id)) return unavailable();
-  const userId = access.user.id.toLowerCase();
 
-  if (access.profile?.role !== "admin") {
-    try {
-      if (!isValidEntitlement(await getActiveProductEntitlement(userId, productId), userId, productId)) return unavailable();
-    } catch {
-      return unavailable();
-    }
-  }
+  // This endpoint is an explicit signed download capability. Learners use the
+  // application-controlled /view proxy instead, so a view-only learner never
+  // receives a provider URL that can be opened in a native PDF viewer.
+  if (access.profile?.role !== "admin") return unavailable();
 
   let asset;
   try {

@@ -47,8 +47,8 @@ export type AdminCatalogCreateProductPayload = {
   is_hot?: boolean
   color_theme: Database["public"]["Enums"]["color_theme_enum"]
 }
-export type AdminCatalogMaterialPayload = { pages?: number; tags?: string[]; includes?: string[]; suitable_for?: string[] }
-export type AdminCatalogCreateMaterialPayload = { pages: number; tags?: string[]; includes?: string[]; suitable_for?: string[] }
+export type AdminCatalogMaterialPayload = { pages?: number; tags?: string[]; includes?: string[]; suitable_for?: string[]; allow_download?: boolean }
+export type AdminCatalogCreateMaterialPayload = { pages: number; tags?: string[]; includes?: string[]; suitable_for?: string[]; allow_download?: boolean }
 export type AdminCatalogCoursePayload = { format?: Database["public"]["Enums"]["course_format_enum"]; sessions?: number; duration?: string; schedule?: string; enrollment_status?: Database["public"]["Enums"]["enrollment_status_enum"]; mentor?: string; tags?: string[]; curriculum?: string[]; suitable_for?: string[]; preparation?: string[] }
 export type AdminCatalogCreateCoursePayload = { format: Database["public"]["Enums"]["course_format_enum"]; sessions: number; duration: string; schedule: string; enrollment_status?: Database["public"]["Enums"]["enrollment_status_enum"]; mentor: string; tags?: string[]; curriculum?: string[]; suitable_for?: string[]; preparation?: string[] }
 export type AdminCatalogTutorPayload = { name?: string; faculty?: string; format?: AdminCatalogTutorFormat; availability?: string; short_bio?: string; strengths?: string[]; tags?: string[]; suitable_for?: string[]; support_methods?: string[]; subject_associations?: AdminCatalogTutorSubjectAssociation[] }
@@ -62,6 +62,10 @@ export type AdminCatalogMutateArgs =
   | { p_operation: "update"; p_kind: "course"; p_product: AdminCatalogProductPayload; p_child: AdminCatalogCoursePayload; p_product_id: string }
   | { p_operation: "update"; p_kind: "tutor"; p_product: AdminCatalogProductPayload; p_child: AdminCatalogTutorPayload; p_product_id: string }
   | { p_operation: "delete"; p_kind: "material" | "course" | "tutor"; p_product: {}; p_child: {}; p_product_id: string }
+
+export type AdminMaterialAtomicMutateArgs =
+  | { p_operation: "create"; p_product: AdminCatalogCreateProductPayload; p_material: AdminCatalogCreateMaterialPayload; p_product_id?: never }
+  | { p_operation: "update"; p_product: AdminCatalogProductPayload; p_material: AdminCatalogMaterialPayload; p_product_id: string }
 
 export type ConsultationIntakeRpcArgs = {
   p_request_id: string
@@ -301,6 +305,7 @@ export type Database = {
       }
       materials: {
         Row: {
+          allow_download: boolean
           created_at: string
           includes: string[]
           pages: number
@@ -310,6 +315,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          allow_download?: boolean
           created_at?: string
           includes?: string[]
           pages: number
@@ -319,6 +325,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          allow_download?: boolean
           created_at?: string
           includes?: string[]
           pages?: number
@@ -883,6 +890,14 @@ export type Database = {
       }
       admin_catalog_mutate_v2: {
         Args: AdminCatalogMutateArgs
+        Returns: Json
+      }
+      admin_material_download_permission_update: {
+        Args: { p_allow_download: boolean; p_material_id: string }
+        Returns: boolean
+      }
+      admin_material_mutate_atomic: {
+        Args: AdminMaterialAtomicMutateArgs
         Returns: Json
       }
       admin_subject_mutate_atomic: {

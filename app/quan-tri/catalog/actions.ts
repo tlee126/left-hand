@@ -67,7 +67,7 @@ const PRODUCT_FIELDS = [
   "is_hot",
   "color_theme"
 ] as const;
-const MATERIAL_FIELDS = ["pages", "tags", "includes", "suitable_for"] as const;
+const MATERIAL_FIELDS = ["pages", "tags", "includes", "suitable_for", "allow_download"] as const;
 const COURSE_FIELDS = [
   "format",
   "sessions",
@@ -117,7 +117,10 @@ type MaterialPayload = ProductPayload & {
   tags?: string[];
   includes?: string[];
   suitable_for?: string[];
+  allow_download?: boolean;
 };
+type MaterialActionInput = CreateAdminMaterialInput & { allow_download?: boolean };
+type MaterialUpdateActionInput = UpdateAdminMaterialInput & { allow_download?: boolean };
 
 type CoursePayload = ProductPayload & {
   format?: CreateAdminCourseInput["format"];
@@ -398,12 +401,12 @@ function productRecord(record: InputObject): InputObject {
 function validateMaterialInput(
   input: unknown,
   update: false
-): CreateAdminMaterialInput;
+): MaterialActionInput;
 function validateMaterialInput(
   input: unknown,
   update: true
-): UpdateAdminMaterialInput;
-function validateMaterialInput(input: unknown, update: boolean): CreateAdminMaterialInput | UpdateAdminMaterialInput {
+): MaterialUpdateActionInput;
+function validateMaterialInput(input: unknown, update: boolean): MaterialActionInput | MaterialUpdateActionInput {
   const record = assertRecord(input);
   assertAllowedKeys(record, [...PRODUCT_FIELDS, ...MATERIAL_FIELDS]);
   const product = validateProductInput(productRecord(record), update);
@@ -417,6 +420,8 @@ function validateMaterialInput(input: unknown, update: boolean): CreateAdminMate
     if (key === "includes" && values !== undefined) payload.includes = values;
     if (key === "suitable_for" && values !== undefined) payload.suitable_for = values;
   }
+  const allowDownload = optionalBoolean(record, "allow_download");
+  if (allowDownload !== undefined) payload.allow_download = allowDownload;
   if (update && Object.keys(payload).length === 0) throw new InvalidCatalogActionInput();
   if (update) return payload;
   if (payload.slug === undefined || payload.title === undefined || payload.description === undefined || payload.subject_id === undefined || payload.category === undefined || payload.delivery_kind === undefined || payload.price_vnd === undefined || payload.old_price_vnd === undefined || payload.is_contact_for_price === undefined || payload.color_theme === undefined || payload.pages === undefined) throw new InvalidCatalogActionInput();

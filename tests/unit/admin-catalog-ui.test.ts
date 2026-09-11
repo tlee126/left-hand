@@ -27,7 +27,7 @@ mock.module(modules.link, { namedExports: { default: props => ({type: "a", props
 mock.module(modules.cache, { namedExports: { revalidatePath: () => {} } });
 const row = { id: scenario.invalidId ? "bad-id" : id, slug: "marketing", name: "Môn mẫu", title: "Nội dung mẫu", category: "Marketing", color_theme: "marketing", faculty_group: "Kinh doanh", description: "Mô tả mẫu", subject_id: id, publication_status: scenario.status ?? "draft", delivery_kind: "digital_download", price_vnd: null, old_price_vnd: null, is_contact_for_price: true, is_hot: false, rating: 4.5,
  phone: "0901234567", note: "PRIVATE_NOTE", updated_by: "PRIVATE_ACTOR", secret: "PRIVATE_SECRET",
- materials: {pages: 20, tags: ["Một", "Hai"], includes: ["PDF"], suitable_for: []},
+ materials: {pages: 20, tags: ["Một", "Hai"], includes: ["PDF"], suitable_for: [], allow_download: false},
  courses: {format: "online", sessions: 4, duration: "4 tuần", schedule: "Thứ bảy", mentor: "Người hướng dẫn", enrollment_status: "coming-soon", tags: [], curriculum: ["Cơ bản"], suitable_for: [], preparation: []},
  tutors: {name: "Gia sư mẫu", faculty: "Kinh doanh", format: "1:1 (Online)", availability: "Cuối tuần", short_bio: "Giới thiệu mẫu", strengths: [], tags: [], suitable_for: [], support_methods: ["Trao đổi"]}
 };
@@ -37,6 +37,7 @@ mock.module(modules.repo, { namedExports: {
   mutations.push({name: verb + "Admin" + entity, args}); return {...row, slug: "marketing"};
  }]))),
  isValidUuid: value => typeof value === "string" && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value),
+ updateAdminMaterialDownloadPermission: async (...args) => { mutations.push({name: "updateAdminMaterialDownloadPermission", args}); return true; },
  ...Object.fromEntries(["Subjects", "Materials", "Courses", "Tutors"].map(entity => ["listAdmin" + entity, async (...args) => {
   timeline.push("repository:" + entity); calls.push({name: "listAdmin" + entity, args});
   if (scenario.fail === entity || scenario.fail === true) throw Error("SQL SELECT PRIVATE_SECRET 0901234567 PRIVATE_NOTE stack trace");
@@ -48,7 +49,7 @@ mock.module(modules.actions, { namedExports: Object.fromEntries(["Subject", "Mat
 }))) });
 async function load(file) {
  let source = await readFile(file, "utf8");
- if(scenario.realActions) {
+ if(scenario.realActions || scenario.realMaterialAction) {
   let actions = await readFile("app/quan-tri/catalog/actions.ts", "utf8");
   for(const [from, to] of [["@/lib/auth/session", "auth"], ["@/lib/repositories/admin-catalog-repository", "repo"], ["@/lib/domain/subjects", domainSubjectsModule], ["@/lib/domain/product-types", domainProductTypesModule], ["next/navigation", "nav"], ["next/cache", "cache"]]) actions = actions.replaceAll(from, to.startsWith("data:") ? to : modules[to]);
   const compiled = await transform(actions, {loader: "ts", format: "esm"});
@@ -92,7 +93,7 @@ try {
  const tree = expand(await page({searchParams: Promise.resolve(scenario.params ?? {}), children: "ADMIN_CHILD"}));
  timeline.push("render"); text = textOf(tree).replace(/\s+/g, " "); walk(tree);
  if(scenario.submit) for(const form of forms) {
-  if(scenario.realActions && form !== forms[1]) continue;
+  if((scenario.realActions && form !== forms[1]) || (scenario.realMaterialAction && form !== forms[4])) continue;
   const data = new FormData();
   for(const field of form.controls) {
    if(!field.name) continue;
@@ -158,15 +159,27 @@ test("rendered native forms invoke exactly all twelve actions with bound record 
  const payload = changed.mutations.find(m => m.name === "updateMaterialAction")!.args[1];
  assert.deepEqual(payload.tags, ["A", "B"]); assert.equal(payload.price_vnd, 120000); assert.equal(payload.old_price_vnd, 150000); assert.equal(payload.is_contact_for_price, false); assert.equal(payload.is_hot, true);
 });
+test("real material edit form submits both download-policy states through one server action", async () => {
+ const enabled = await run({submit: true, realMaterialAction: true, overrides: {allow_download: "on"}});
+ assert.equal(enabled.error, "REDIRECT:/quan-tri/catalog?success=1");
+ assert.deepEqual(enabled.mutations, [{name: "updateAdminMaterial", args: ["11111111-1111-1111-1111-111111111111", {slug: "marketing", title: "Nội dung mẫu", description: "Mô tả mẫu", subject_id: "11111111-1111-1111-1111-111111111111", category: "Marketing", delivery_kind: "digital_download", publication_status: "draft", price_vnd: null, old_price_vnd: null, is_contact_for_price: true, rating: 4.5, is_hot: false, color_theme: "marketing", pages: 20, tags: ["Một", "Hai"], includes: ["PDF"], suitable_for: [], allow_download: true}]}]);
+ const disabled = await run({submit: true, realMaterialAction: true, overrides: {allow_download: ""}});
+ assert.equal(disabled.error, "REDIRECT:/quan-tri/catalog?success=1");
+ const disabledInput = disabled.mutations[0]?.args[1] as Record<string, unknown>;
+ assert.equal(disabled.mutations.length, 1);
+ assert.equal(disabled.mutations[0]?.name, "updateAdminMaterial");
+ assert.equal(disabledInput.allow_download, false);
+});
 test("all editable contracts, required fields, and canonical enum options appear", async () => {
  const result = await run();
  const common = ["slug", "category", "color_theme"];
  const product = [...common, "title", "description", "subject_id", "delivery_kind", "publication_status", "price_vnd", "old_price_vnd", "is_contact_for_price", "rating", "is_hot"];
- const expected = [[...common, "name", "faculty_group"], [...product, "pages", "tags", "includes", "suitable_for"], [...product, "format", "sessions", "duration", "schedule", "mentor", "enrollment_status", "tags", "curriculum", "suitable_for", "preparation"], [...product, "name", "faculty", "format", "availability", "short_bio", "strengths", "tags", "suitable_for", "support_methods"]];
+ const expected = [[...common, "name", "faculty_group"], [...product, "pages", "tags", "includes", "suitable_for", "allow_download"], [...product, "format", "sessions", "duration", "schedule", "mentor", "enrollment_status", "tags", "curriculum", "suitable_for", "preparation"], [...product, "name", "faculty", "format", "availability", "short_bio", "strengths", "tags", "suitable_for", "support_methods"]];
  for(let i=0;i<4;i++) for(const index of [i*3, i*3+1]) {
   const controls = result.forms[index].controls;
-  assert.deepEqual(controls.map(c=>c.name).sort(), [...expected[i]].sort());
-  for(const field of controls) if(!["price_vnd", "old_price_vnd", "is_contact_for_price", "is_hot", "tags", "includes", "suitable_for", "curriculum", "preparation", "strengths", "support_methods"].includes(field.name!)) assert.equal(field.required, true, field.name);
+  const expectedControls = i === 1 && index === i * 3 ? expected[i].filter(name => name !== "allow_download") : expected[i];
+  assert.deepEqual(controls.map(c=>c.name).sort(), [...expectedControls].sort());
+  for(const field of controls) if(!["price_vnd", "old_price_vnd", "is_contact_for_price", "is_hot", "tags", "includes", "suitable_for", "curriculum", "preparation", "strengths", "support_methods", "allow_download"].includes(field.name!)) assert.equal(field.required, true, field.name);
  }
  const e = Constants.public.Enums;
  for(const [name, options] of Object.entries({category: e.category_enum, color_theme: e.color_theme_enum, delivery_kind: e.delivery_kind_enum, publication_status: e.publication_status_enum, enrollment_status: e.enrollment_status_enum})) {

@@ -16,7 +16,7 @@ import MaterialUploadForm from "./material-upload-form";
 import MaterialViewButton from "./material-view-button";
 
 type Kind = "subject" | "material" | "course" | "tutor";
-type Field = { name: string; label: string; type?: "number" | "array" | "textarea" | "boolean"; options?: readonly string[]; required?: boolean; maxLength?: number; min?: number; max?: number; step?: number; initial?: string | number };
+type Field = { name: string; label: string; type?: "number" | "array" | "textarea" | "boolean"; options?: readonly string[]; required?: boolean; maxLength?: number; min?: number; max?: number; step?: number; initial?: string | number | boolean; editOnly?: boolean };
 const enums = {
   category_enum: CATEGORIES,
   color_theme_enum: COLOR_THEMES,
@@ -51,6 +51,7 @@ const fields: Record<Kind, Field[]> = {
     { name: "faculty_group", label: "Nhóm khoa", required: true, maxLength: 150 }],
   material: [...product,
     { name: "pages", label: "Số trang", type: "number", required: true, min: 1 },
+    { name: "allow_download", label: "Cho phép học viên tải xuống", type: "boolean", editOnly: true },
     array("tags", "Nhãn"), array("includes", "Nội dung bao gồm"), array("suitable_for", "Đối tượng phù hợp")],
   course: [...product,
     { name: "format", label: "Hình thức học", options: enums.course_format_enum, required: true },
@@ -78,8 +79,8 @@ interface FormInput {
   [key: string]: FormInputValue;
 }
 
-function formInput(kind: Kind, data: FormData): FormInput {
-  return Object.fromEntries(fields[kind].map((field) => {
+function formInput(kind: Kind, data: FormData, id: string | null): FormInput {
+  return Object.fromEntries(fields[kind].filter((field) => !field.editOnly || id !== null).map((field) => {
     const raw = data.get(field.name);
     const value = typeof raw === "string" ? raw : "";
     return [field.name, field.type === "boolean" ? value === "on"
@@ -97,7 +98,7 @@ function valueOf(values: unknown, key: string): unknown {
 async function saveRecord(kind: Kind, id: string | null, data: FormData) {
   "use server";
   if (id !== null && !isValidUuid(id)) redirect("/quan-tri/catalog?error=1");
-  const input = formInput(kind, data);
+  const input = formInput(kind, data, id);
   switch (kind) {
     case "subject": return id === null ? createSubjectAction(input) : updateSubjectAction(id, input);
     case "material": return id === null ? createMaterialAction(input) : updateMaterialAction(id, input);
@@ -113,7 +114,7 @@ function Editor({ kind, id = null, values = {}, subjects }: { kind: Kind; id?: s
       <legend className="text-sm font-black text-ink">{id ? "Chỉnh sửa" : "Tạo mới"} · {labels[kind]}</legend>
       <p className="mt-2 text-xs leading-6 text-ink/65">Các trường có * là bắt buộc. Với danh sách, nhập mỗi mục trên một dòng.</p>
       <div className="mt-4 grid min-w-0 gap-4 sm:grid-cols-2">
-        {fields[kind].map((field) => {
+        {fields[kind].filter((field) => !field.editOnly || id !== null).map((field) => {
           const value = valueOf(values, field.name) ?? field.initial ?? (field.name === "delivery_kind" ? ({ material: "digital_download", course: "live_session", tutor: "one_on_one_tutoring", subject: "" }[kind]) : "");
           const control = { name: field.name, required: field.required, className: "notebook-input mt-1 min-w-0 max-w-full", defaultValue: String(value), maxLength: field.maxLength };
           return <label key={field.name} className="block min-w-0 text-sm font-bold text-ink/65">

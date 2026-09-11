@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, BookOpen, Download, FileText, Home, Sparkles } from "lucide-react";
+import { ArrowLeft, BookOpen, FileText, Home, Sparkles } from "lucide-react";
 import { Header } from "@/components/site/header";
 import { Footer } from "@/components/site/footer";
 import { FloatingActions } from "@/components/site/floating-actions";
@@ -12,6 +12,7 @@ import type {
   UpsertLearningProgressInput
 } from "@/lib/repositories/learning-progress-repository";
 import type { StudentWorkspaceData } from "@/lib/repositories/student-workspace-repository";
+import MaterialViewer from "./material-viewer";
 
 interface SubjectWorkspaceClientProps {
   workspace: StudentWorkspaceData & { progress?: LearningProgress[]; progressUnavailable?: boolean };
@@ -77,7 +78,6 @@ function compareProgress(left: LearningProgress, right: LearningProgress): numbe
 
 export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
-  const [openingProductId, setOpeningProductId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [progress, setProgress] = useState<ProgressMap>(() => makeProgressMap(workspace.progress));
   const [retryItems, setRetryItems] = useState<RetryMap>({});
@@ -177,21 +177,6 @@ export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProp
     }
   }
 
-  async function openMaterial(productId: string) {
-    setOpeningProductId(productId);
-    setNotice(null);
-    try {
-      const response = await fetch(`/api/materials/${encodeURIComponent(productId)}/signed-url`, { method: "GET", cache: "no-store" });
-      const body: unknown = await response.json();
-      if (!response.ok || !body || typeof body !== "object" || typeof (body as { url?: unknown }).url !== "string") throw new Error();
-      window.open((body as { url: string }).url, "_blank", "noopener,noreferrer");
-    } catch {
-      setNotice("Tài liệu hiện chưa thể mở. Vui lòng thử lại sau.");
-    } finally {
-      setOpeningProductId(null);
-    }
-  }
-
   const hasData = workspace.materials.length > 0 || workspace.courses.some((course) => course.lessons.length > 0);
   const totalItems = workspace.materials.length + workspace.courses.reduce((sum, course) => sum + course.lessons.length, 0);
   const completedItems = workspace.materials.filter((material) => progressPercent(progress, material.productId, "material", material.productId) >= 100).length
@@ -212,7 +197,7 @@ export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProp
       <nav className="mb-6 flex gap-1.5 overflow-x-auto rounded-[20px] border border-[#1b2e7420] bg-white p-2 shadow-sm">{tabs.map((tab) => <button key={tab.id} type="button" onClick={() => setActiveTab(tab.id)} className={`inline-flex h-10 shrink-0 items-center gap-2 rounded-xl px-4 text-xs font-extrabold ${activeTab === tab.id ? "bg-[#132a67] text-white" : "text-[#617092] hover:bg-slate-50"}`}>{tab.label}{tab.count !== undefined && <span className="rounded-full bg-white/20 px-1.5 py-0.5 text-[10px]">{tab.count}</span>}</button>)}</nav>
       <section className="rounded-[24px] border border-[#1b2e7422] bg-white p-6 shadow-sm">
         {activeTab === "overview" && (hasData ? <div><h2 className="flex items-center gap-2 text-base font-extrabold text-[#132a67]"><Sparkles className="h-5 w-5 text-accent" />Không gian tự học</h2><p className="mt-3 text-sm leading-relaxed text-[#5f6d8f]">Chọn tab Tài liệu hoặc Khóa học để xem nội dung bạn được cấp quyền.</p><p className="mt-4 text-sm font-extrabold text-[#132a67]">Tiến độ đã lưu: {overallPercent}% <span className="ml-2 text-xs font-semibold text-[#8091b8]">({completedItems}/{totalItems} mục)</span></p><div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-[#3657d7]" style={{ width: `${overallPercent}%` }} /></div></div> : <Unavailable />)}
-        {activeTab === "documents" && (workspace.materials.length ? <div className="space-y-3"><h2 className="text-base font-extrabold text-[#132a67]">Danh mục tài liệu</h2>{workspace.materials.map((material) => { const itemId = material.productId; const key = progressKey(material.productId, "material", itemId); const retry = retryItems[key]; const completed = progressLabel(progress, material.productId, "material", itemId) === "Đã hoàn thành"; return <article key={material.productId} className="flex flex-col gap-4 rounded-2xl border border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="flex items-center gap-2 text-sm font-bold text-[#132a67]"><FileText className="h-5 w-5 text-blue-600" />{material.title}</h3><p className="mt-1 text-xs text-[#5f6d8f]">{material.description}</p><p className="mt-2 text-[11px] font-semibold text-[#8091b8]">{material.pages} trang · {progressPercent(progress, material.productId, "material", itemId)}% · {completed ? "Đã hoàn thành" : "Chưa hoàn thành"}</p></div><div className="flex flex-wrap gap-2"><button type="button" disabled={openingProductId === material.productId} onClick={() => openMaterial(material.productId)} className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full bg-[#132a67] px-4 text-xs font-bold text-white disabled:opacity-60"><Download className="h-3.5 w-3.5" />{openingProductId === material.productId ? "Đang mở..." : "Mở tài liệu"}</button><ProgressButton pending={pendingKey === key} completed={completed} retry={Boolean(retry)} onClick={() => retry ? saveProgress(retry) : saveProgress(completedProgress(progress[key], material.productId, "material", itemId))} /></div></article>; })}</div> : <Unavailable />)}
+        {activeTab === "documents" && (workspace.materials.length ? <div className="space-y-3"><h2 className="text-base font-extrabold text-[#132a67]">Danh mục tài liệu</h2>{workspace.materials.map((material) => { const itemId = material.productId; const key = progressKey(material.productId, "material", itemId); const retry = retryItems[key]; const completed = progressLabel(progress, material.productId, "material", itemId) === "Đã hoàn thành"; return <article key={material.productId} className="flex flex-col gap-4 rounded-2xl border border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="flex items-center gap-2 text-sm font-bold text-[#132a67]"><FileText className="h-5 w-5 text-blue-600" />{material.title}</h3><p className="mt-1 text-xs text-[#5f6d8f]">{material.description}</p><p className="mt-2 text-[11px] font-semibold text-[#8091b8]">{material.pages} trang · {progressPercent(progress, material.productId, "material", itemId)}% · {completed ? "Đã hoàn thành" : "Chưa hoàn thành"}</p></div><div className="flex flex-wrap gap-2"><MaterialViewer productId={material.productId} mimeType={material.mimeType} allowDownload={material.allowDownload} /><ProgressButton pending={pendingKey === key} completed={completed} retry={Boolean(retry)} onClick={() => retry ? saveProgress(retry) : saveProgress(completedProgress(progress[key], material.productId, "material", itemId))} /></div></article>; })}</div> : <Unavailable />)}
         {activeTab === "courses" && (workspace.courses.length ? <div className="space-y-5"><h2 className="flex items-center gap-2 text-base font-extrabold text-[#132a67]"><BookOpen className="h-5 w-5 text-violet-600" />Chương trình bài giảng</h2>{workspace.courses.map((course) => <article key={course.productId} className="rounded-2xl border border-slate-100 p-4"><h3 className="text-sm font-bold text-[#132a67]">{course.title}</h3>{course.lessons.length ? <ol className="mt-3 space-y-2">{course.lessons.map((lesson) => { const key = progressKey(course.productId, "lesson", lesson.id); const retry = retryItems[key]; const completed = progressLabel(progress, course.productId, "lesson", lesson.id) === "Đã hoàn thành"; return <li key={lesson.id} className="flex flex-col gap-2 border-b border-slate-50 py-2 text-xs text-[#5f6d8f] last:border-b-0 sm:flex-row sm:items-center sm:justify-between"><span><span className="mr-2 font-bold text-[#132a67]">{lesson.orderIndex}.</span>{lesson.title}{lesson.durationMinutes ? ` · ${lesson.durationMinutes} phút` : ""}<span className="ml-2 font-semibold text-[#8091b8]">{progressPercent(progress, course.productId, "lesson", lesson.id)}% · {completed ? "Đã hoàn thành" : "Chưa hoàn thành"}</span></span><ProgressButton pending={pendingKey === key} completed={completed} retry={Boolean(retry)} onClick={() => retry ? saveProgress(retry) : saveProgress(completedProgress(progress[key], course.productId, "lesson", lesson.id))} /></li>; })}</ol> : <p className="mt-3 text-xs font-semibold text-[#8091b8]">Chưa có dữ liệu</p>}</article>)}</div> : <Unavailable />)}
         {activeTab === "unavailable" && <Unavailable />}{notice && <p role="status" className="mt-4 text-xs font-semibold text-rose-600">{notice}</p>}
       </section>

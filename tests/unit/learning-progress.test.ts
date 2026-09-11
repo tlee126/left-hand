@@ -337,6 +337,7 @@ before(async () => {
       if (requestName === "react") return testReact;
       if (requestName === "next/navigation") return { redirect: () => { throw new Error("redirect"); }, notFound: () => { throw new Error("notFound"); } };
       if (requestName === "next/link") return (props: any) => createElement("a", { href: props.href }, props.children);
+      if (requestName === "./material-viewer") return { default: (props: any) => createElement("material-viewer", props) };
       if (requestName === "lucide-react") return new Proxy({}, { get: (_target, name) => (props: any) => createElement("span", { "data-icon": String(name), ...props }) });
       if (requestName.includes("components/site/")) return { Header: (props: any) => createElement("header", null, props.children), Footer: (props: any) => createElement("footer", null, props.children), FloatingActions: (props: any) => createElement("aside", null, props.children) };
       return originalModuleLoad.call(this, requestName, ...args);

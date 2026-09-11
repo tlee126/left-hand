@@ -195,9 +195,9 @@ test("failed upload cleanup safely removes the exact object while preserving ret
   assert.match(storage, /remove\(\[storagePath\]\)/);
 });
 
-test("existing signed read URL and entitlement route remain unchanged in scope", async () => {
+test("signed read URL remains an approved-admin capability and keeps storage signing", async () => {
   const code = await source("app/api/materials/[id]/signed-url/route.ts");
-  assert.match(code, /getActiveProductEntitlement/);
+  assert.match(code, /access\.profile\?\.role !== "admin"/);
   assert.match(code, /createMaterialSignedUrl/);
 });
 

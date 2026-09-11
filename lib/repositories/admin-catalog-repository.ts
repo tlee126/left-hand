@@ -5,6 +5,7 @@ import type {
   AdminCatalogCreateProductPayload,
   AdminCatalogCreateTutorPayload,
   AdminCatalogTutorSubjectAssociation,
+  AdminMaterialAtomicMutateArgs,
   AdminCatalogMutateArgs,
   Database
 } from "@/lib/supabase/database.types";
@@ -68,6 +69,7 @@ type MaterialMutationPayload = {
   tags?: string[];
   includes?: string[];
   suitable_for?: string[];
+  allow_download?: boolean;
 };
 
 type CourseMutationPayload = {
@@ -145,6 +147,7 @@ export interface CreateAdminMaterialInput extends ProductInput {
   tags?: string[];
   includes?: string[];
   suitable_for?: string[];
+  allow_download?: boolean;
 }
 
 export interface CreateAdminCourseInput extends ProductInput {
@@ -225,6 +228,7 @@ export const MATERIAL_COLUMNS = [
   "tags",
   "includes",
   "suitable_for",
+  "allow_download",
   "created_at",
   "updated_at"
 ] as const;
@@ -564,7 +568,7 @@ function productOnlyRecord(record: InputObject): InputObject {
 
 function validateMaterialInput(input: unknown, update: boolean): { product: ProductMutationPayload; child: ChildMutationPayload } {
   const record = inputRecord(input);
-  assertAllowedKeys(record, [...PRODUCT_INPUT_KEYS, "pages", "tags", "includes", "suitable_for"]);
+  assertAllowedKeys(record, [...PRODUCT_INPUT_KEYS, "pages", "tags", "includes", "suitable_for", "allow_download"]);
   const product = validateProductInput(productOnlyRecord(record), update, true);
   validateDelivery("material", product);
   const child: MaterialMutationPayload = {};
@@ -575,6 +579,8 @@ function validateMaterialInput(input: unknown, update: boolean): { product: Prod
     const values = arrayField(record, key);
     if (values !== undefined) child[key] = values;
   }
+  const allowDownload = booleanField(record, "allow_download", false);
+  if (allowDownload !== undefined) child.allow_download = allowDownload;
   if (update && Object.keys(product).length === 0 && Object.keys(child).length === 0) throw new AdminCatalogInputError("At least one material field is required.");
   return { product, child: { kind: "material", value: child } };
 }
@@ -747,6 +753,7 @@ function isMaterialChild(value: unknown): value is MaterialRow {
     && isStringArray(objectValue(value, "tags"))
     && isStringArray(objectValue(value, "includes"))
     && isStringArray(objectValue(value, "suitable_for"))
+    && typeof objectValue(value, "allow_download") === "boolean"
     && typeof objectValue(value, "created_at") === "string"
     && typeof objectValue(value, "updated_at") === "string";
 }
@@ -870,7 +877,11 @@ async function callAtomicRpc(client: AdminCatalogClient, operation: AdminCatalog
     });
     if (child.kind === "material") {
       if (child.value.pages === undefined) throw new AdminCatalogInputError("Field pages is required.");
-      const createChild: AdminCatalogCreateMaterialPayload = compactPayload({ pages: child.value.pages, tags: child.value.tags, includes: child.value.includes, suitable_for: child.value.suitable_for });
+      const createChild: AdminCatalogCreateMaterialPayload = compactPayload({ pages: child.value.pages, tags: child.value.tags, includes: child.value.includes, suitable_for: child.value.suitable_for, allow_download: child.value.allow_download });
+      if (hasField(createChild, "allow_download")) {
+        const args: AdminMaterialAtomicMutateArgs = { p_operation: "create", p_product: createProduct, p_material: createChild };
+        return client.rpc("admin_material_mutate_atomic", args);
+      }
       const args: AdminCatalogMutateArgs = { p_operation: "create", p_kind: "material", p_product: createProduct, p_child: createChild };
       return client.rpc("admin_catalog_mutate_v2", args);
     }
@@ -887,7 +898,12 @@ async function callAtomicRpc(client: AdminCatalogClient, operation: AdminCatalog
   }
   if (child.kind === "material") {
     if (id === undefined) throw new AdminCatalogInputError("Catalog ID must be a valid UUID.");
-    const args: AdminCatalogMutateArgs = { p_operation: "update", p_kind: "material", p_product: product, p_child: child.value, p_product_id: id };
+    if (hasField(child.value, "allow_download")) {
+      const args: AdminMaterialAtomicMutateArgs = { p_operation: "update", p_product: product, p_material: child.value, p_product_id: id };
+      return client.rpc("admin_material_mutate_atomic", args);
+    }
+    const { allow_download: _allowDownload, ...legacyChild } = child.value;
+    const args: AdminCatalogMutateArgs = { p_operation: "update", p_kind: "material", p_product: product, p_child: legacyChild, p_product_id: id };
     return client.rpc("admin_catalog_mutate_v2", args);
   }
   if (child.kind === "course") {
@@ -1037,6 +1053,23 @@ export async function createAdminMaterial(input: CreateAdminMaterialInput): Prom
 export async function updateAdminMaterial(id: string, input: UpdateAdminMaterialInput): Promise<AdminMaterial | null> {
   const validated = validateMaterialInput(input, true);
   return mutateProduct("update", id, "material", validated.product, validated.child, MATERIAL_SELECT_COLUMNS, isAdminMaterial, "Failed to update admin material.");
+}
+
+export async function updateAdminMaterialDownloadPermission(id: string, allowDownload: boolean): Promise<void> {
+  if (!isValidUuid(id) || typeof allowDownload !== "boolean") {
+    throw new AdminCatalogInputError("Material download policy input is invalid.");
+  }
+  try {
+    const client = await adminClient();
+    const result = await client.rpc("admin_material_download_permission_update", {
+      p_material_id: id,
+      p_allow_download: allowDownload
+    });
+    if (result.error || result.data !== true) repositoryFailure("Failed to update material download permission.");
+  } catch (error) {
+    if (error instanceof AdminCatalogInputError || error instanceof AdminCatalogRepositoryError) throw error;
+    throw new AdminCatalogRepositoryError("Failed to update material download permission.");
+  }
 }
 
 export async function deleteAdminMaterial(id: string): Promise<boolean> {

@@ -15,7 +15,7 @@ export const STUDENT_WORKSPACE_MAX_AUTHORIZED_PRODUCTS = 500;
 export const STUDENT_WORKSPACE_MAX_LESSONS = 2_000;
 export const STUDENT_WORKSPACE_MAX_PAGES = STUDENT_WORKSPACE_MAX_AUTHORIZED_PRODUCTS / STUDENT_WORKSPACE_PAGE_SIZE;
 
-export interface StudentWorkspaceMaterial { productId: string; title: string; description: string; pages: number; }
+export interface StudentWorkspaceMaterial { productId: string; title: string; description: string; pages: number; allowDownload: boolean; mimeType: string | null; }
 export interface StudentWorkspaceCourse { productId: string; title: string; lessons: Array<{ id: string; title: string; description: string | null; durationMinutes: number | null; orderIndex: number }>; }
 export interface StudentWorkspaceData {
   subject: { slug: string; name: string; category: string; facultyGroup: string; colorTheme: string };
@@ -30,7 +30,7 @@ export class StudentWorkspaceRepositoryError extends Error { constructor() { sup
 
 type StudentWorkspaceProduct = Pick<ProductRow, "id" | "subject_id" | "kind" | "title" | "description">;
 type StudentWorkspaceEntitlement = Pick<ProductEntitlementRow, "user_id" | "product_id" | "status" | "expires_at" | "revoked_at">;
-type StudentWorkspaceMaterialRow = Pick<MaterialRow, "product_id" | "pages">;
+type StudentWorkspaceMaterialRow = Pick<MaterialRow, "product_id" | "pages" | "allow_download">;
 type StudentWorkspaceLessonRow = Pick<CourseLessonRow, "id" | "course_id" | "title" | "description" | "duration_minutes" | "order_index">;
 
 function chunks<T>(values: readonly T[], size: number): T[][] {
@@ -88,7 +88,7 @@ async function readMaterialRows(
     if (productIdChunk.length === 0) continue;
     const { data, error } = await supabase
       .from("materials")
-      .select("product_id, pages")
+      .select("product_id, pages, allow_download")
       .in("product_id", productIdChunk)
       .order("product_id", { ascending: true })
       .limit(productIdChunk.length + 1);
@@ -188,7 +188,7 @@ export async function getAuthorizedStudentWorkspace(userId: string, slug: string
     const materialByProductId = new Map(materialRows.map((row) => [canonicalUuid(row.product_id), row]));
     return {
       subject: { slug: subject.slug, name: subject.name, category: subject.category, facultyGroup: subject.faculty_group, colorTheme: subject.color_theme },
-      materials: materialProducts.flatMap((product) => { const material = materialByProductId.get(product.canonicalId); return material ? [{ productId: product.canonicalId, title: product.title, description: product.description, pages: material.pages }] : []; }),
+      materials: materialProducts.flatMap((product) => { const material = materialByProductId.get(product.canonicalId); return material ? [{ productId: product.canonicalId, title: product.title, description: product.description, pages: material.pages, allowDownload: material.allow_download, mimeType: null }] : []; }),
       courses: courseProducts.map((product) => ({ productId: product.canonicalId, title: product.title, lessons: lessonRows.filter((lesson) => canonicalUuid(lesson.course_id) === product.canonicalId).map((lesson) => ({ id: lesson.id, title: lesson.title, description: lesson.description, durationMinutes: lesson.duration_minutes, orderIndex: lesson.order_index })) })),
       page,
       hasPreviousPage: page > 1,

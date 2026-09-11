@@ -1,4 +1,4 @@
-/** Runtime tests for the entitlement-checked material signed-URL route. */
+/** Runtime tests for the approved-admin-only explicit material signed-URL route. */
 
 import assert from "node:assert/strict";
 import { afterEach, before, test } from "node:test";
@@ -12,9 +12,12 @@ const OTHER_STORAGE_PATH = "materials/750e8400-e29b-41d4-a716-446655440001/v2/85
 const SIGNED_URL = "https://example.test/signed/private-material";
 
 let GET: (request: Request, context: { params: Promise<{ id: string }> }) => Promise<Response>;
+let DOWNLOAD_GET: (request: Request, context: { params: Promise<{ id: string }> }) => Promise<Response>;
+let VIEW_GET: (request: Request, context: { params: Promise<{ id: string }> }) => Promise<Response>;
 let access: any;
 let entitlement: unknown = { status: "active", user_id: USER_ID, product_id: PRODUCT_ID, revoked_at: null, expires_at: null };
-let asset: unknown = { productId: PRODUCT_ID, storagePath: STORAGE_PATH };
+let asset: unknown = { productId: PRODUCT_ID, storagePath: STORAGE_PATH, mimeType: "application/pdf" };
+let downloadPermission: unknown = false;
 let accessError: unknown = null;
 let entitlementError: unknown = null;
 let assetError: unknown = null;
@@ -26,6 +29,7 @@ let assetCalls: string[] = [];
 let signerCalls: string[] = [];
 let signerProductCalls: string[] = [];
 let mutationCalls: string[] = [];
+let viewerCalls: string[] = [];
 
 const approvedStudent = {
   status: "approved",
@@ -70,6 +74,10 @@ before(async () => {
       if (assetError) throw assetError;
       return asset;
     },
+    getMaterialDownloadPermission: async (productId: string) => {
+      timeline.push("policy");
+      return downloadPermission;
+    },
     createMaterialAsset: async () => {
       mutationCalls.push("metadata");
       return null;
@@ -94,6 +102,19 @@ before(async () => {
       if (signerError) throw signerError;
       return signedUrl;
     },
+    fetchMaterialObjectForViewer: async (storagePath: string, expectedProductId: string, rangeHeader?: string | null) => {
+      timeline.push("viewer");
+      viewerCalls.push(`${storagePath}:${expectedProductId}`);
+      return new Response(rangeHeader ? "RANGE_BYTES" : "PRIVATE_BYTES", {
+        status: rangeHeader ? 206 : 200,
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "Content-Length": rangeHeader ? "11" : "13",
+          "Accept-Ranges": "bytes",
+          ...(rangeHeader ? { "Content-Range": "bytes 0-10/13" } : {})
+        }
+      });
+    },
     uploadMaterialObject: async () => {
       mutationCalls.push("upload");
       return null;
@@ -101,13 +122,16 @@ before(async () => {
   });
 
   ({ GET } = await import("../../app/api/materials/[id]/signed-url/route"));
+  ({ GET: DOWNLOAD_GET } = await import("../../app/api/materials/[id]/download/route"));
+  ({ GET: VIEW_GET } = await import("../../app/api/materials/[id]/view/route"));
   moduleLoader._load = originalModuleLoad;
 });
 
 afterEach(() => {
-  access = approvedStudent;
+  access = { status: "approved", user: { id: USER_ID }, profile: { role: "admin" } };
   entitlement = { status: "active", user_id: USER_ID, product_id: PRODUCT_ID, revoked_at: null, expires_at: null };
-  asset = { productId: PRODUCT_ID, storagePath: STORAGE_PATH };
+  asset = { productId: PRODUCT_ID, storagePath: STORAGE_PATH, mimeType: "application/pdf" };
+  downloadPermission = false;
   accessError = null;
   entitlementError = null;
   assetError = null;
@@ -119,10 +143,23 @@ afterEach(() => {
   signerCalls = [];
   signerProductCalls = [];
   mutationCalls = [];
+  viewerCalls = [];
 });
 
 async function request(id = PRODUCT_ID): Promise<Response> {
   return GET(new Request("https://example.test/api/materials/ignored/signed-url"), {
+    params: Promise.resolve({ id })
+  });
+}
+
+async function requestDownload(id = PRODUCT_ID): Promise<Response> {
+  return DOWNLOAD_GET(new Request("https://example.test/api/materials/ignored/download"), {
+    params: Promise.resolve({ id })
+  });
+}
+
+async function requestView(id = PRODUCT_ID, headers?: HeadersInit, metadata = false): Promise<Response> {
+  return VIEW_GET(new Request(`https://example.test/api/materials/ignored/view${metadata ? "?metadata=1" : ""}`, { headers }), {
     params: Promise.resolve({ id })
   });
 }
@@ -174,17 +211,18 @@ test("allows an approved admin without an entitlement and uses only the trusted 
   assert.equal(response.headers.get("Cache-Control"), "private, no-store");
 });
 
-test("allows only active entitlement results for approved non-admin users", async () => {
+test("does not issue an explicit signed URL to an approved student, even with active entitlement", async () => {
+  access = approvedStudent;
   const response = await request();
-  assert.equal(response.status, 200);
-  assert.deepEqual(timeline, ["auth", "entitlement", "asset", "sign"]);
-  assert.deepEqual(entitlementCalls, [[USER_ID, PRODUCT_ID]]);
-  assert.deepEqual(assetCalls, [PRODUCT_ID]);
-  assert.deepEqual(signerCalls, [STORAGE_PATH]);
-  assert.deepEqual(signerProductCalls, [PRODUCT_ID]);
+  await assertGeneric(response);
+  assert.deepEqual(timeline, ["auth"]);
+  assert.deepEqual(entitlementCalls, []);
+  assert.deepEqual(assetCalls, []);
+  assert.deepEqual(signerCalls, []);
 });
 
-test("rejects missing, revoked, and expired entitlement results before asset lookup or signing", async () => {
+test("does not consult entitlement or storage when an approved student calls the signed-URL route", async () => {
+  access = approvedStudent;
   for (const invalidEntitlement of [
     null,
     { status: "revoked", user_id: USER_ID, product_id: PRODUCT_ID, revoked_at: "2026-09-01T00:00:00.000Z", expires_at: null },
@@ -194,7 +232,7 @@ test("rejects missing, revoked, and expired entitlement results before asset loo
   ]) {
     entitlement = invalidEntitlement;
     await assertGeneric(await request());
-    assert.deepEqual(timeline, ["auth", "entitlement"]);
+    assert.deepEqual(timeline, ["auth"]);
     assert.deepEqual(assetCalls, []);
     assert.deepEqual(signerCalls, []);
     assert.deepEqual(mutationCalls, []);
@@ -203,36 +241,37 @@ test("rejects missing, revoked, and expired entitlement results before asset loo
   }
 });
 
-test("rejects an active entitlement with the wrong user identity before asset lookup or signing", async () => {
+test("does not use a mismatched entitlement to grant an approved student a signed URL", async () => {
+  access = approvedStudent;
   entitlement = { status: "active", user_id: OTHER_USER_ID, product_id: PRODUCT_ID, revoked_at: null, expires_at: null };
   await assertGeneric(await request());
-  assert.deepEqual(timeline, ["auth", "entitlement"]);
-  assert.deepEqual(entitlementCalls, [[USER_ID, PRODUCT_ID]]);
+  assert.deepEqual(timeline, ["auth"]);
+  assert.deepEqual(entitlementCalls, []);
   assert.deepEqual(assetCalls, []);
   assert.deepEqual(signerCalls, []);
   assert.deepEqual(mutationCalls, []);
 });
 
-test("rejects an active entitlement with the wrong product identity before asset lookup or signing", async () => {
+test("does not use a mismatched product entitlement to grant an approved student a signed URL", async () => {
+  access = approvedStudent;
   entitlement = { status: "active", user_id: USER_ID, product_id: OTHER_PRODUCT_ID, revoked_at: null, expires_at: null };
   await assertGeneric(await request());
-  assert.deepEqual(timeline, ["auth", "entitlement"]);
-  assert.deepEqual(entitlementCalls, [[USER_ID, PRODUCT_ID]]);
+  assert.deepEqual(timeline, ["auth"]);
+  assert.deepEqual(entitlementCalls, []);
   assert.deepEqual(assetCalls, []);
   assert.deepEqual(signerCalls, []);
   assert.deepEqual(mutationCalls, []);
 });
 
-test("accepts equivalent uppercase and lowercase UUID identities and passes canonical product values", async () => {
-  access = { status: "approved", user: { id: USER_ID.toUpperCase() }, profile: { role: "student" } };
-  entitlement = { status: "active", user_id: USER_ID.toUpperCase(), product_id: PRODUCT_ID.toUpperCase(), revoked_at: null, expires_at: null };
+test("accepts equivalent uppercase and lowercase UUID identities for an approved admin", async () => {
+  access = { status: "approved", user: { id: USER_ID.toUpperCase() }, profile: { role: "admin" } };
   asset = { productId: PRODUCT_ID.toUpperCase(), storagePath: STORAGE_PATH };
 
   const response = await request(PRODUCT_ID.toUpperCase());
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { url: SIGNED_URL, expiresIn: 300 });
-  assert.deepEqual(timeline, ["auth", "entitlement", "asset", "sign"]);
-  assert.deepEqual(entitlementCalls, [[USER_ID, PRODUCT_ID]]);
+  assert.deepEqual(timeline, ["auth", "asset", "sign"]);
+  assert.deepEqual(entitlementCalls, []);
   assert.deepEqual(assetCalls, [PRODUCT_ID]);
   assert.deepEqual(signerCalls, [STORAGE_PATH]);
   assert.deepEqual(signerProductCalls, [PRODUCT_ID]);
@@ -242,7 +281,7 @@ test("accepts equivalent uppercase and lowercase UUID identities and passes cano
 test("rejects an asset row whose product identity differs from its storage path", async () => {
   asset = { productId: PRODUCT_ID, storagePath: OTHER_STORAGE_PATH };
   await assertGeneric(await request());
-  assert.deepEqual(timeline, ["auth", "entitlement", "asset"]);
+  assert.deepEqual(timeline, ["auth", "asset"]);
   assert.deepEqual(assetCalls, [PRODUCT_ID]);
   assert.deepEqual(signerCalls, []);
   assert.deepEqual(mutationCalls, []);
@@ -256,7 +295,7 @@ test("rejects malformed or traversal-looking storage paths before signing", asyn
   ]) {
     asset = { productId: PRODUCT_ID, storagePath };
     await assertGeneric(await request());
-    assert.deepEqual(timeline, ["auth", "entitlement", "asset"]);
+    assert.deepEqual(timeline, ["auth", "asset"]);
     assert.deepEqual(signerCalls, []);
     assert.deepEqual(mutationCalls, []);
     timeline = [];
@@ -275,7 +314,7 @@ test("rejects wrong-bucket and wrong-namespace storage paths before signing", as
   ]) {
     asset = { productId: PRODUCT_ID, storagePath };
     await assertGeneric(await request());
-    assert.deepEqual(timeline, ["auth", "entitlement", "asset"]);
+    assert.deepEqual(timeline, ["auth", "asset"]);
     assert.deepEqual(signerCalls, []);
     assert.deepEqual(mutationCalls, []);
     timeline = [];
@@ -296,9 +335,8 @@ test("rejects invalid UUIDs after the session guard but before repository or sto
 });
 
 test("maps missing assets and repository or signer failures to one private generic response", async () => {
-  for (const scenario of ["missingAsset", "entitlementError", "assetError", "signerError"] as const) {
+  for (const scenario of ["missingAsset", "assetError", "signerError"] as const) {
     if (scenario === "missingAsset") asset = null;
-    if (scenario === "entitlementError") entitlementError = new Error("email@example.test materials/internal/path SQL");
     if (scenario === "assetError") assetError = new Error("email@example.test materials/internal/path SQL");
     if (scenario === "signerError") signerError = new Error("email@example.test materials/internal/path SQL");
     const response = await request();
@@ -325,4 +363,156 @@ test("returns only the signed URL fields with a bounded server expiry", async ()
   assert.equal(body.expiresIn, 300);
   assert.ok(body.expiresIn > 0 && body.expiresIn <= 300);
   assert.equal(response.headers.get("Cache-Control"), "private, no-store");
+});
+
+test("admin view is allowed without an entitlement and admin download bypasses both policy states", async () => {
+  access = { status: "approved", user: { id: USER_ID }, profile: { role: "admin" } };
+  const view = await requestView();
+  assert.equal(view.status, 200);
+  assert.equal(await view.text(), "PRIVATE_BYTES");
+  assert.equal(view.headers.get("Content-Type"), "application/pdf");
+  assert.equal(view.headers.get("Content-Disposition"), "inline");
+  assert.deepEqual(timeline, ["auth", "asset", "viewer"]);
+  assert.deepEqual(entitlementCalls, []);
+
+  for (const allowDownload of [false, true]) {
+    timeline = [];
+    downloadPermission = allowDownload;
+    const response = await requestDownload();
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "PRIVATE_BYTES");
+    assert.equal(response.headers.get("Content-Disposition"), "attachment");
+    assert.equal(response.headers.get("Content-Type"), "application/pdf");
+    assert.deepEqual(timeline, ["auth", "asset", "viewer"]);
+  }
+});
+
+test("active student with allow_download false can view but receives no download capability", async () => {
+  access = approvedStudent;
+  downloadPermission = false;
+  const download = await requestDownload();
+  await assertGeneric(download);
+  assert.deepEqual(timeline, ["auth", "entitlement", "policy"]);
+  assert.deepEqual(assetCalls, []);
+  assert.deepEqual(signerCalls, []);
+
+  timeline = [];
+  const metadata = await requestView(PRODUCT_ID, undefined, true);
+  assert.equal(metadata.status, 200);
+  const metadataBody = await metadata.json();
+  assert.deepEqual(metadataBody, { mimeType: "application/pdf" });
+  assert.deepEqual(timeline, ["auth", "entitlement", "asset"]);
+  assert.equal(JSON.stringify(metadataBody).includes(SIGNED_URL), false);
+
+  timeline = [];
+  const view = await requestView();
+  assert.equal(view.status, 200);
+  assert.equal(await view.text(), "PRIVATE_BYTES");
+  assert.equal(view.headers.get("Content-Type"), "application/pdf");
+  assert.equal(view.headers.get("Content-Disposition"), "inline");
+  assert.deepEqual(timeline, ["auth", "entitlement", "asset", "viewer"]);
+  assert.equal(JSON.stringify(viewerCalls).includes(SIGNED_URL), false);
+});
+
+test("active student with allow_download true can download a PDF", async () => {
+  access = approvedStudent;
+  downloadPermission = true;
+  const response = await requestDownload();
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "PRIVATE_BYTES");
+  assert.equal(response.headers.get("Content-Disposition"), "attachment");
+  assert.equal(response.headers.get("Content-Type"), "application/pdf");
+  assert.deepEqual(timeline, ["auth", "entitlement", "policy", "asset", "viewer"]);
+});
+
+test("direct view and download calls enforce every non-approved account state", async () => {
+  for (const denied of [
+    { status: "unauthenticated", user: null, profile: null },
+    { status: "pending", user: { id: USER_ID }, profile: { role: "student" } },
+    { status: "rejected", user: { id: USER_ID }, profile: { role: "student" } },
+    { status: "suspended", user: { id: USER_ID }, profile: { role: "student" } }
+  ]) {
+    access = denied;
+    await assertGeneric(await requestView(), denied.status === "unauthenticated" ? 401 : 404);
+    assert.deepEqual(timeline, ["auth"]);
+    timeline = [];
+    await assertGeneric(await requestDownload(), denied.status === "unauthenticated" ? 401 : 404);
+    assert.deepEqual(timeline, ["auth"]);
+    timeline = [];
+  }
+});
+
+test("authorized view preserves provider range headers while an unauthorized range remains denied", async () => {
+  access = approvedStudent;
+  const ranged = await requestView(PRODUCT_ID, { Range: "bytes=0-10" });
+  assert.equal(ranged.status, 206);
+  assert.equal(await ranged.text(), "RANGE_BYTES");
+  assert.equal(ranged.headers.get("Content-Range"), "bytes 0-10/13");
+  assert.equal(ranged.headers.get("Content-Length"), "11");
+  assert.equal(ranged.headers.get("Accept-Ranges"), "bytes");
+  assert.deepEqual(timeline, ["auth", "entitlement", "asset", "viewer"]);
+
+  timeline = [];
+  entitlement = null;
+  const denied = await requestView(PRODUCT_ID, { Range: "bytes=0-10" });
+  await assertGeneric(denied);
+  assert.deepEqual(timeline, ["auth", "entitlement"]);
+});
+
+test("download streams video attachments through the same server boundary", async () => {
+  access = approvedStudent;
+  downloadPermission = true;
+  asset = { productId: PRODUCT_ID, storagePath: STORAGE_PATH.replace(/\.pdf$/, ".mp4"), mimeType: "video/mp4" };
+  const response = await requestDownload();
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "PRIVATE_BYTES");
+  assert.equal(response.headers.get("Content-Disposition"), "attachment");
+  assert.equal(response.headers.get("Content-Type"), "video/mp4");
+  assert.deepEqual(timeline, ["auth", "entitlement", "policy", "asset", "viewer"]);
+});
+
+test("missing, expired, and revoked students cannot view or download", async () => {
+  access = approvedStudent;
+  for (const invalid of [null, { status: "expired", user_id: USER_ID, product_id: PRODUCT_ID, revoked_at: null, expires_at: "2020-01-01T00:00:00.000Z" }, { status: "active", user_id: USER_ID, product_id: PRODUCT_ID, revoked_at: "2026-09-01T00:00:00.000Z", expires_at: null }]) {
+    entitlement = invalid;
+    await assertGeneric(await requestDownload());
+    assert.deepEqual(timeline, ["auth", "entitlement"]);
+    timeline = [];
+    await assertGeneric(await requestView());
+    assert.deepEqual(timeline, ["auth", "entitlement"]);
+    timeline = [];
+  }
+});
+
+test("student video view streams through the app-controlled view endpoint without a provider URL", async () => {
+  access = approvedStudent;
+  asset = { productId: PRODUCT_ID, storagePath: STORAGE_PATH.replace(/\.pdf$/, ".mp4"), mimeType: "video/mp4" };
+  const response = await requestView();
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Content-Type"), "video/mp4");
+  assert.equal(await response.text(), "PRIVATE_BYTES");
+  assert.deepEqual(timeline, ["auth", "entitlement", "asset", "viewer"]);
+  assert.equal(JSON.stringify(viewerCalls).includes(SIGNED_URL), false);
+});
+
+test("direct view and download reject missing or private-path-invalid assets", async () => {
+  access = approvedStudent;
+  entitlement = { status: "active", user_id: USER_ID, product_id: PRODUCT_ID, revoked_at: null, expires_at: null };
+  downloadPermission = true;
+  for (const invalidAsset of [
+    null,
+    { productId: PRODUCT_ID, storagePath: `private/${PRODUCT_ID}/v2/file.pdf`, mimeType: "application/pdf" },
+    { productId: PRODUCT_ID, storagePath: OTHER_STORAGE_PATH, mimeType: "application/pdf" }
+  ]) {
+    asset = invalidAsset;
+    await assertGeneric(await requestView());
+    assert.deepEqual(timeline, ["auth", "entitlement", "asset"]);
+    assert.deepEqual(viewerCalls, []);
+    timeline = [];
+    await assertGeneric(await requestDownload());
+    assert.deepEqual(timeline, ["auth", "entitlement", "policy", "asset"]);
+    assert.deepEqual(viewerCalls, []);
+    timeline = [];
+    viewerCalls = [];
+  }
 });
