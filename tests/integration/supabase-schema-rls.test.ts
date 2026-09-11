@@ -45,6 +45,7 @@ import {
   assertMaterialUploadFilenameRegexMigrationContract,
   assertMaterialDownloadPermissionMigrationContract,
   assertMaterialAtomicMutationMigrationContract,
+  assertMaterialDirectAccessMigrationContract,
   assertCatalogCompleteSearchMigrationContract,
   assertLearningProgressConcurrencyMigrationContract,
   assertLearningProgressMonotonicityMigrationContract,
@@ -284,6 +285,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ,"0039_grant_material_assets_select_to_service_role.sql"
       ,"0040_material_download_permission.sql"
       ,"0041_material_atomic_update.sql"
+      ,"0042_material_direct_access.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -2017,5 +2019,17 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       "ALTER TABLE public.product_entitlements ADD COLUMN can_download boolean;",
       "ALTER ROLE authenticated BYPASSRLS;"
     ]) assert.throws(() => assertMaterialAtomicMutationMigrationContract(`${sql}\n${hostile}`), /./, hostile);
+  });
+
+  test("migration 0042 isolates direct learner grants behind approved-admin RPCs", async () => {
+    const sql = await fs.readFile(path.resolve(process.cwd(), "supabase/migrations/0042_material_direct_access.sql"), "utf8");
+    assert.doesNotThrow(() => assertMaterialDirectAccessMigrationContract(sql));
+    for (const hostile of [
+      "ALTER TABLE public.product_entitlements ADD COLUMN direct_access boolean;",
+      "GRANT UPDATE ON TABLE public.material_direct_grants TO authenticated;",
+      "GRANT EXECUTE ON FUNCTION public.admin_material_direct_grant_upsert(uuid, uuid, boolean, boolean, timestamptz) TO anon;",
+      "ALTER ROLE authenticated BYPASSRLS;",
+      "UPDATE public.product_entitlements SET status = 'active';"
+    ]) assert.throws(() => assertMaterialDirectAccessMigrationContract(`${sql}\n${hostile}`), /./, hostile);
   });
 });

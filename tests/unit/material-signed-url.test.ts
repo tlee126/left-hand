@@ -10,12 +10,19 @@ const OTHER_PRODUCT_ID = "750e8400-e29b-41d4-a716-446655440001";
 const STORAGE_PATH = "materials/650e8400-e29b-41d4-a716-446655440000/v2/850e8400-e29b-41d4-a716-446655440000-private-material.pdf";
 const OTHER_STORAGE_PATH = "materials/750e8400-e29b-41d4-a716-446655440001/v2/850e8400-e29b-41d4-a716-446655440000-private-material.pdf";
 const SIGNED_URL = "https://example.test/signed/private-material";
+const DIRECT_GRANT_ID = "950e8400-e29b-41d4-a716-446655440000";
 
 let GET: (request: Request, context: { params: Promise<{ id: string }> }) => Promise<Response>;
 let DOWNLOAD_GET: (request: Request, context: { params: Promise<{ id: string }> }) => Promise<Response>;
 let VIEW_GET: (request: Request, context: { params: Promise<{ id: string }> }) => Promise<Response>;
+let DIRECT_LIST_GET: (request: Request, context: { params: Promise<{ id: string }> }) => Promise<Response>;
+let DIRECT_CREATE_POST: (request: Request, context: { params: Promise<{ id: string }> }) => Promise<Response>;
+let DIRECT_UPDATE_PATCH: (request: Request, context: { params: Promise<{ id: string; userId: string }> }) => Promise<Response>;
+let DIRECT_REVOKE_DELETE: (request: Request, context: { params: Promise<{ id: string; userId: string }> }) => Promise<Response>;
+let STUDENT_SEARCH_GET: (request: Request) => Promise<Response>;
 let access: any;
 let entitlement: unknown = { status: "active", user_id: USER_ID, product_id: PRODUCT_ID, revoked_at: null, expires_at: null };
+let directGrant: unknown = null;
 let asset: unknown = { productId: PRODUCT_ID, storagePath: STORAGE_PATH, mimeType: "application/pdf" };
 let downloadPermission: unknown = false;
 let accessError: unknown = null;
@@ -30,6 +37,11 @@ let signerCalls: string[] = [];
 let signerProductCalls: string[] = [];
 let mutationCalls: string[] = [];
 let viewerCalls: string[] = [];
+let directGrants: unknown[] = [];
+let studentSearchResults: unknown[] = [];
+
+class MockMaterialDirectAccessInputError extends Error {}
+class MockMaterialDirectAccessRepositoryError extends Error {}
 
 const approvedStudent = {
   status: "approved",
@@ -83,6 +95,38 @@ before(async () => {
       return null;
     }
   });
+  setMock(require.resolve("../../lib/repositories/material-direct-access-repository"), {
+    getMaterialDirectGrant: async (userId: string, materialId: string) => {
+      timeline.push("direct-grant");
+      assert.equal(userId, USER_ID);
+      assert.equal(materialId, PRODUCT_ID);
+      return directGrant;
+    },
+    isActiveMaterialDirectGrant: (grant: any, userId: string, materialId: string) => Boolean(
+      grant
+      && grant.user_id?.toLowerCase() === userId
+      && grant.material_id?.toLowerCase() === materialId
+      && grant.revoked_at === null
+      && (!grant.expires_at || Date.parse(grant.expires_at) > Date.now())
+    ),
+    getMaterialDirectGrants: async () => directGrants,
+    searchApprovedStudents: async () => studentSearchResults,
+    grantMaterialDirectAccess: async (input: any) => {
+      if (input.canDownload && !input.canView) throw new MockMaterialDirectAccessInputError();
+      const grant = activeDirectGrant({ user_id: input.userId, material_id: input.materialId, can_view: input.canView, can_download: input.canDownload, expires_at: input.expiresAt ?? null });
+      directGrants = [grant];
+      return grant;
+    },
+    updateMaterialDirectAccess: async (input: any) => activeDirectGrant({ user_id: input.userId, material_id: input.materialId, ...(input.canView === undefined ? {} : { can_view: input.canView }), ...(input.canDownload === undefined ? {} : { can_download: input.canDownload }), ...(Object.prototype.hasOwnProperty.call(input, "expiresAt") ? { expires_at: input.expiresAt } : {}) }),
+    revokeMaterialDirectAccess: async (userId: string, materialId: string) => activeDirectGrant({ user_id: userId, material_id: materialId, revoked_at: "2026-09-11T00:00:00.000Z" }),
+    validateGrantMaterialDirectAccessInput: (input: unknown) => {
+      const value = input as any;
+      if (value.canDownload === true && value.canView !== true) throw new MockMaterialDirectAccessInputError();
+      return value;
+    },
+    MaterialDirectAccessInputError: MockMaterialDirectAccessInputError,
+    MaterialDirectAccessRepositoryError: MockMaterialDirectAccessRepositoryError
+  });
   const uuidPattern = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
   const storagePathPattern = new RegExp(`^materials/(${uuidPattern})/v[1-9][0-9]*/(${uuidPattern})-([a-z0-9][a-z0-9._-]*)$`, "i");
   setMock(require.resolve("../../lib/storage/material-storage"), {
@@ -124,12 +168,16 @@ before(async () => {
   ({ GET } = await import("../../app/api/materials/[id]/signed-url/route"));
   ({ GET: DOWNLOAD_GET } = await import("../../app/api/materials/[id]/download/route"));
   ({ GET: VIEW_GET } = await import("../../app/api/materials/[id]/view/route"));
+  ({ GET: DIRECT_LIST_GET, POST: DIRECT_CREATE_POST } = await import("../../app/api/admin/materials/[id]/direct-grants/route"));
+  ({ PATCH: DIRECT_UPDATE_PATCH, DELETE: DIRECT_REVOKE_DELETE } = await import("../../app/api/admin/materials/[id]/direct-grants/[userId]/route"));
+  ({ GET: STUDENT_SEARCH_GET } = await import("../../app/api/admin/students/search/route"));
   moduleLoader._load = originalModuleLoad;
 });
 
 afterEach(() => {
   access = { status: "approved", user: { id: USER_ID }, profile: { role: "admin" } };
   entitlement = { status: "active", user_id: USER_ID, product_id: PRODUCT_ID, revoked_at: null, expires_at: null };
+  directGrant = null;
   asset = { productId: PRODUCT_ID, storagePath: STORAGE_PATH, mimeType: "application/pdf" };
   downloadPermission = false;
   accessError = null;
@@ -144,6 +192,8 @@ afterEach(() => {
   signerProductCalls = [];
   mutationCalls = [];
   viewerCalls = [];
+  directGrants = [];
+  studentSearchResults = [];
 });
 
 async function request(id = PRODUCT_ID): Promise<Response> {
@@ -392,7 +442,7 @@ test("active student with allow_download false can view but receives no download
   downloadPermission = false;
   const download = await requestDownload();
   await assertGeneric(download);
-  assert.deepEqual(timeline, ["auth", "entitlement", "policy"]);
+  assert.deepEqual(timeline, ["auth", "direct-grant", "entitlement", "policy"]);
   assert.deepEqual(assetCalls, []);
   assert.deepEqual(signerCalls, []);
 
@@ -401,7 +451,7 @@ test("active student with allow_download false can view but receives no download
   assert.equal(metadata.status, 200);
   const metadataBody = await metadata.json();
   assert.deepEqual(metadataBody, { mimeType: "application/pdf" });
-  assert.deepEqual(timeline, ["auth", "entitlement", "asset"]);
+  assert.deepEqual(timeline, ["auth", "direct-grant", "entitlement", "asset"]);
   assert.equal(JSON.stringify(metadataBody).includes(SIGNED_URL), false);
 
   timeline = [];
@@ -410,7 +460,7 @@ test("active student with allow_download false can view but receives no download
   assert.equal(await view.text(), "PRIVATE_BYTES");
   assert.equal(view.headers.get("Content-Type"), "application/pdf");
   assert.equal(view.headers.get("Content-Disposition"), "inline");
-  assert.deepEqual(timeline, ["auth", "entitlement", "asset", "viewer"]);
+  assert.deepEqual(timeline, ["auth", "direct-grant", "entitlement", "asset", "viewer"]);
   assert.equal(JSON.stringify(viewerCalls).includes(SIGNED_URL), false);
 });
 
@@ -422,7 +472,7 @@ test("active student with allow_download true can download a PDF", async () => {
   assert.equal(await response.text(), "PRIVATE_BYTES");
   assert.equal(response.headers.get("Content-Disposition"), "attachment");
   assert.equal(response.headers.get("Content-Type"), "application/pdf");
-  assert.deepEqual(timeline, ["auth", "entitlement", "policy", "asset", "viewer"]);
+  assert.deepEqual(timeline, ["auth", "direct-grant", "entitlement", "policy", "asset", "viewer"]);
 });
 
 test("direct view and download calls enforce every non-approved account state", async () => {
@@ -450,13 +500,13 @@ test("authorized view preserves provider range headers while an unauthorized ran
   assert.equal(ranged.headers.get("Content-Range"), "bytes 0-10/13");
   assert.equal(ranged.headers.get("Content-Length"), "11");
   assert.equal(ranged.headers.get("Accept-Ranges"), "bytes");
-  assert.deepEqual(timeline, ["auth", "entitlement", "asset", "viewer"]);
+  assert.deepEqual(timeline, ["auth", "direct-grant", "entitlement", "asset", "viewer"]);
 
   timeline = [];
   entitlement = null;
   const denied = await requestView(PRODUCT_ID, { Range: "bytes=0-10" });
   await assertGeneric(denied);
-  assert.deepEqual(timeline, ["auth", "entitlement"]);
+  assert.deepEqual(timeline, ["auth", "direct-grant", "entitlement"]);
 });
 
 test("download streams video attachments through the same server boundary", async () => {
@@ -468,7 +518,7 @@ test("download streams video attachments through the same server boundary", asyn
   assert.equal(await response.text(), "PRIVATE_BYTES");
   assert.equal(response.headers.get("Content-Disposition"), "attachment");
   assert.equal(response.headers.get("Content-Type"), "video/mp4");
-  assert.deepEqual(timeline, ["auth", "entitlement", "policy", "asset", "viewer"]);
+  assert.deepEqual(timeline, ["auth", "direct-grant", "entitlement", "policy", "asset", "viewer"]);
 });
 
 test("missing, expired, and revoked students cannot view or download", async () => {
@@ -476,10 +526,10 @@ test("missing, expired, and revoked students cannot view or download", async () 
   for (const invalid of [null, { status: "expired", user_id: USER_ID, product_id: PRODUCT_ID, revoked_at: null, expires_at: "2020-01-01T00:00:00.000Z" }, { status: "active", user_id: USER_ID, product_id: PRODUCT_ID, revoked_at: "2026-09-01T00:00:00.000Z", expires_at: null }]) {
     entitlement = invalid;
     await assertGeneric(await requestDownload());
-    assert.deepEqual(timeline, ["auth", "entitlement"]);
+    assert.deepEqual(timeline, ["auth", "direct-grant", "entitlement"]);
     timeline = [];
     await assertGeneric(await requestView());
-    assert.deepEqual(timeline, ["auth", "entitlement"]);
+    assert.deepEqual(timeline, ["auth", "direct-grant", "entitlement"]);
     timeline = [];
   }
 });
@@ -491,7 +541,7 @@ test("student video view streams through the app-controlled view endpoint withou
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("Content-Type"), "video/mp4");
   assert.equal(await response.text(), "PRIVATE_BYTES");
-  assert.deepEqual(timeline, ["auth", "entitlement", "asset", "viewer"]);
+  assert.deepEqual(timeline, ["auth", "direct-grant", "entitlement", "asset", "viewer"]);
   assert.equal(JSON.stringify(viewerCalls).includes(SIGNED_URL), false);
 });
 
@@ -506,13 +556,139 @@ test("direct view and download reject missing or private-path-invalid assets", a
   ]) {
     asset = invalidAsset;
     await assertGeneric(await requestView());
-    assert.deepEqual(timeline, ["auth", "entitlement", "asset"]);
+    assert.deepEqual(timeline, ["auth", "direct-grant", "entitlement", "asset"]);
     assert.deepEqual(viewerCalls, []);
     timeline = [];
     await assertGeneric(await requestDownload());
-    assert.deepEqual(timeline, ["auth", "entitlement", "policy", "asset"]);
+    assert.deepEqual(timeline, ["auth", "direct-grant", "entitlement", "policy", "asset"]);
     assert.deepEqual(viewerCalls, []);
     timeline = [];
     viewerCalls = [];
   }
+});
+
+function activeDirectGrant(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: DIRECT_GRANT_ID,
+    user_id: USER_ID,
+    material_id: PRODUCT_ID,
+    can_view: true,
+    can_download: false,
+    expires_at: null,
+    revoked_at: null,
+    granted_by: OTHER_USER_ID,
+    created_at: "2026-09-01T00:00:00.000Z",
+    updated_at: "2026-09-01T00:00:00.000Z",
+    ...overrides
+  };
+}
+
+test("active direct view-only grant bypasses entitlement but cannot download", async () => {
+  access = approvedStudent;
+  entitlement = null;
+  directGrant = activeDirectGrant();
+
+  const view = await requestView();
+  assert.equal(view.status, 200);
+  assert.equal(await view.text(), "PRIVATE_BYTES");
+  assert.deepEqual(timeline, ["auth", "direct-grant", "asset", "viewer"]);
+
+  timeline = [];
+  const download = await requestDownload();
+  await assertGeneric(download);
+  assert.deepEqual(timeline, ["auth", "direct-grant"]);
+  assert.deepEqual(entitlementCalls, []);
+});
+
+test("active direct view-and-download grant bypasses product policy and downloads", async () => {
+  access = approvedStudent;
+  entitlement = null;
+  downloadPermission = false;
+  directGrant = activeDirectGrant({ can_download: true });
+
+  const view = await requestView();
+  assert.equal(view.status, 200);
+  assert.equal(await view.text(), "PRIVATE_BYTES");
+  assert.deepEqual(timeline, ["auth", "direct-grant", "asset", "viewer"]);
+
+  timeline = [];
+  const download = await requestDownload();
+  assert.equal(download.status, 200);
+  assert.equal(await download.text(), "PRIVATE_BYTES");
+  assert.deepEqual(timeline, ["auth", "direct-grant", "asset", "viewer"]);
+  assert.deepEqual(entitlementCalls, []);
+});
+
+test("expired, revoked, cross-user, cross-material, and contradictory direct grants fail closed", async () => {
+  access = approvedStudent;
+  entitlement = { status: "active", user_id: USER_ID, product_id: PRODUCT_ID, revoked_at: null, expires_at: null };
+  for (const overrides of [
+    { expires_at: "2020-01-01T00:00:00.000Z" },
+    { revoked_at: "2026-09-01T00:00:00.000Z" },
+    { user_id: OTHER_USER_ID },
+    { material_id: OTHER_PRODUCT_ID },
+    { can_view: false, can_download: true }
+  ]) {
+    directGrant = activeDirectGrant(overrides);
+    await assertGeneric(await requestView());
+    assert.deepEqual(timeline, ["auth", "direct-grant"]);
+    assert.deepEqual(entitlementCalls, []);
+    timeline = [];
+    await assertGeneric(await requestDownload());
+    assert.deepEqual(timeline, ["auth", "direct-grant"]);
+    assert.deepEqual(entitlementCalls, []);
+    timeline = [];
+  }
+});
+
+test("admin direct-grant API lists, creates, updates, revokes, and searches without touching entitlement policy", async () => {
+  access = { status: "approved", user: { id: USER_ID }, profile: { role: "admin" } };
+  directGrants = [];
+  studentSearchResults = [{ id: OTHER_USER_ID, full_name: "Student B", email: "b@example.test", student_code: "B01", faculty: null, major: null }];
+
+  const params = { params: Promise.resolve({ id: PRODUCT_ID }) };
+  const empty = await DIRECT_LIST_GET(new Request("https://example.test"), params);
+  assert.equal(empty.status, 200);
+  assert.deepEqual(await empty.json(), { grants: [] });
+
+  const created = await DIRECT_CREATE_POST(new Request("https://example.test", {
+    method: "POST",
+    body: JSON.stringify({ user_id: OTHER_USER_ID, can_view: true, can_download: true, expires_at: null }),
+    headers: { "content-type": "application/json" }
+  }), params);
+  assert.equal(created.status, 201);
+  assert.equal((await created.json()).grant.can_download, true);
+
+  const updated = await DIRECT_UPDATE_PATCH(new Request("https://example.test", {
+    method: "PATCH",
+    body: JSON.stringify({ can_download: false, expires_at: "2027-01-01T00:00:00.000Z" }),
+    headers: { "content-type": "application/json" }
+  }), { params: Promise.resolve({ id: PRODUCT_ID, userId: OTHER_USER_ID }) });
+  assert.equal(updated.status, 200);
+
+  const revoked = await DIRECT_REVOKE_DELETE(new Request("https://example.test", { method: "DELETE" }), { params: Promise.resolve({ id: PRODUCT_ID, userId: OTHER_USER_ID }) });
+  assert.equal(revoked.status, 200);
+
+  const search = await STUDENT_SEARCH_GET(new Request("https://example.test/api/admin/students/search?q=student"));
+  assert.equal(search.status, 200);
+  assert.deepEqual(await search.json(), { students: studentSearchResults });
+  assert.deepEqual(entitlementCalls, []);
+});
+
+test("direct-grant mutations reject contradictory permissions and non-admin callers", async () => {
+  access = { status: "approved", user: { id: USER_ID }, profile: { role: "admin" } };
+  const invalid = await DIRECT_CREATE_POST(new Request("https://example.test", {
+    method: "POST",
+    body: JSON.stringify({ user_id: OTHER_USER_ID, can_view: false, can_download: true }),
+    headers: { "content-type": "application/json" }
+  }), { params: Promise.resolve({ id: PRODUCT_ID }) });
+  assert.equal(invalid.status, 400);
+
+  access = approvedStudent;
+  const forbidden = await DIRECT_CREATE_POST(new Request("https://example.test", {
+    method: "POST",
+    body: JSON.stringify({ user_id: OTHER_USER_ID, can_view: true, can_download: false }),
+    headers: { "content-type": "application/json" }
+  }), { params: Promise.resolve({ id: PRODUCT_ID }) });
+  assert.equal(forbidden.status, 403);
 });

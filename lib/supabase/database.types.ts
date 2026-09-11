@@ -92,6 +92,28 @@ export type SaveLearningProgressRpcArgs = {
   p_expected_version: number
 }
 
+export type AdminMaterialDirectGrantUpsertArgs = {
+  p_material_id: string
+  p_user_id: string
+  p_can_view: boolean
+  p_can_download: boolean
+  p_expires_at?: string | null
+}
+
+export type AdminMaterialDirectGrantUpdateArgs = {
+  p_material_id: string
+  p_user_id: string
+  p_can_view?: boolean | null
+  p_can_download?: boolean | null
+  p_expires_at?: string | null
+  p_set_expires_at: boolean
+}
+
+export type AdminMaterialDirectGrantRevokeArgs = {
+  p_material_id: string
+  p_user_id: string
+}
+
 export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
@@ -404,6 +426,60 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "materials"
             referencedColumns: ["product_id"]
+          },
+        ]
+      }
+      material_direct_grants: {
+        Row: {
+          can_download: boolean
+          can_view: boolean
+          created_at: string
+          expires_at: string | null
+          granted_by: string
+          id: string
+          material_id: string
+          revoked_at: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          can_download?: boolean
+          can_view?: boolean
+          created_at?: string
+          expires_at?: string | null
+          granted_by: string
+          id?: string
+          material_id: string
+          revoked_at?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          can_download?: boolean
+          can_view?: boolean
+          created_at?: string
+          expires_at?: string | null
+          granted_by?: string
+          id?: string
+          material_id?: string
+          revoked_at?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "material_direct_grants_material_id_fkey"
+            columns: ["material_id"]
+            isOneToOne: false
+            referencedRelation: "materials"
+            referencedColumns: ["product_id"]
+          },
+          {
+            foreignKeyName: "material_direct_grants_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
           },
         ]
       }
@@ -898,6 +974,18 @@ export type Database = {
       }
       admin_material_mutate_atomic: {
         Args: AdminMaterialAtomicMutateArgs
+        Returns: Json
+      }
+      admin_material_direct_grant_upsert: {
+        Args: AdminMaterialDirectGrantUpsertArgs
+        Returns: Json
+      }
+      admin_material_direct_grant_update: {
+        Args: AdminMaterialDirectGrantUpdateArgs
+        Returns: Json
+      }
+      admin_material_direct_grant_revoke: {
+        Args: AdminMaterialDirectGrantRevokeArgs
         Returns: Json
       }
       admin_subject_mutate_atomic: {
