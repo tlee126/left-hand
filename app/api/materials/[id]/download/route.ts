@@ -47,7 +47,7 @@ function isValidAsset(value: unknown, productId: string): value is { productId: 
 
 /** Streams a private material as an attachment only after server-side entitlement and policy checks. */
 export async function GET(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ id: string }> }
 ): Promise<Response> {
   let access;
@@ -89,7 +89,8 @@ export async function GET(
   if (!isValidAsset(asset, productId)) return unavailable();
 
   try {
-    const upstream = await fetchMaterialObjectForViewer(asset.storagePath, productId);
+    const upstream = await fetchMaterialObjectForViewer(asset.storagePath, productId, request.headers.get("range"));
+    if (upstream.status === 416) return unavailable(416);
     const headers = new Headers({
       "Cache-Control": CACHE_CONTROL,
       "Content-Type": asset.mimeType,

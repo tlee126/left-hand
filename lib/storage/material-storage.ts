@@ -319,6 +319,7 @@ export async function fetchMaterialObjectForViewer(storagePath: unknown, expecte
       cache: "no-store",
       headers: rangeHeader ? { Range: rangeHeader } : undefined
     });
+    if (response.status === 416) return response;
     if (!response.ok || !response.body) throw new Error();
     return response;
   } catch (error) {
