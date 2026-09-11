@@ -260,6 +260,19 @@ test("viewer shell has a visible close control and the supported renderers", asy
   assert.doesNotMatch(source, /autoPlay/);
 });
 
+test("learner view-only viewer uses an app-controlled PDF canvas and app view/download boundaries", async () => {
+  const source = await readFile("app/ca-nhan/mon/[slug]/material-viewer.tsx", "utf8");
+  assert.match(source, /pdfjs-dist\/legacy\/build\/pdf\.mjs/);
+  assert.match(source, /<canvas/);
+  assert.match(source, /\/api\/materials\/\$\{encodeURIComponent\(productId\)\}\/view/);
+  assert.match(source, /\/api\/materials\/\$\{encodeURIComponent\(productId\)\}\/download/);
+  assert.match(source, /allowDownload \?/);
+  assert.match(source, /<video controls preload="metadata"/);
+  assert.doesNotMatch(source, /<iframe|signed-url/);
+  assert.doesNotMatch(source, /autoPlay/);
+  assert.doesNotMatch(source, /console\.(?:log|info|warn|error)|localStorage|sessionStorage/);
+});
+
 test("viewer fetches the signed URL with the product id and does not navigate a popup", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {

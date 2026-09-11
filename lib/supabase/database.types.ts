@@ -301,6 +301,7 @@ export type Database = {
       }
       materials: {
         Row: {
+          allow_download: boolean
           created_at: string
           includes: string[]
           pages: number
@@ -310,6 +311,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          allow_download?: boolean
           created_at?: string
           includes?: string[]
           pages: number
@@ -319,6 +321,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          allow_download?: boolean
           created_at?: string
           includes?: string[]
           pages?: number
@@ -884,6 +887,10 @@ export type Database = {
       admin_catalog_mutate_v2: {
         Args: AdminCatalogMutateArgs
         Returns: Json
+      }
+      admin_material_download_permission_update: {
+        Args: { p_allow_download: boolean; p_material_id: string }
+        Returns: boolean
       }
       admin_subject_mutate_atomic: {
         Args: {

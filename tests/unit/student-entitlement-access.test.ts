@@ -58,7 +58,9 @@ const workspaceData = {
     productId: PRODUCT_ID,
     title: "Tài liệu được cấp quyền",
     description: "Nội dung thật từ workspace",
-    pages: 24
+    pages: 24,
+    allowDownload: false,
+    mimeType: null
   }],
   courses: [],
   page: 1,
@@ -101,7 +103,7 @@ function reset() {
     title: "Tài liệu được cấp quyền",
     description: "Nội dung thật từ workspace"
   }];
-  materialRows = [{ product_id: PRODUCT_ID, pages: 24 }];
+  materialRows = [{ product_id: PRODUCT_ID, pages: 24, allow_download: false }];
   lessonRows = [];
   entitlementRows = [activeEntitlement()];
   entitlementOverride = UNSET;
@@ -291,9 +293,11 @@ before(async () => {
         ArrowLeft: iconAdapter("ArrowLeft"),
         BookOpen: iconAdapter("BookOpen"),
         Download: iconAdapter("Download"),
+        Eye: iconAdapter("Eye"),
         FileText: iconAdapter("FileText"),
         Home: iconAdapter("Home"),
-        Sparkles: iconAdapter("Sparkles")
+        Sparkles: iconAdapter("Sparkles"),
+        X: iconAdapter("X")
       };
     }
     if (request === "react/jsx-runtime") {
@@ -512,7 +516,7 @@ test("authorized page executes the complete guard-to-render timeline and passes 
   products[0].id = PRODUCT_ID.toUpperCase();
   products[0].subject_id = SUBJECT_ID.toUpperCase();
   entitlementRows = [activeEntitlement(USER_ID.toUpperCase(), PRODUCT_ID.toUpperCase())];
-  materialRows = [{ product_id: PRODUCT_ID.toUpperCase(), pages: 24 }];
+  materialRows = [{ product_id: PRODUCT_ID.toUpperCase(), pages: 24, allow_download: false }];
 
   const markup = await renderPageMarkup();
   assert.deepEqual(timeline, [
@@ -554,7 +558,7 @@ test("real client exposes server-backed continuation and explicit overflow or pr
   assert.match(progressFailure, /Tiến độ hiện chưa thể tải/);
 });
 
-test("real client renders only server-authorized fields and uses the signed-url API boundary", async () => {
+test("real client renders only server-authorized fields and uses the view-only API boundary", async () => {
   clientInitialTab = "documents";
   const markup = await renderPageMarkup();
   const materialButton = capturedButtons.find((button) => flattenText(button.children).includes("Mở tài liệu"));
@@ -569,7 +573,7 @@ test("real client renders only server-authorized fields and uses the signed-url 
   const originalWindow = (globalThis as { window?: unknown }).window;
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     fetchCalls.push([String(input), init]);
-    return new Response(JSON.stringify({ url: "https://example.test/private-signed-url" }), {
+    return new Response(JSON.stringify({ mimeType: "application/pdf" }), {
       status: 200,
       headers: { "content-type": "application/json" }
     });
@@ -584,8 +588,9 @@ test("real client renders only server-authorized fields and uses the signed-url 
     if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
     else (globalThis as { window?: unknown }).window = originalWindow;
   }
-  assert.deepEqual(fetchCalls, [[`/api/materials/${PRODUCT_ID}/signed-url`, { method: "GET", cache: "no-store" }]]);
-  assert.deepEqual(openedUrls, ["https://example.test/private-signed-url"]);
+  assert.deepEqual(fetchCalls, [[`/api/materials/${PRODUCT_ID}/view?metadata=1`, { method: "GET", cache: "no-store" }]]);
+  assert.deepEqual(openedUrls, []);
+  assert.doesNotMatch(markup, /Tải xuống/);
 });
 
 test("unauthorized output never contains product or material fields", async () => {

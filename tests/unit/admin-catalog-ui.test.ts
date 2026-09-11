@@ -27,7 +27,7 @@ mock.module(modules.link, { namedExports: { default: props => ({type: "a", props
 mock.module(modules.cache, { namedExports: { revalidatePath: () => {} } });
 const row = { id: scenario.invalidId ? "bad-id" : id, slug: "marketing", name: "Môn mẫu", title: "Nội dung mẫu", category: "Marketing", color_theme: "marketing", faculty_group: "Kinh doanh", description: "Mô tả mẫu", subject_id: id, publication_status: scenario.status ?? "draft", delivery_kind: "digital_download", price_vnd: null, old_price_vnd: null, is_contact_for_price: true, is_hot: false, rating: 4.5,
  phone: "0901234567", note: "PRIVATE_NOTE", updated_by: "PRIVATE_ACTOR", secret: "PRIVATE_SECRET",
- materials: {pages: 20, tags: ["Một", "Hai"], includes: ["PDF"], suitable_for: []},
+ materials: {pages: 20, tags: ["Một", "Hai"], includes: ["PDF"], suitable_for: [], allow_download: false},
  courses: {format: "online", sessions: 4, duration: "4 tuần", schedule: "Thứ bảy", mentor: "Người hướng dẫn", enrollment_status: "coming-soon", tags: [], curriculum: ["Cơ bản"], suitable_for: [], preparation: []},
  tutors: {name: "Gia sư mẫu", faculty: "Kinh doanh", format: "1:1 (Online)", availability: "Cuối tuần", short_bio: "Giới thiệu mẫu", strengths: [], tags: [], suitable_for: [], support_methods: ["Trao đổi"]}
 };
@@ -37,6 +37,7 @@ mock.module(modules.repo, { namedExports: {
   mutations.push({name: verb + "Admin" + entity, args}); return {...row, slug: "marketing"};
  }]))),
  isValidUuid: value => typeof value === "string" && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value),
+ updateAdminMaterialDownloadPermission: async (...args) => { mutations.push({name: "updateAdminMaterialDownloadPermission", args}); return true; },
  ...Object.fromEntries(["Subjects", "Materials", "Courses", "Tutors"].map(entity => ["listAdmin" + entity, async (...args) => {
   timeline.push("repository:" + entity); calls.push({name: "listAdmin" + entity, args});
   if (scenario.fail === entity || scenario.fail === true) throw Error("SQL SELECT PRIVATE_SECRET 0901234567 PRIVATE_NOTE stack trace");
@@ -162,11 +163,12 @@ test("all editable contracts, required fields, and canonical enum options appear
  const result = await run();
  const common = ["slug", "category", "color_theme"];
  const product = [...common, "title", "description", "subject_id", "delivery_kind", "publication_status", "price_vnd", "old_price_vnd", "is_contact_for_price", "rating", "is_hot"];
- const expected = [[...common, "name", "faculty_group"], [...product, "pages", "tags", "includes", "suitable_for"], [...product, "format", "sessions", "duration", "schedule", "mentor", "enrollment_status", "tags", "curriculum", "suitable_for", "preparation"], [...product, "name", "faculty", "format", "availability", "short_bio", "strengths", "tags", "suitable_for", "support_methods"]];
+ const expected = [[...common, "name", "faculty_group"], [...product, "pages", "tags", "includes", "suitable_for", "allow_download"], [...product, "format", "sessions", "duration", "schedule", "mentor", "enrollment_status", "tags", "curriculum", "suitable_for", "preparation"], [...product, "name", "faculty", "format", "availability", "short_bio", "strengths", "tags", "suitable_for", "support_methods"]];
  for(let i=0;i<4;i++) for(const index of [i*3, i*3+1]) {
   const controls = result.forms[index].controls;
-  assert.deepEqual(controls.map(c=>c.name).sort(), [...expected[i]].sort());
-  for(const field of controls) if(!["price_vnd", "old_price_vnd", "is_contact_for_price", "is_hot", "tags", "includes", "suitable_for", "curriculum", "preparation", "strengths", "support_methods"].includes(field.name!)) assert.equal(field.required, true, field.name);
+  const expectedControls = i === 1 && index === i * 3 ? expected[i].filter(name => name !== "allow_download") : expected[i];
+  assert.deepEqual(controls.map(c=>c.name).sort(), [...expectedControls].sort());
+  for(const field of controls) if(!["price_vnd", "old_price_vnd", "is_contact_for_price", "is_hot", "tags", "includes", "suitable_for", "curriculum", "preparation", "strengths", "support_methods", "allow_download"].includes(field.name!)) assert.equal(field.required, true, field.name);
  }
  const e = Constants.public.Enums;
  for(const [name, options] of Object.entries({category: e.category_enum, color_theme: e.color_theme_enum, delivery_kind: e.delivery_kind_enum, publication_status: e.publication_status_enum, enrollment_status: e.enrollment_status_enum})) {

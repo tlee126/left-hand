@@ -1,6 +1,8 @@
 import "server-only";
+
 import { getAccountAccess } from "@/lib/auth/session";
-import { getCurrentMaterialAsset } from "@/lib/repositories/material-asset-repository";
+import { getCurrentMaterialAsset, getMaterialDownloadPermission } from "@/lib/repositories/material-asset-repository";
+import { getActiveProductEntitlement } from "@/lib/repositories/product-entitlement-repository";
 import {
   createMaterialSignedUrl,
   isValidMaterialStoragePathForProduct,
@@ -13,15 +15,11 @@ export const runtime = "nodejs";
 const CACHE_CONTROL = "private, no-store";
 const ACCESS_ERROR = "Material unavailable.";
 
-function errorResponse(status: number): Response {
+function unavailable(status = 404): Response {
   return Response.json(
     { error: ACCESS_ERROR },
     { status, headers: { "Cache-Control": CACHE_CONTROL } }
   );
-}
-
-function unavailable(): Response {
-  return errorResponse(404);
 }
 
 function normalizedUuid(value: unknown): string | null {
@@ -30,24 +28,16 @@ function normalizedUuid(value: unknown): string | null {
 
 function isValidEntitlement(value: unknown, expectedUserId: string, expectedProductId: string): boolean {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const entitlement = value as {
-    status?: unknown;
-    revoked_at?: unknown;
-    expires_at?: unknown;
-    user_id?: unknown;
-    product_id?: unknown;
-  };
+  const entitlement = value as { status?: unknown; revoked_at?: unknown; expires_at?: unknown; user_id?: unknown; product_id?: unknown };
   if (entitlement.status !== "active" || entitlement.revoked_at !== null) return false;
-  const entitlementUserId = normalizedUuid(entitlement.user_id);
-  const entitlementProductId = normalizedUuid(entitlement.product_id);
-  if (entitlementUserId !== expectedUserId || entitlementProductId !== expectedProductId) return false;
+  if (normalizedUuid(entitlement.user_id) !== expectedUserId || normalizedUuid(entitlement.product_id) !== expectedProductId) return false;
   if (entitlement.expires_at === null) return true;
   if (typeof entitlement.expires_at !== "string") return false;
   const expiresAt = Date.parse(entitlement.expires_at);
   return Number.isFinite(expiresAt) && expiresAt > Date.now();
 }
 
-function isValidAssetForProduct(value: unknown, productId: string): value is { productId: string; storagePath: string } {
+function isValidAsset(value: unknown, productId: string): value is { productId: string; storagePath: string } {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const asset = value as { productId?: unknown; storagePath?: unknown };
   return normalizedUuid(asset.productId) === productId
@@ -55,6 +45,7 @@ function isValidAssetForProduct(value: unknown, productId: string): value is { p
     && isValidMaterialStoragePathForProduct(asset.storagePath, productId);
 }
 
+/** Returns a signed URL only after server-side entitlement and per-material policy checks. */
 export async function GET(
   _request: Request,
   context: { params: Promise<{ id: string }> }
@@ -63,20 +54,26 @@ export async function GET(
   try {
     access = await getAccountAccess();
   } catch {
-    return errorResponse(401);
+    return unavailable(401);
   }
-  if (access.status === "unauthenticated") return errorResponse(401);
+  if (access.status === "unauthenticated") return unavailable(401);
 
   const { id } = await context.params;
   if (!isValidMaterialUuid(id)) return unavailable();
   const productId = id.toLowerCase();
-
   if (access.status !== "approved" || !access.user || !isValidMaterialUuid(access.user.id)) return unavailable();
+  const userId = access.user.id.toLowerCase();
+  const isAdmin = access.profile?.role === "admin";
 
-  // This endpoint is an explicit signed download capability. Learners use the
-  // application-controlled /view proxy instead, so a view-only learner never
-  // receives a provider URL that can be opened in a native PDF viewer.
-  if (access.profile?.role !== "admin") return unavailable();
+  if (!isAdmin) {
+    if (access.profile?.role !== "student") return unavailable();
+    try {
+      if (!isValidEntitlement(await getActiveProductEntitlement(userId, productId), userId, productId)) return unavailable();
+      if (await getMaterialDownloadPermission(productId) !== true) return unavailable();
+    } catch {
+      return unavailable();
+    }
+  }
 
   let asset;
   try {
@@ -84,7 +81,7 @@ export async function GET(
   } catch {
     return unavailable();
   }
-  if (!isValidAssetForProduct(asset, productId)) return unavailable();
+  if (!isValidAsset(asset, productId)) return unavailable();
 
   try {
     const url = await createMaterialSignedUrl(asset.storagePath, productId);

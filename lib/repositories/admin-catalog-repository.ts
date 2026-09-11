@@ -225,6 +225,7 @@ export const MATERIAL_COLUMNS = [
   "tags",
   "includes",
   "suitable_for",
+  "allow_download",
   "created_at",
   "updated_at"
 ] as const;
@@ -747,6 +748,7 @@ function isMaterialChild(value: unknown): value is MaterialRow {
     && isStringArray(objectValue(value, "tags"))
     && isStringArray(objectValue(value, "includes"))
     && isStringArray(objectValue(value, "suitable_for"))
+    && typeof objectValue(value, "allow_download") === "boolean"
     && typeof objectValue(value, "created_at") === "string"
     && typeof objectValue(value, "updated_at") === "string";
 }
@@ -1037,6 +1039,23 @@ export async function createAdminMaterial(input: CreateAdminMaterialInput): Prom
 export async function updateAdminMaterial(id: string, input: UpdateAdminMaterialInput): Promise<AdminMaterial | null> {
   const validated = validateMaterialInput(input, true);
   return mutateProduct("update", id, "material", validated.product, validated.child, MATERIAL_SELECT_COLUMNS, isAdminMaterial, "Failed to update admin material.");
+}
+
+export async function updateAdminMaterialDownloadPermission(id: string, allowDownload: boolean): Promise<void> {
+  if (!isValidUuid(id) || typeof allowDownload !== "boolean") {
+    throw new AdminCatalogInputError("Material download policy input is invalid.");
+  }
+  try {
+    const client = await adminClient();
+    const result = await client.rpc("admin_material_download_permission_update", {
+      p_material_id: id,
+      p_allow_download: allowDownload
+    });
+    if (result.error || result.data !== true) repositoryFailure("Failed to update material download permission.");
+  } catch (error) {
+    if (error instanceof AdminCatalogInputError || error instanceof AdminCatalogRepositoryError) throw error;
+    throw new AdminCatalogRepositoryError("Failed to update material download permission.");
+  }
 }
 
 export async function deleteAdminMaterial(id: string): Promise<boolean> {

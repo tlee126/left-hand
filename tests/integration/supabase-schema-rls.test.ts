@@ -43,6 +43,7 @@ import {
   assertMaterialUploadRetryStateMigrationContract,
   assertMaterialUploadCancelCleanupGuardMigrationContract,
   assertMaterialUploadFilenameRegexMigrationContract,
+  assertMaterialDownloadPermissionMigrationContract,
   assertCatalogCompleteSearchMigrationContract,
   assertLearningProgressConcurrencyMigrationContract,
   assertLearningProgressMonotonicityMigrationContract,
@@ -280,6 +281,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ,"0037_material_upload_cancel_cleanup_guard.sql"
       ,"0038_fix_material_upload_filename_regex.sql"
       ,"0039_grant_material_assets_select_to_service_role.sql"
+      ,"0040_material_download_permission.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -1991,5 +1993,16 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
   test("migration 0039 grants service_role select on material_assets", async () => {
     const sql = await fs.readFile(path.resolve(process.cwd(), "supabase/migrations/0039_grant_material_assets_select_to_service_role.sql"), "utf8");
     assert.match(sql, /^GRANT SELECT ON TABLE public\.material_assets TO service_role;\s*$/i);
+  });
+
+  test("migration 0040 adds the canonical download policy and approved-admin RPC", async () => {
+    const sql = await fs.readFile(path.resolve(process.cwd(), "supabase/migrations/0040_material_download_permission.sql"), "utf8");
+    assert.doesNotThrow(() => assertMaterialDownloadPermissionMigrationContract(sql));
+    for (const hostile of [
+      "ALTER TABLE public.product_entitlements ADD COLUMN allow_download boolean;",
+      "GRANT UPDATE ON TABLE public.materials TO authenticated;",
+      "GRANT EXECUTE ON FUNCTION public.admin_material_download_permission_update(uuid, boolean) TO anon;",
+      "ALTER ROLE authenticated BYPASSRLS;"
+    ]) assert.throws(() => assertMaterialDownloadPermissionMigrationContract(`${sql}\n${hostile}`), /./, hostile);
   });
 });

@@ -67,6 +67,7 @@ export interface ReserveMaterialAssetUploadInput {
 export interface CurrentMaterialAsset {
   productId: string;
   storagePath: string;
+  mimeType: string;
 }
 
 export interface CurrentMaterialAssetVersion {
@@ -416,7 +417,7 @@ export async function getCurrentMaterialAsset(productId: string): Promise<Curren
     const supabase = createServerAdminClient();
     const { data, error } = await supabase
       .from("material_assets")
-      .select("product_id, storage_path, version, visibility")
+      .select("product_id, storage_path, version, visibility, mime_type")
       .eq("product_id", canonicalProductId)
       .eq("visibility", "private")
       .order("version", { ascending: false })
@@ -424,11 +425,29 @@ export async function getCurrentMaterialAsset(productId: string): Promise<Curren
       .maybeSingle();
     if (error) throw new Error();
     if (!data) return null;
-    const row = data as unknown as Pick<MaterialAssetRow, "product_id" | "storage_path" | "version" | "visibility">;
-    if (!isValidMaterialUuid(row.product_id) || row.product_id.toLowerCase() !== canonicalProductId || row.visibility !== "private" || !Number.isSafeInteger(row.version) || row.version < 1 || typeof row.storage_path !== "string" || !isValidMaterialStoragePathForProductAndVersion(row.storage_path, canonicalProductId, row.version)) return null;
-    return { productId: row.product_id.toLowerCase(), storagePath: row.storage_path };
+    const row = data as unknown as Pick<MaterialAssetRow, "product_id" | "storage_path" | "version" | "visibility" | "mime_type">;
+    if (!isValidMaterialUuid(row.product_id) || row.product_id.toLowerCase() !== canonicalProductId || row.visibility !== "private" || !Number.isSafeInteger(row.version) || row.version < 1 || typeof row.storage_path !== "string" || !isValidMaterialStoragePathForProductAndVersion(row.storage_path, canonicalProductId, row.version) || !isSupportedMaterialMimeType(row.mime_type)) return null;
+    return { productId: row.product_id.toLowerCase(), storagePath: row.storage_path, mimeType: row.mime_type };
   } catch (error) {
     if (error instanceof MaterialAssetInputError) throw error;
+    throw new MaterialAssetRepositoryError();
+  }
+}
+
+/** Reads only the canonical material policy; it never returns storage metadata or a capability. */
+export async function getMaterialDownloadPermission(productId: string): Promise<boolean | null> {
+  if (!isValidMaterialUuid(productId)) throw new MaterialAssetInputError();
+  const canonicalProductId = productId.toLowerCase();
+  try {
+    const supabase = createServerAdminClient();
+    const { data, error } = await supabase
+      .from("materials")
+      .select("product_id, allow_download")
+      .eq("product_id", canonicalProductId)
+      .maybeSingle();
+    if (error || !data || typeof data.product_id !== "string" || !isValidMaterialUuid(data.product_id) || data.product_id.toLowerCase() !== canonicalProductId || typeof data.allow_download !== "boolean") return null;
+    return data.allow_download;
+  } catch {
     throw new MaterialAssetRepositoryError();
   }
 }

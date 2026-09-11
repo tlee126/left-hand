@@ -1562,6 +1562,21 @@ export function assertMaterialUploadFilenameRegexMigrationContract(sql0038: stri
   fail(statements[1] === "revoke all on function public.reserve_material_asset_upload(uuid, text, text, text, bigint, uuid) from public, anon" && statements[2] === "grant execute on function public.reserve_material_asset_upload(uuid, text, text, text, bigint, uuid) to authenticated", "Migration 0038 privileges must remain unchanged");
 }
 
+export function assertMaterialDownloadPermissionMigrationContract(sql0040: string): void {
+  const code = canonicalMigrationContent(sql0040).replace(/--[^\n]*/g, "").replace(/\s+/g, " ").trim();
+  const require = (condition: boolean, message: string): void => { if (!condition) throw new Error(message); };
+  require(/^ALTER TABLE public\.materials ADD COLUMN IF NOT EXISTS allow_download boolean NOT NULL DEFAULT false;/i.test(code), "Migration 0040 must add materials.allow_download as NOT NULL DEFAULT false");
+  require(!/\bcan_download\b|product_entitlements[\s\S]*allow_download/i.test(code), "Migration 0040 must keep download policy off product_entitlements and avoid can_download");
+  require(/CREATE OR REPLACE FUNCTION public\.admin_material_download_permission_update\(\s*p_material_id uuid,\s*p_allow_download boolean\s*\)[\s\S]*?SECURITY DEFINER/i.test(code), "Migration 0040 must define a SECURITY DEFINER admin-only policy RPC");
+  require(/IF auth\.uid\(\) IS NULL[\s\S]*?profiles\.role = 'admin'[\s\S]*?profiles\.account_status = 'approved'/i.test(code), "Migration 0040 must enforce approved-admin authorization in the RPC");
+  require(/UPDATE public\.materials SET allow_download = p_allow_download WHERE product_id = p_material_id/i.test(code), "Migration 0040 must update only the canonical materials entity");
+  require(/REVOKE ALL ON FUNCTION public\.admin_material_download_permission_update\(uuid, boolean\) FROM PUBLIC, anon, authenticated;/i.test(code), "Migration 0040 must revoke public RPC execution");
+  require(/GRANT EXECUTE ON FUNCTION public\.admin_material_download_permission_update\(uuid, boolean\) TO authenticated;/i.test(code), "Migration 0040 must grant the policy RPC only to authenticated users");
+  require(!/GRANT\s+(?:ALL|UPDATE)[^;]*\bmaterials\b/i.test(code), "Migration 0040 must not add broad materials mutation grants");
+  require(!/GRANT\s+EXECUTE[^;]*\bTO\s+(?:anon|public|service_role)\b/i.test(code), "Migration 0040 must not grant policy mutation to public roles");
+  require(!/\b(?:BYPASSRLS|SET ROLE|ALTER ROLE|EXECUTE\s+format)\b/i.test(code), "Migration 0040 must not contain privilege escalation or dynamic SQL");
+}
+
 /** Canonical catalog search document contract for migration 0030. */
 export function assertCatalogCompleteSearchMigrationContract(sql0030: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -2200,7 +2215,8 @@ export async function runAudit(): Promise<boolean> {
       "0036_material_upload_retry_state.sql",
       "0037_material_upload_cancel_cleanup_guard.sql",
       "0038_fix_material_upload_filename_regex.sql",
-      "0039_grant_material_assets_select_to_service_role.sql"
+      "0039_grant_material_assets_select_to_service_role.sql",
+      "0040_material_download_permission.sql"
     ];
 
     const migrationNumbers = sqlFiles.map((filename) => {
@@ -2213,7 +2229,7 @@ export async function runAudit(): Promise<boolean> {
       && expected.every((filename, index) => sqlFiles[index] === filename);
     results.push({
       category: "Migrations",
-      check: "All 39 migration files exist with complete strict numerical order",
+      check: "All 40 migration files exist with complete strict numerical order",
       passed: matchesCanonicalList && hasStrictSequentialNumbers,
       details: sqlFiles.join(", ")
     });
@@ -2808,6 +2824,14 @@ export async function runAudit(): Promise<boolean> {
     const sql0039 = await fs.readFile(path.join(migrationsDir, "0039_grant_material_assets_select_to_service_role.sql"), "utf-8");
     const migration0039ContractValid = /^GRANT SELECT ON TABLE public\.material_assets TO service_role;\s*$/i.test(sql0039);
     results.push({ category: "0039_grant_material_assets_select_to_service_role", check: "Persists service_role read access for material assets", passed: migration0039ContractValid, details: migration0039ContractValid ? "Exact SELECT grant verified" : "Migration must contain only the exact service_role SELECT grant" });
+
+    const sql0040 = await fs.readFile(path.join(migrationsDir, "0040_material_download_permission.sql"), "utf-8");
+    let migration0040ContractValid = true;
+    try { assertMaterialDownloadPermissionMigrationContract(sql0040); } catch (error) {
+      migration0040ContractValid = false;
+      results.push({ category: "0040_material_download_permission", check: "Adds canonical per-material download policy with approved-admin mutation boundary", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0040ContractValid) results.push({ category: "0040_material_download_permission", check: "Adds canonical per-material download policy with approved-admin mutation boundary", passed: true, details: "materials.allow_download is NOT NULL DEFAULT false; policy mutation is restricted to approved admins" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
