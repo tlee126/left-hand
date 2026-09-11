@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import {
+  beginMaterialViewerLoad,
+  closeMaterialViewer,
+  completeMaterialViewerLoad,
+  createMaterialViewerState,
   fetchMaterialDocumentUrl,
   hasCurrentMaterialAsset,
   isValidMaterialUrl,
   isVideoMaterialMimeType,
   materialViewLabel,
-  materialViewerKind
+  materialViewerKind,
+  default as MaterialViewButton
 } from "../../app/quan-tri/catalog/material-view-button";
 
 const PRODUCT_ID = "2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64";
@@ -29,7 +36,46 @@ test("material labels and viewer kinds use the stored MIME type", () => {
   assert.equal(materialViewerKind("video/mp4"), "video");
   assert.equal(materialViewerKind("video/webm"), "video");
   assert.equal(materialViewerKind("video/quicktime"), "video");
+  assert.equal(materialViewerKind("application/octet-stream"), null);
+  assert.equal(materialViewerKind("text/plain"), null);
+  assert.equal(materialViewerKind(undefined), null);
+  assert.equal(materialViewerKind(null), null);
   assert.equal(isVideoMaterialMimeType("application/pdf"), false);
+});
+
+test("unsupported MIME renders no viewer and cannot call the signed-url API", () => {
+  let fetchCalls = 0;
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  globalThis.fetch = async () => { fetchCalls += 1; return Response.json({ url: SIGNED_URL }); };
+  globalThis.window = {
+    open: () => { throw new Error("window.open must not be called"); },
+    location: { assign: () => { throw new Error("window.location.assign must not be called"); } }
+  } as unknown as Window & typeof globalThis;
+  try {
+    const html = renderToStaticMarkup(createElement(MaterialViewButton, { productId: PRODUCT_ID, mimeType: "application/octet-stream" }));
+    assert.equal(html, "");
+    assert.equal(fetchCalls, 0);
+    assert.doesNotMatch(html, /iframe|video/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.window = originalWindow;
+  }
+});
+
+test("viewer lifecycle resets URL on close and never reuses the previous URL", () => {
+  const initial = createMaterialViewerState();
+  const loading = beginMaterialViewerLoad();
+  const first = completeMaterialViewerLoad(SIGNED_URL);
+  const closed = closeMaterialViewer();
+  const second = completeMaterialViewerLoad("https://storage.example/other?signed=2");
+  assert.equal(initial.viewerOpen, false);
+  assert.equal(loading.viewerUrl, null);
+  assert.equal(first.viewerOpen, true);
+  assert.equal(closed.viewerOpen, false);
+  assert.equal(closed.viewerUrl, null);
+  assert.notEqual(second.viewerUrl, first.viewerUrl);
+  assert.equal(second.viewerOpen, true);
 });
 
 test("viewer shell has a visible close control and the supported renderers", async () => {
@@ -37,7 +83,7 @@ test("viewer shell has a visible close control and the supported renderers", asy
   assert.match(source, />Đóng<\/button>/);
   assert.match(source, /<iframe title="Tài liệu PDF"/);
   assert.match(source, /<video controls/);
-  assert.match(source, /setViewerUrl\(null\)/);
+  assert.match(source, /closeMaterialViewer\(\)/);
   assert.doesNotMatch(source, /window\.open|window\.location\.assign/);
   assert.doesNotMatch(source, /autoPlay/);
 });
