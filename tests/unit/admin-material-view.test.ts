@@ -67,6 +67,64 @@ test("unsupported MIME renders no viewer and cannot call the signed-url API", ()
   }
 });
 
+test("mounted unsupported MIME values never fetch, navigate, or render a viewer", async () => {
+  const unsupportedMimeTypes: Array<string | undefined | null> = ["text/plain", undefined, null];
+
+  for (const mimeType of unsupportedMimeTypes) {
+    const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+    const originalGlobals = {
+      window: globalThis.window,
+      document: globalThis.document,
+      navigator: globalThis.navigator,
+      HTMLElement: globalThis.HTMLElement,
+      Node: globalThis.Node,
+      DOMException: globalThis.DOMException,
+      IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT,
+      fetch: globalThis.fetch
+    };
+    const navigationCalls: string[] = [];
+    const installGlobal = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, value, writable: true });
+    installGlobal("window", {
+      open: () => { navigationCalls.push("window.open"); },
+      location: { assign: () => { navigationCalls.push("window.location.assign"); } }
+    } as unknown as Window & typeof globalThis);
+    installGlobal("document", dom.window.document);
+    installGlobal("navigator", dom.window.navigator);
+    installGlobal("HTMLElement", dom.window.HTMLElement);
+    installGlobal("Node", dom.window.Node);
+    installGlobal("DOMException", dom.window.DOMException);
+    installGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+
+    let fetchCalls = 0;
+    globalThis.fetch = async () => {
+      fetchCalls += 1;
+      return Response.json({ url: SIGNED_URL });
+    };
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(createElement(MaterialViewButton, { productId: PRODUCT_ID, mimeType: mimeType as string }));
+      });
+      assert.equal(container.innerHTML, "");
+      assert.equal(fetchCalls, 0);
+      assert.equal(navigationCalls.length, 0);
+      assert.equal(container.querySelector('[role="dialog"]'), null);
+      assert.equal(container.querySelector("iframe, embed, object, video"), null);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      globalThis.fetch = originalGlobals.fetch;
+      for (const [name, value] of Object.entries(originalGlobals)) {
+        if (name !== "fetch") installGlobal(name, value);
+      }
+    }
+  }
+});
+
 test("mounted PDF and video viewers close, reset their URL, and reopen with a fresh signed URL", async () => {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
   const originalGlobals = {
