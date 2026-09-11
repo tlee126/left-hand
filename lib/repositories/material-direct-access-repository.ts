@@ -79,6 +79,12 @@ function hasOnlyKeys(record: Record<string, unknown>, allowed: ReadonlySet<strin
   return Reflect.ownKeys(record).every((key) => typeof key === "string" && allowed.has(key));
 }
 
+function chunks<T>(values: readonly T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size));
+  return result;
+}
+
 function timestamp(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) throw new MaterialDirectAccessInputError();
@@ -193,6 +199,36 @@ export async function getMaterialDirectGrant(userId: string, materialId: string)
   } catch (error) {
     if (error instanceof MaterialDirectAccessInputError) throw error;
     if (error instanceof MaterialDirectAccessRepositoryError) throw error;
+    throw new MaterialDirectAccessRepositoryError();
+  }
+}
+
+/** Reads one learner's direct grants for a bounded batch of material IDs. */
+export async function getMaterialDirectGrantsForUserAndMaterials(
+  userId: string,
+  materialIds: readonly string[]
+): Promise<MaterialDirectGrant[]> {
+  const canonicalUserId = canonicalUuid(userId);
+  const canonicalMaterialIds = [...new Set(materialIds.map(canonicalUuid))];
+  if (canonicalMaterialIds.length === 0) return [];
+
+  try {
+    const supabase = createServerAdminClient();
+    const result: MaterialDirectGrant[] = [];
+    for (const materialIdChunk of chunks(canonicalMaterialIds, 100)) {
+      const { data, error } = await supabase
+        .from("material_direct_grants")
+        .select(MATERIAL_DIRECT_GRANT_SELECT)
+        .eq("user_id", canonicalUserId)
+        .in("material_id", materialIdChunk)
+        .order("material_id", { ascending: true })
+        .limit(materialIdChunk.length + 1);
+      if (error || !Array.isArray(data) || data.length > materialIdChunk.length) throw new Error();
+      result.push(...data.map(validateGrantRow));
+    }
+    return result;
+  } catch (error) {
+    if (error instanceof MaterialDirectAccessInputError || error instanceof MaterialDirectAccessRepositoryError) throw error;
     throw new MaterialDirectAccessRepositoryError();
   }
 }
