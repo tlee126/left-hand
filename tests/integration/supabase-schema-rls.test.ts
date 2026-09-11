@@ -46,6 +46,8 @@ import {
   assertMaterialDownloadPermissionMigrationContract,
   assertMaterialAtomicMutationMigrationContract,
   assertMaterialDirectAccessMigrationContract,
+  assertMaterialDirectAccessMigration0042Unchanged,
+  assertMaterialAccessSelectGrantMigrationContract,
   assertCatalogCompleteSearchMigrationContract,
   assertLearningProgressConcurrencyMigrationContract,
   assertLearningProgressMonotonicityMigrationContract,
@@ -286,6 +288,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ,"0040_material_download_permission.sql"
       ,"0041_material_atomic_update.sql"
       ,"0042_material_direct_access.sql"
+      ,"0043_grant_service_role_material_access_select.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -2031,5 +2034,19 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       "ALTER ROLE authenticated BYPASSRLS;",
       "UPDATE public.product_entitlements SET status = 'active';"
     ]) assert.throws(() => assertMaterialDirectAccessMigrationContract(`${sql}\n${hostile}`), /./, hostile);
+  });
+
+  test("migration 0043 grants only service_role SELECT for admin read repositories", async () => {
+    const sql0042 = await fs.readFile(path.resolve(process.cwd(), "supabase/migrations/0042_material_direct_access.sql"), "utf8");
+    const sql0043 = await fs.readFile(path.resolve(process.cwd(), "supabase/migrations/0043_grant_service_role_material_access_select.sql"), "utf8");
+    assert.doesNotThrow(() => assertMaterialDirectAccessMigration0042Unchanged(sql0042));
+    assert.doesNotThrow(() => assertMaterialAccessSelectGrantMigrationContract(sql0043));
+    for (const hostile of [
+      "GRANT INSERT ON TABLE public.materials TO service_role;",
+      "GRANT SELECT ON TABLE public.profiles TO authenticated;",
+      "GRANT EXECUTE ON FUNCTION public.admin_material_direct_grant_revoke(uuid, uuid) TO service_role;",
+      "GRANT SELECT, UPDATE ON TABLE public.materials TO service_role;"
+    ]) assert.throws(() => assertMaterialAccessSelectGrantMigrationContract(`${sql0043}\n${hostile}`), /./, hostile);
+    assert.throws(() => assertMaterialDirectAccessMigration0042Unchanged(`${sql0042}\n-- changed`), /unchanged/i);
   });
 });
