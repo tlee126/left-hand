@@ -1577,6 +1577,26 @@ export function assertMaterialDownloadPermissionMigrationContract(sql0040: strin
   require(!/\b(?:BYPASSRLS|SET ROLE|ALTER ROLE|EXECUTE\s+format)\b/i.test(code), "Migration 0040 must not contain privilege escalation or dynamic SQL");
 }
 
+/** Atomic catalog metadata and per-material download-policy mutation contract for migration 0041. */
+export function assertMaterialAtomicMutationMigrationContract(sql0041: string): void {
+  const require = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const code = stripSqlCommentsAndSplitStatements(sql0041).join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  require(/CREATE OR REPLACE FUNCTION public\.admin_material_mutate_atomic\(\s*p_operation text[\s\S]*?p_product jsonb[\s\S]*?p_material jsonb[\s\S]*?p_product_id uuid[\s\S]*?\)\s*RETURNS jsonb[\s\S]*?SECURITY DEFINER/i.test(code), "Migration 0041 must define the atomic material mutation RPC as SECURITY DEFINER");
+  require(/SET search_path = pg_catalog, public/i.test(code), "Migration 0041 must use a fixed RPC search_path");
+  require(/auth\.uid\(\) IS NULL[\s\S]*?profiles\.role = 'admin'[\s\S]*?profiles\.account_status = 'approved'/i.test(code), "Migration 0041 must enforce approved-admin authorization");
+  require(/jsonb_object_keys\(p_material\)[\s\S]*?allow_download/i.test(code), "Migration 0041 must validate allow_download as a material field");
+  require(/jsonb_typeof\(p_material->'allow_download'\) IS DISTINCT FROM 'boolean'/i.test(code), "Migration 0041 must validate the policy type");
+  require(/public\.admin_catalog_mutate_v2\(\s*'create'[\s\S]*?p_material - 'allow_download'/i.test(code), "Migration 0041 create must delegate catalog metadata through the existing atomic RPC");
+  require(/public\.admin_catalog_mutate_v2\(\s*'update'[\s\S]*?p_material - 'allow_download'/i.test(code), "Migration 0041 update must delegate catalog metadata through the existing atomic RPC");
+  require(/UPDATE public\.materials[\s\S]*?SET allow_download = allow_download_value[\s\S]*?WHERE product_id = target_product_id/i.test(code), "Migration 0041 must update the canonical material policy in the same RPC");
+  require(/REVOKE ALL ON FUNCTION public\.admin_material_mutate_atomic\(text, jsonb, jsonb, uuid\) FROM PUBLIC, anon, authenticated\s*;?/i.test(code), "Migration 0041 must revoke public RPC execution");
+  require(/GRANT EXECUTE ON FUNCTION public\.admin_material_mutate_atomic\(text, jsonb, jsonb, uuid\) TO authenticated\s*;?/i.test(code), "Migration 0041 must grant the atomic RPC only to authenticated users");
+  require(!/GRANT\s+(?:ALL|UPDATE)[^;]*\b(?:products|materials)\b/i.test(code), "Migration 0041 must not add broad catalog mutation grants");
+  require(!/GRANT\s+EXECUTE[^;]*\bTO\s+(?:anon|public|service_role)\b/i.test(code), "Migration 0041 must not grant the atomic RPC to public roles");
+  require(!/\b(?:BYPASSRLS|SET ROLE|ALTER ROLE|EXECUTE\s+format|product_entitlements|can_download)\b/i.test(executableCode), "Migration 0041 must not contain privilege escalation or misplaced download policy fields");
+}
+
 /** Canonical catalog search document contract for migration 0030. */
 export function assertCatalogCompleteSearchMigrationContract(sql0030: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -2216,7 +2236,8 @@ export async function runAudit(): Promise<boolean> {
       "0037_material_upload_cancel_cleanup_guard.sql",
       "0038_fix_material_upload_filename_regex.sql",
       "0039_grant_material_assets_select_to_service_role.sql",
-      "0040_material_download_permission.sql"
+      "0040_material_download_permission.sql",
+      "0041_material_atomic_update.sql"
     ];
 
     const migrationNumbers = sqlFiles.map((filename) => {
@@ -2229,7 +2250,7 @@ export async function runAudit(): Promise<boolean> {
       && expected.every((filename, index) => sqlFiles[index] === filename);
     results.push({
       category: "Migrations",
-      check: "All 40 migration files exist with complete strict numerical order",
+      check: "All 41 migration files exist with complete strict numerical order",
       passed: matchesCanonicalList && hasStrictSequentialNumbers,
       details: sqlFiles.join(", ")
     });
@@ -2832,6 +2853,14 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0040_material_download_permission", check: "Adds canonical per-material download policy with approved-admin mutation boundary", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0040ContractValid) results.push({ category: "0040_material_download_permission", check: "Adds canonical per-material download policy with approved-admin mutation boundary", passed: true, details: "materials.allow_download is NOT NULL DEFAULT false; policy mutation is restricted to approved admins" });
+
+    const sql0041 = await fs.readFile(path.join(migrationsDir, "0041_material_atomic_update.sql"), "utf-8");
+    let migration0041ContractValid = true;
+    try { assertMaterialAtomicMutationMigrationContract(sql0041); } catch (error) {
+      migration0041ContractValid = false;
+      results.push({ category: "0041_material_atomic_update", check: "Updates material metadata and download policy in one approved-admin transaction", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0041ContractValid) results.push({ category: "0041_material_atomic_update", check: "Updates material metadata and download policy in one approved-admin transaction", passed: true, details: "Metadata and allow_download are delegated/updated by one SECURITY DEFINER RPC with approved-admin authorization" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

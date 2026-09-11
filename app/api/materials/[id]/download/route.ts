@@ -4,10 +4,9 @@ import { getAccountAccess } from "@/lib/auth/session";
 import { getCurrentMaterialAsset, getMaterialDownloadPermission } from "@/lib/repositories/material-asset-repository";
 import { getActiveProductEntitlement } from "@/lib/repositories/product-entitlement-repository";
 import {
-  createMaterialSignedUrl,
+  fetchMaterialObjectForViewer,
   isValidMaterialStoragePathForProduct,
-  isValidMaterialUuid,
-  MATERIAL_SIGNED_URL_EXPIRES_IN_SECONDS
+  isValidMaterialUuid
 } from "@/lib/storage/material-storage";
 
 export const runtime = "nodejs";
@@ -45,7 +44,7 @@ function isValidAsset(value: unknown, productId: string): value is { productId: 
     && isValidMaterialStoragePathForProduct(asset.storagePath, productId);
 }
 
-/** Returns a signed URL only after server-side entitlement and per-material policy checks. */
+/** Streams a private material as an attachment only after server-side entitlement and policy checks. */
 export async function GET(
   _request: Request,
   context: { params: Promise<{ id: string }> }
@@ -84,11 +83,18 @@ export async function GET(
   if (!isValidAsset(asset, productId)) return unavailable();
 
   try {
-    const url = await createMaterialSignedUrl(asset.storagePath, productId);
-    return Response.json(
-      { url, expiresIn: MATERIAL_SIGNED_URL_EXPIRES_IN_SECONDS },
-      { headers: { "Cache-Control": CACHE_CONTROL } }
-    );
+    const upstream = await fetchMaterialObjectForViewer(asset.storagePath, productId);
+    const headers = new Headers({
+      "Cache-Control": CACHE_CONTROL,
+      "Content-Type": asset.mimeType,
+      "Content-Disposition": "attachment",
+      "Accept-Ranges": upstream.headers.get("Accept-Ranges") ?? "bytes"
+    });
+    for (const header of ["Content-Length", "Content-Range", "ETag", "Last-Modified"]) {
+      const value = upstream.headers.get(header);
+      if (value) headers.set(header, value);
+    }
+    return new Response(upstream.body, { status: upstream.status, headers });
   } catch {
     return unavailable();
   }

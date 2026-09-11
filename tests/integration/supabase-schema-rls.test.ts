@@ -44,6 +44,7 @@ import {
   assertMaterialUploadCancelCleanupGuardMigrationContract,
   assertMaterialUploadFilenameRegexMigrationContract,
   assertMaterialDownloadPermissionMigrationContract,
+  assertMaterialAtomicMutationMigrationContract,
   assertCatalogCompleteSearchMigrationContract,
   assertLearningProgressConcurrencyMigrationContract,
   assertLearningProgressMonotonicityMigrationContract,
@@ -282,6 +283,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ,"0038_fix_material_upload_filename_regex.sql"
       ,"0039_grant_material_assets_select_to_service_role.sql"
       ,"0040_material_download_permission.sql"
+      ,"0041_material_atomic_update.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -2004,5 +2006,16 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       "GRANT EXECUTE ON FUNCTION public.admin_material_download_permission_update(uuid, boolean) TO anon;",
       "ALTER ROLE authenticated BYPASSRLS;"
     ]) assert.throws(() => assertMaterialDownloadPermissionMigrationContract(`${sql}\n${hostile}`), /./, hostile);
+  });
+
+  test("migration 0041 keeps material metadata and download policy in one approved-admin RPC", async () => {
+    const sql = await fs.readFile(path.resolve(process.cwd(), "supabase/migrations/0041_material_atomic_update.sql"), "utf8");
+    assert.doesNotThrow(() => assertMaterialAtomicMutationMigrationContract(sql));
+    for (const hostile of [
+      "GRANT UPDATE ON TABLE public.materials TO authenticated;",
+      "GRANT EXECUTE ON FUNCTION public.admin_material_mutate_atomic(text, jsonb, jsonb, uuid) TO anon;",
+      "ALTER TABLE public.product_entitlements ADD COLUMN can_download boolean;",
+      "ALTER ROLE authenticated BYPASSRLS;"
+    ]) assert.throws(() => assertMaterialAtomicMutationMigrationContract(`${sql}\n${hostile}`), /./, hostile);
   });
 });

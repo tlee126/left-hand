@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test, describe, before, afterEach } from "node:test";
 import * as fs from "node:fs/promises";
-import type { AdminCatalogMutateArgs } from "../../lib/supabase/database.types";
+import type { AdminCatalogMutateArgs, AdminMaterialAtomicMutateArgs } from "../../lib/supabase/database.types";
 
 type QueryResult = { data: unknown; error: unknown };
 type Call = { method: string; args: unknown[]; table?: string };
@@ -276,6 +276,34 @@ describe("Task 5.1-A: admin catalog repository", () => {
       assert.equal(mockClient.calls.filter((call) => call.method === "rpc").length, 1);
       assert.equal(mockClient.calls.some((call) => ["insert", "update", "delete"].includes(call.method)), false);
     }
+  });
+
+  test("sends material metadata and either download-policy state through one atomic RPC", async () => {
+    for (const allowDownload of [false, true]) {
+      mockClient = new MockClient([
+        { data: { product: MATERIAL_PRODUCT, child: { ...MATERIAL_ROW, allow_download: allowDownload } }, error: null },
+        { data: { ...MATERIAL_PRODUCT, materials: { ...MATERIAL_ROW, allow_download: allowDownload } }, error: null }
+      ]);
+      await repository.updateAdminMaterial(PRODUCT_ID, { pages: 24, allow_download: allowDownload });
+      const rpc = mockClient.calls.find((call) => call.method === "rpc");
+      assert.equal(rpc?.args[0], "admin_material_mutate_atomic");
+      const args = rpc?.args[1] as AdminMaterialAtomicMutateArgs;
+      assert.equal(args.p_operation, "update");
+      assert.equal(args.p_product_id, PRODUCT_ID);
+      assert.deepEqual(args.p_material, { pages: 24, allow_download: allowDownload });
+      assert.equal(mockClient.calls.filter((call) => call.method === "rpc").length, 1);
+      assert.equal(mockClient.calls.some((call) => ["insert", "update", "delete"].includes(call.method)), false);
+    }
+  });
+
+  test("an atomic material RPC failure has no second mutation or follow-up read", async () => {
+    mockClient = new MockClient([{ data: null, error: { message: "policy constraint failed", code: "23514" } }]);
+    await assert.rejects(
+      () => repository.updateAdminMaterial(PRODUCT_ID, { pages: 24, allow_download: true }),
+      (error: unknown) => error instanceof repository.AdminCatalogRepositoryError && !String(error).includes("policy constraint")
+    );
+    assert.deepEqual(mockClient.calls.filter((call) => call.method === "rpc").map((call) => call.args[0]), ["admin_material_mutate_atomic"]);
+    assert.equal(mockClient.calls.some((call) => ["insert", "update", "delete", "from"].includes(call.method)), false);
   });
 
   test("validates UUID, slug, status, required fields, and forbidden payload fields before client creation", async () => {

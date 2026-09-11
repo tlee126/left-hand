@@ -8,22 +8,22 @@ const VIDEO_MIME_TYPES = new Set(["video/mp4", "video/webm", "video/quicktime"])
 
 type PdfDocument = {
   numPages: number;
-  getPage(pageNumber: number): Promise<{ getViewport(options: { scale: number }): { width: number; height: number }; render(options: { canvasContext: CanvasRenderingContext2D; viewport: { width: number; height: number } }): { promise: Promise<void> } }>;
+  getPage(pageNumber: number): Promise<{ getViewport(options: { scale: number }): { width: number; height: number }; render(options: { canvasContext: CanvasRenderingContext2D; viewport: { width: number; height: number } }): PdfRenderTask }>;
+  destroy(): Promise<void>;
+};
+
+type PdfRenderTask = {
+  promise: Promise<void>;
+  cancel(): void;
+};
+
+type PdfLoadingTask = {
+  promise: Promise<PdfDocument>;
   destroy(): Promise<void>;
 };
 
 function isVideo(mimeType: string): boolean {
   return VIDEO_MIME_TYPES.has(mimeType);
-}
-
-function isValidUrl(value: unknown): value is string {
-  if (typeof value !== "string" || value.trim() !== value || /\s/.test(value)) return false;
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
 }
 
 export default function MaterialViewer({
@@ -45,19 +45,43 @@ export default function MaterialViewer({
   const [rendering, setRendering] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef(0);
+  const loadingTaskRef = useRef<PdfLoadingTask | null>(null);
+  const pdfRef = useRef<PdfDocument | null>(null);
+  const renderTaskRef = useRef<PdfRenderTask | null>(null);
   const viewEndpoint = `/api/materials/${encodeURIComponent(productId)}/view`;
   const pdfMaterial = resolvedMimeType === "application/pdf";
   const videoMaterial = typeof resolvedMimeType === "string" && isVideo(resolvedMimeType);
 
+  function cancelRenderTask(): void {
+    const renderTask = renderTaskRef.current;
+    renderTaskRef.current = null;
+    renderTask?.cancel();
+  }
+
+  function destroyLoadingTask(): void {
+    const loadingTask = loadingTaskRef.current;
+    loadingTaskRef.current = null;
+    if (loadingTask) void loadingTask.destroy();
+  }
+
+  function destroyPdf(): void {
+    const currentPdf = pdfRef.current;
+    pdfRef.current = null;
+    if (currentPdf) void currentPdf.destroy();
+  }
+
   useEffect(() => () => {
     requestRef.current += 1;
-    if (pdf) void pdf.destroy();
-  }, [pdf]);
+    cancelRenderTask();
+    destroyLoadingTask();
+    destroyPdf();
+  }, []);
 
   useEffect(() => {
     if (!open || !pdf || !canvasRef.current) return;
     const requestId = requestRef.current;
     let cancelled = false;
+    let renderTask: PdfRenderTask | null = null;
     setRendering(true);
     void (async () => {
       try {
@@ -67,20 +91,35 @@ export default function MaterialViewer({
         const canvas = canvasRef.current;
         canvas.width = viewport.width;
         canvas.height = viewport.height;
-        await pdfPage.render({ canvasContext: canvas.getContext("2d")!, viewport }).promise;
+        const canvasContext = canvas.getContext("2d");
+        if (!canvasContext) throw new Error();
+        renderTask = pdfPage.render({ canvasContext, viewport });
+        renderTaskRef.current = renderTask;
+        await renderTask.promise;
       } catch {
         if (!cancelled && requestId === requestRef.current) setError(VIEW_ERROR);
       } finally {
+        if (renderTaskRef.current === renderTask) renderTaskRef.current = null;
         if (!cancelled && requestId === requestRef.current) setRendering(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (renderTaskRef.current === renderTask) {
+        renderTaskRef.current = null;
+        renderTask?.cancel();
+      }
+    };
   }, [open, page, pdf]);
 
   async function openViewer(): Promise<void> {
     let currentMimeType = mimeType;
     requestRef.current += 1;
     const requestId = requestRef.current;
+    cancelRenderTask();
+    destroyLoadingTask();
+    destroyPdf();
+    setPdf(null);
     setOpen(true);
     setLoading(true);
     setError(null);
@@ -105,12 +144,17 @@ export default function MaterialViewer({
       try {
         const response = await fetch(viewEndpoint, { method: "GET", cache: "no-store" });
         if (!response.ok) throw new Error();
-        const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
-        const loaded = await getDocument({ data: new Uint8Array(await response.arrayBuffer()), disableWorker: true } as any).promise as unknown as PdfDocument;
+        const { getDocument, GlobalWorkerOptions } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+        GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/legacy/build/pdf.worker.min.mjs", import.meta.url).toString();
+        const loadingTask = getDocument({ data: new Uint8Array(await response.arrayBuffer()) } as any) as unknown as PdfLoadingTask;
+        loadingTaskRef.current = loadingTask;
+        const loaded = await loadingTask.promise;
         if (requestId !== requestRef.current) {
+          await loadingTask.destroy();
           await loaded.destroy();
           return;
         }
+        pdfRef.current = loaded;
         setPdf(loaded);
       } catch {
         if (requestId === requestRef.current) setError(VIEW_ERROR);
@@ -125,7 +169,9 @@ export default function MaterialViewer({
 
   function closeViewer(): void {
     requestRef.current += 1;
-    if (pdf) void pdf.destroy();
+    cancelRenderTask();
+    destroyLoadingTask();
+    destroyPdf();
     setPdf(null);
     setResolvedMimeType(mimeType);
     setOpen(false);
@@ -138,10 +184,16 @@ export default function MaterialViewer({
     setError(null);
     try {
       const response = await fetch(`/api/materials/${encodeURIComponent(productId)}/download`, { method: "GET", cache: "no-store" });
-      const body: unknown = await response.json().catch(() => null);
-      const url = body && typeof body === "object" && isValidUrl((body as { url?: unknown }).url) ? (body as { url: string }).url : null;
-      if (!response.ok || !url) throw new Error();
-      window.open(url, "_blank", "noopener,noreferrer");
+      if (!response.ok) throw new Error();
+      const blob = await response.blob();
+      if (blob.size === 0) throw new Error();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = `material-${productId}`;
+      anchor.rel = "noopener";
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
     } catch {
       setError("Không thể tải tài liệu. Vui lòng thử lại sau.");
     } finally {

@@ -102,10 +102,18 @@ before(async () => {
       if (signerError) throw signerError;
       return signedUrl;
     },
-    fetchMaterialObjectForViewer: async (storagePath: string, expectedProductId: string) => {
+    fetchMaterialObjectForViewer: async (storagePath: string, expectedProductId: string, rangeHeader?: string | null) => {
       timeline.push("viewer");
       viewerCalls.push(`${storagePath}:${expectedProductId}`);
-      return new Response("PRIVATE_BYTES", { status: 200, headers: { "Content-Type": "application/octet-stream", "Content-Length": "13", "Accept-Ranges": "bytes" } });
+      return new Response(rangeHeader ? "RANGE_BYTES" : "PRIVATE_BYTES", {
+        status: rangeHeader ? 206 : 200,
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "Content-Length": rangeHeader ? "11" : "13",
+          "Accept-Ranges": "bytes",
+          ...(rangeHeader ? { "Content-Range": "bytes 0-10/13" } : {})
+        }
+      });
     },
     uploadMaterialObject: async () => {
       mutationCalls.push("upload");
@@ -357,14 +365,26 @@ test("returns only the signed URL fields with a bounded server expiry", async ()
   assert.equal(response.headers.get("Cache-Control"), "private, no-store");
 });
 
-test("admin download bypasses allow_download and returns the explicit capability", async () => {
+test("admin view is allowed without an entitlement and admin download bypasses both policy states", async () => {
   access = { status: "approved", user: { id: USER_ID }, profile: { role: "admin" } };
-  downloadPermission = false;
-  const response = await requestDownload();
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { url: SIGNED_URL, expiresIn: 300 });
-  assert.deepEqual(timeline, ["auth", "asset", "sign"]);
+  const view = await requestView();
+  assert.equal(view.status, 200);
+  assert.equal(await view.text(), "PRIVATE_BYTES");
+  assert.equal(view.headers.get("Content-Type"), "application/pdf");
+  assert.equal(view.headers.get("Content-Disposition"), "inline");
+  assert.deepEqual(timeline, ["auth", "asset", "viewer"]);
   assert.deepEqual(entitlementCalls, []);
+
+  for (const allowDownload of [false, true]) {
+    timeline = [];
+    downloadPermission = allowDownload;
+    const response = await requestDownload();
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "PRIVATE_BYTES");
+    assert.equal(response.headers.get("Content-Disposition"), "attachment");
+    assert.equal(response.headers.get("Content-Type"), "application/pdf");
+    assert.deepEqual(timeline, ["auth", "asset", "viewer"]);
+  }
 });
 
 test("active student with allow_download false can view but receives no download capability", async () => {
@@ -383,6 +403,15 @@ test("active student with allow_download false can view but receives no download
   assert.deepEqual(metadataBody, { mimeType: "application/pdf" });
   assert.deepEqual(timeline, ["auth", "entitlement", "asset"]);
   assert.equal(JSON.stringify(metadataBody).includes(SIGNED_URL), false);
+
+  timeline = [];
+  const view = await requestView();
+  assert.equal(view.status, 200);
+  assert.equal(await view.text(), "PRIVATE_BYTES");
+  assert.equal(view.headers.get("Content-Type"), "application/pdf");
+  assert.equal(view.headers.get("Content-Disposition"), "inline");
+  assert.deepEqual(timeline, ["auth", "entitlement", "asset", "viewer"]);
+  assert.equal(JSON.stringify(viewerCalls).includes(SIGNED_URL), false);
 });
 
 test("active student with allow_download true can download a PDF", async () => {
@@ -390,8 +419,56 @@ test("active student with allow_download true can download a PDF", async () => {
   downloadPermission = true;
   const response = await requestDownload();
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { url: SIGNED_URL, expiresIn: 300 });
-  assert.deepEqual(timeline, ["auth", "entitlement", "policy", "asset", "sign"]);
+  assert.equal(await response.text(), "PRIVATE_BYTES");
+  assert.equal(response.headers.get("Content-Disposition"), "attachment");
+  assert.equal(response.headers.get("Content-Type"), "application/pdf");
+  assert.deepEqual(timeline, ["auth", "entitlement", "policy", "asset", "viewer"]);
+});
+
+test("direct view and download calls enforce every non-approved account state", async () => {
+  for (const denied of [
+    { status: "unauthenticated", user: null, profile: null },
+    { status: "pending", user: { id: USER_ID }, profile: { role: "student" } },
+    { status: "rejected", user: { id: USER_ID }, profile: { role: "student" } },
+    { status: "suspended", user: { id: USER_ID }, profile: { role: "student" } }
+  ]) {
+    access = denied;
+    await assertGeneric(await requestView(), denied.status === "unauthenticated" ? 401 : 404);
+    assert.deepEqual(timeline, ["auth"]);
+    timeline = [];
+    await assertGeneric(await requestDownload(), denied.status === "unauthenticated" ? 401 : 404);
+    assert.deepEqual(timeline, ["auth"]);
+    timeline = [];
+  }
+});
+
+test("authorized view preserves provider range headers while an unauthorized range remains denied", async () => {
+  access = approvedStudent;
+  const ranged = await requestView(PRODUCT_ID, { Range: "bytes=0-10" });
+  assert.equal(ranged.status, 206);
+  assert.equal(await ranged.text(), "RANGE_BYTES");
+  assert.equal(ranged.headers.get("Content-Range"), "bytes 0-10/13");
+  assert.equal(ranged.headers.get("Content-Length"), "11");
+  assert.equal(ranged.headers.get("Accept-Ranges"), "bytes");
+  assert.deepEqual(timeline, ["auth", "entitlement", "asset", "viewer"]);
+
+  timeline = [];
+  entitlement = null;
+  const denied = await requestView(PRODUCT_ID, { Range: "bytes=0-10" });
+  await assertGeneric(denied);
+  assert.deepEqual(timeline, ["auth", "entitlement"]);
+});
+
+test("download streams video attachments through the same server boundary", async () => {
+  access = approvedStudent;
+  downloadPermission = true;
+  asset = { productId: PRODUCT_ID, storagePath: STORAGE_PATH.replace(/\.pdf$/, ".mp4"), mimeType: "video/mp4" };
+  const response = await requestDownload();
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "PRIVATE_BYTES");
+  assert.equal(response.headers.get("Content-Disposition"), "attachment");
+  assert.equal(response.headers.get("Content-Type"), "video/mp4");
+  assert.deepEqual(timeline, ["auth", "entitlement", "policy", "asset", "viewer"]);
 });
 
 test("missing, expired, and revoked students cannot view or download", async () => {
@@ -416,4 +493,26 @@ test("student video view streams through the app-controlled view endpoint withou
   assert.equal(await response.text(), "PRIVATE_BYTES");
   assert.deepEqual(timeline, ["auth", "entitlement", "asset", "viewer"]);
   assert.equal(JSON.stringify(viewerCalls).includes(SIGNED_URL), false);
+});
+
+test("direct view and download reject missing or private-path-invalid assets", async () => {
+  access = approvedStudent;
+  entitlement = { status: "active", user_id: USER_ID, product_id: PRODUCT_ID, revoked_at: null, expires_at: null };
+  downloadPermission = true;
+  for (const invalidAsset of [
+    null,
+    { productId: PRODUCT_ID, storagePath: `private/${PRODUCT_ID}/v2/file.pdf`, mimeType: "application/pdf" },
+    { productId: PRODUCT_ID, storagePath: OTHER_STORAGE_PATH, mimeType: "application/pdf" }
+  ]) {
+    asset = invalidAsset;
+    await assertGeneric(await requestView());
+    assert.deepEqual(timeline, ["auth", "entitlement", "asset"]);
+    assert.deepEqual(viewerCalls, []);
+    timeline = [];
+    await assertGeneric(await requestDownload());
+    assert.deepEqual(timeline, ["auth", "entitlement", "policy", "asset"]);
+    assert.deepEqual(viewerCalls, []);
+    timeline = [];
+    viewerCalls = [];
+  }
 });

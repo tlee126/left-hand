@@ -14,7 +14,6 @@ import {
   deleteAdminTutor,
   isValidCatalogSlug,
   isValidUuid,
-  updateAdminMaterialDownloadPermission,
   updateAdminCourse,
   updateAdminMaterial,
   updateAdminSubject,
@@ -590,11 +589,9 @@ export async function deleteSubjectAction(id: string): Promise<void> {
 export async function createMaterialAction(input: unknown): Promise<void> {
   await requireAdminAccess();
   const payload = validateBeforeRepository(() => validateMaterialInput(input, false));
-  const { allow_download: allowDownload, ...catalogPayload } = payload;
   let created: Awaited<ReturnType<typeof createAdminMaterial>>;
   try {
-    created = await createAdminMaterial(catalogPayload);
-    if (allowDownload === true) await updateAdminMaterialDownloadPermission(created.id, true);
+    created = await createAdminMaterial(payload);
   } catch {
     redirectError();
   }
@@ -607,11 +604,9 @@ export async function updateMaterialAction(id: string, input: unknown): Promise<
   await requireAdminAccess();
   const normalizedId = validateBeforeRepository(() => validateId(id));
   const payload = validateBeforeRepository(() => validateMaterialInput(input, true));
-  const { allow_download: allowDownload, ...catalogPayload } = payload;
   let updated: Awaited<ReturnType<typeof updateAdminMaterial>>;
   try {
-    updated = await updateAdminMaterial(normalizedId, catalogPayload);
-    if (allowDownload !== undefined) await updateAdminMaterialDownloadPermission(normalizedId, allowDownload);
+    updated = await updateAdminMaterial(normalizedId, payload);
   } catch {
     redirectError();
   }

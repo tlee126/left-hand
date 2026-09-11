@@ -49,7 +49,7 @@ mock.module(modules.actions, { namedExports: Object.fromEntries(["Subject", "Mat
 }))) });
 async function load(file) {
  let source = await readFile(file, "utf8");
- if(scenario.realActions) {
+ if(scenario.realActions || scenario.realMaterialAction) {
   let actions = await readFile("app/quan-tri/catalog/actions.ts", "utf8");
   for(const [from, to] of [["@/lib/auth/session", "auth"], ["@/lib/repositories/admin-catalog-repository", "repo"], ["@/lib/domain/subjects", domainSubjectsModule], ["@/lib/domain/product-types", domainProductTypesModule], ["next/navigation", "nav"], ["next/cache", "cache"]]) actions = actions.replaceAll(from, to.startsWith("data:") ? to : modules[to]);
   const compiled = await transform(actions, {loader: "ts", format: "esm"});
@@ -93,7 +93,7 @@ try {
  const tree = expand(await page({searchParams: Promise.resolve(scenario.params ?? {}), children: "ADMIN_CHILD"}));
  timeline.push("render"); text = textOf(tree).replace(/\s+/g, " "); walk(tree);
  if(scenario.submit) for(const form of forms) {
-  if(scenario.realActions && form !== forms[1]) continue;
+  if((scenario.realActions && form !== forms[1]) || (scenario.realMaterialAction && form !== forms[4])) continue;
   const data = new FormData();
   for(const field of form.controls) {
    if(!field.name) continue;
@@ -158,6 +158,17 @@ test("rendered native forms invoke exactly all twelve actions with bound record 
  const changed = await run({submit: true, overrides: {tags: "  A\r\n\n B  ", price_vnd: "120000", old_price_vnd: "150000", is_contact_for_price: "", is_hot: "on"}});
  const payload = changed.mutations.find(m => m.name === "updateMaterialAction")!.args[1];
  assert.deepEqual(payload.tags, ["A", "B"]); assert.equal(payload.price_vnd, 120000); assert.equal(payload.old_price_vnd, 150000); assert.equal(payload.is_contact_for_price, false); assert.equal(payload.is_hot, true);
+});
+test("real material edit form submits both download-policy states through one server action", async () => {
+ const enabled = await run({submit: true, realMaterialAction: true, overrides: {allow_download: "on"}});
+ assert.equal(enabled.error, "REDIRECT:/quan-tri/catalog?success=1");
+ assert.deepEqual(enabled.mutations, [{name: "updateAdminMaterial", args: ["11111111-1111-1111-1111-111111111111", {slug: "marketing", title: "Nội dung mẫu", description: "Mô tả mẫu", subject_id: "11111111-1111-1111-1111-111111111111", category: "Marketing", delivery_kind: "digital_download", publication_status: "draft", price_vnd: null, old_price_vnd: null, is_contact_for_price: true, rating: 4.5, is_hot: false, color_theme: "marketing", pages: 20, tags: ["Một", "Hai"], includes: ["PDF"], suitable_for: [], allow_download: true}]}]);
+ const disabled = await run({submit: true, realMaterialAction: true, overrides: {allow_download: ""}});
+ assert.equal(disabled.error, "REDIRECT:/quan-tri/catalog?success=1");
+ const disabledInput = disabled.mutations[0]?.args[1] as Record<string, unknown>;
+ assert.equal(disabled.mutations.length, 1);
+ assert.equal(disabled.mutations[0]?.name, "updateAdminMaterial");
+ assert.equal(disabledInput.allow_download, false);
 });
 test("all editable contracts, required fields, and canonical enum options appear", async () => {
  const result = await run();
