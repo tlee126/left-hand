@@ -6,6 +6,7 @@ import { getMaterialDirectGrant, isActiveMaterialDirectGrant } from "@/lib/repos
 import { getActiveProductEntitlement } from "@/lib/repositories/product-entitlement-repository";
 import {
   fetchMaterialObjectForViewer,
+  isValidMaterialRangeHeader,
   isValidMaterialStoragePathForProduct,
   isValidMaterialUuid
 } from "@/lib/storage/material-storage";
@@ -63,6 +64,7 @@ export async function GET(
   const productId = id.toLowerCase();
   if (access.status !== "approved" || !access.user || !isValidMaterialUuid(access.user.id)) return unavailable();
   const userId = access.user.id.toLowerCase();
+  const rangeHeader = request.headers.get("range");
   const isAdmin = access.profile?.role === "admin";
 
   if (!isAdmin) {
@@ -80,6 +82,8 @@ export async function GET(
     }
   }
 
+  if (rangeHeader && !isValidMaterialRangeHeader(rangeHeader)) return unavailable(416);
+
   let asset;
   try {
     asset = await getCurrentMaterialAsset(productId);
@@ -89,7 +93,7 @@ export async function GET(
   if (!isValidAsset(asset, productId)) return unavailable();
 
   try {
-    const upstream = await fetchMaterialObjectForViewer(asset.storagePath, productId, request.headers.get("range"));
+    const upstream = await fetchMaterialObjectForViewer(asset.storagePath, productId, rangeHeader);
     if (upstream.status === 416) return unavailable(416);
     const headers = new Headers({
       "Cache-Control": CACHE_CONTROL,

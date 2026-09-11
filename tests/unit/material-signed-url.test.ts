@@ -41,6 +41,8 @@ let viewerStatus: number | null = null;
 let directGrants: unknown[] = [];
 let directListMissingMaterial = false;
 let directGrantTargetError: unknown = null;
+let directUpdateError: unknown = null;
+let directRevokeError: unknown = null;
 let studentSearchResults: unknown[] = [];
 let studentSearchCalls: string[] = [];
 let studentSearchError: unknown = null;
@@ -136,13 +138,28 @@ before(async () => {
     },
     grantMaterialDirectAccess: async (input: any) => {
       if (directGrantTargetError) throw directGrantTargetError;
+      mutationCalls.push(`grant:${input.userId}:${input.materialId}`);
       if (input.canDownload && !input.canView) throw new MockMaterialDirectAccessInputError();
       const grant = activeDirectGrant({ user_id: input.userId, material_id: input.materialId, can_view: input.canView, can_download: input.canDownload, expires_at: input.expiresAt ?? null });
       directGrants = [grant];
       return grant;
     },
-    updateMaterialDirectAccess: async (input: any) => activeDirectGrant({ user_id: input.userId, material_id: input.materialId, ...(input.canView === undefined ? {} : { can_view: input.canView }), ...(input.canDownload === undefined ? {} : { can_download: input.canDownload }), ...(Object.prototype.hasOwnProperty.call(input, "expiresAt") ? { expires_at: input.expiresAt } : {}) }),
-    revokeMaterialDirectAccess: async (userId: string, materialId: string) => activeDirectGrant({ user_id: userId, material_id: materialId, revoked_at: "2026-09-11T00:00:00.000Z" }),
+    updateMaterialDirectAccess: async (input: any) => {
+      if (directUpdateError) throw directUpdateError;
+      const keys = Object.keys(input).filter((key) => key !== "userId" && key !== "materialId");
+      if (keys.length === 0 || keys.some((key) => !["canView", "canDownload", "expiresAt"].includes(key))
+        || (Object.prototype.hasOwnProperty.call(input, "canView") && typeof input.canView !== "boolean")
+        || (Object.prototype.hasOwnProperty.call(input, "canDownload") && typeof input.canDownload !== "boolean")
+        || (Object.prototype.hasOwnProperty.call(input, "expiresAt") && input.expiresAt !== null && (typeof input.expiresAt !== "string" || !Number.isFinite(Date.parse(input.expiresAt))))
+        || (input.canView === false && input.canDownload === true)) throw new MockMaterialDirectAccessInputError();
+      mutationCalls.push(`update:${input.userId}:${input.materialId}`);
+      return activeDirectGrant({ user_id: input.userId, material_id: input.materialId, ...(input.canView === undefined ? {} : { can_view: input.canView }), ...(input.canDownload === undefined ? {} : { can_download: input.canDownload }), ...(Object.prototype.hasOwnProperty.call(input, "expiresAt") ? { expires_at: input.expiresAt } : {}) });
+    },
+    revokeMaterialDirectAccess: async (userId: string, materialId: string) => {
+      if (directRevokeError) throw directRevokeError;
+      mutationCalls.push(`revoke:${userId}:${materialId}`);
+      return activeDirectGrant({ user_id: userId, material_id: materialId, revoked_at: "2026-09-11T00:00:00.000Z" });
+    },
     validateGrantMaterialDirectAccessInput: (input: unknown) => {
       const value = input as any;
       if (typeof value.userId !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value.userId)
@@ -163,6 +180,7 @@ before(async () => {
   setMock(require.resolve("../../lib/storage/material-storage"), {
     MATERIAL_SIGNED_URL_EXPIRES_IN_SECONDS: 300,
     isValidMaterialUuid: (value: unknown) => typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value),
+    isValidMaterialRangeHeader: (value: unknown) => typeof value === "string" && /^(?:bytes=(?:\d+-\d+|\d+-|-\d+))$/.test(value),
     isValidMaterialStoragePathForProduct: (storagePath: unknown, expectedProductId: unknown) => {
       if (typeof storagePath !== "string" || typeof expectedProductId !== "string") return false;
       const match = storagePathPattern.exec(storagePath);
@@ -227,6 +245,8 @@ afterEach(() => {
   directGrants = [];
   directListMissingMaterial = false;
   directGrantTargetError = null;
+  directUpdateError = null;
+  directRevokeError = null;
   studentSearchResults = [];
   studentSearchCalls = [];
   studentSearchError = null;
@@ -679,13 +699,15 @@ test("expired, revoked, cross-user, cross-material, and contradictory direct gra
 
 test("admin direct-grant API lists, creates, updates, revokes, and searches without touching entitlement policy", async () => {
   access = { status: "approved", user: { id: USER_ID }, profile: { role: "admin" } };
-  directGrants = [];
+  directGrants = [activeDirectGrant()];
   studentSearchResults = [{ id: OTHER_USER_ID, full_name: "Student B", email: "b@example.test", student_code: "B01", faculty: null, major: null }];
 
   const params = { params: Promise.resolve({ id: PRODUCT_ID }) };
-  const empty = await DIRECT_LIST_GET(new Request("https://example.test"), params);
-  assert.equal(empty.status, 200);
-  assert.deepEqual(await empty.json(), { grants: [] });
+  const listed = await DIRECT_LIST_GET(new Request("https://example.test"), params);
+  assert.equal(listed.status, 200);
+  const listedBody = await listed.json();
+  assert.equal(listedBody.grants.length, 1);
+  assert.deepEqual(Object.keys(listedBody.grants[0]).sort(), ["can_download", "can_view", "created_at", "expires_at", "granted_by", "id", "material_id", "revoked_at", "updated_at", "user_id"]);
 
   const created = await DIRECT_CREATE_POST(new Request("https://example.test", {
     method: "POST",
@@ -693,7 +715,9 @@ test("admin direct-grant API lists, creates, updates, revokes, and searches with
     headers: { "content-type": "application/json" }
   }), params);
   assert.equal(created.status, 201);
-  assert.equal((await created.json()).grant.can_download, true);
+  const createdBody = await created.json();
+  assert.equal(createdBody.grant.can_download, true);
+  assert.deepEqual(Object.keys(createdBody.grant).sort(), ["can_download", "can_view", "created_at", "expires_at", "granted_by", "id", "material_id", "revoked_at", "updated_at", "user_id"]);
 
   const updated = await DIRECT_UPDATE_PATCH(new Request("https://example.test", {
     method: "PATCH",
@@ -701,13 +725,21 @@ test("admin direct-grant API lists, creates, updates, revokes, and searches with
     headers: { "content-type": "application/json" }
   }), { params: Promise.resolve({ id: PRODUCT_ID, userId: OTHER_USER_ID }) });
   assert.equal(updated.status, 200);
+  const updatedBody = await updated.json();
+  assert.deepEqual(Object.keys(updatedBody.grant).sort(), ["can_download", "can_view", "created_at", "expires_at", "granted_by", "id", "material_id", "revoked_at", "updated_at", "user_id"]);
+  assert.deepEqual(mutationCalls, [`grant:${OTHER_USER_ID}:${PRODUCT_ID}`, `update:${OTHER_USER_ID}:${PRODUCT_ID}`]);
 
   const revoked = await DIRECT_REVOKE_DELETE(new Request("https://example.test", { method: "DELETE" }), { params: Promise.resolve({ id: PRODUCT_ID, userId: OTHER_USER_ID }) });
   assert.equal(revoked.status, 200);
+  const revokedBody = await revoked.json();
+  assert.deepEqual(Object.keys(revokedBody.grant).sort(), ["can_download", "can_view", "created_at", "expires_at", "granted_by", "id", "material_id", "revoked_at", "updated_at", "user_id"]);
+  assert.deepEqual(mutationCalls, [`grant:${OTHER_USER_ID}:${PRODUCT_ID}`, `update:${OTHER_USER_ID}:${PRODUCT_ID}`, `revoke:${OTHER_USER_ID}:${PRODUCT_ID}`]);
 
   const search = await STUDENT_SEARCH_GET(new Request("https://example.test/api/admin/students/search?q=student"));
   assert.equal(search.status, 200);
-  assert.deepEqual(await search.json(), { students: studentSearchResults });
+  const searchBody = await search.json();
+  assert.deepEqual(searchBody, { students: studentSearchResults });
+  assert.deepEqual(Object.keys((searchBody as any).students[0]).sort(), ["email", "faculty", "full_name", "id", "major", "student_code"]);
   assert.deepEqual(entitlementCalls, []);
 });
 
@@ -811,6 +843,7 @@ test("admin direct-grant handlers validate IDs, payloads, and repository failure
     assert.equal(response.status, 400);
   }
   for (const payload of [
+    "",
     "not-json",
     "{}",
     JSON.stringify({ user_id: "bad", can_view: true, can_download: false }),
@@ -866,10 +899,75 @@ test("student search rejects invalid queries without a database search and retur
     const response = await STUDENT_SEARCH_GET(new Request(`https://example.test/api/admin/students/search?q=${encodeURIComponent(query)}`));
     assert.equal(response.status, 400);
   }
-  assert.deepEqual(studentSearchCalls, ["", "   ", "x".repeat(101), "!!!"]);
+  assert.deepEqual(studentSearchCalls, []);
 
   studentSearchResults = [];
   const empty = await STUDENT_SEARCH_GET(new Request("https://example.test/api/admin/students/search?q=missing"));
   assert.equal(empty.status, 200);
   assert.deepEqual(await empty.json(), { students: [] });
+});
+
+test("admin direct-grant handlers cover user/material isolation, invalid user routes, and RPC failures", async () => {
+  access = { status: "approved", user: { id: USER_ID }, profile: { role: "admin" } };
+  const materialA = PRODUCT_ID;
+  const materialB = OTHER_PRODUCT_ID;
+  const userA = OTHER_USER_ID;
+  const userB = USER_ID;
+  const validA = { params: Promise.resolve({ id: materialA, userId: userA }) };
+
+  for (const [id, userId] of [["bad", userA], [materialA, "bad"]]) {
+    const response = await DIRECT_UPDATE_PATCH(new Request("https://example.test", { method: "PATCH", body: JSON.stringify({ can_view: true }) }), { params: Promise.resolve({ id, userId }) });
+    assert.equal(response.status, 400);
+  }
+  for (const [id, userId] of [["bad", userA], [materialA, "bad"]]) {
+    const response = await DIRECT_REVOKE_DELETE(new Request("https://example.test", { method: "DELETE" }), { params: Promise.resolve({ id, userId }) });
+    assert.equal(response.status, 400);
+  }
+  assert.deepEqual(mutationCalls, []);
+
+  for (const body of ["", "not-json", "{}", JSON.stringify({ can_view: "yes" }), JSON.stringify({ can_download: "yes" }), JSON.stringify({ expires_at: "bad" }), JSON.stringify({ can_view: false, can_download: true })]) {
+    const response = await DIRECT_UPDATE_PATCH(new Request("https://example.test", {
+      method: "PATCH",
+      body,
+      headers: { "content-type": "application/json" }
+    }), validA);
+    assert.equal(response.status, 400);
+  }
+  assert.deepEqual(mutationCalls, []);
+
+  directUpdateError = new Error("raw database password signed-url token");
+  const updateFailure = await DIRECT_UPDATE_PATCH(new Request("https://example.test", {
+    method: "PATCH",
+    body: JSON.stringify({ can_view: true }),
+    headers: { "content-type": "application/json" }
+  }), validA);
+  assert.equal(updateFailure.status, 500);
+  assert.deepEqual(await updateFailure.json(), { error: "Direct material access mutation failed." });
+  directUpdateError = null;
+
+  directUpdateError = new Error("unknown material database details");
+  const unknownMaterial = await DIRECT_UPDATE_PATCH(new Request("https://example.test", {
+    method: "PATCH",
+    body: JSON.stringify({ can_view: true }),
+    headers: { "content-type": "application/json" }
+  }), { params: Promise.resolve({ id: materialB, userId: userA }) });
+  assert.equal(unknownMaterial.status, 500);
+  assert.deepEqual(await unknownMaterial.json(), { error: "Direct material access mutation failed." });
+  directUpdateError = null;
+
+  directRevokeError = new Error("raw rpc token");
+  const revokeFailure = await DIRECT_REVOKE_DELETE(new Request("https://example.test", { method: "DELETE" }), validA);
+  assert.equal(revokeFailure.status, 500);
+  assert.deepEqual(await revokeFailure.json(), { error: "Direct material access mutation failed." });
+  directRevokeError = null;
+
+  directGrantTargetError = new Error("unknown user database details signed-url token");
+  const unknownUser = await DIRECT_CREATE_POST(new Request("https://example.test", {
+    method: "POST",
+    body: JSON.stringify({ user_id: userB, can_view: true, can_download: false }),
+    headers: { "content-type": "application/json" }
+  }), { params: Promise.resolve({ id: materialB }) });
+  assert.equal(unknownUser.status, 500);
+  assert.deepEqual(await unknownUser.json(), { error: "Direct material access mutation failed." });
+  assert.deepEqual(mutationCalls, []);
 });
