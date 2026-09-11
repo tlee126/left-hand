@@ -14,6 +14,7 @@ import {
 } from "./actions";
 import MaterialUploadForm from "./material-upload-form";
 import MaterialViewButton from "./material-view-button";
+import MaterialDirectAccessPanel from "./material-direct-access-panel";
 
 type Kind = "subject" | "material" | "course" | "tutor";
 type Field = { name: string; label: string; type?: "number" | "array" | "textarea" | "boolean"; options?: readonly string[]; required?: boolean; maxLength?: number; min?: number; max?: number; step?: number; initial?: string | number | boolean; editOnly?: boolean };
@@ -172,6 +173,7 @@ export default async function AdminCatalogPage({ searchParams }: { searchParams?
         <h3 className="break-words text-lg font-black [overflow-wrap:anywhere]">{row.title}</h3>
         {"publication_status" in row.values ? <p className="mt-2 text-sm text-ink/65">{optionLabels[String(row.values.publication_status)] ?? "Trạng thái chưa xác định"}</p> : null}
         {kind === "material" && materialAssets !== null && isValidUuid(row.id) ? <div className="mt-4 border-t border-ink/10 pt-4"><p className="text-sm font-bold text-ink/65">{typeof valueOf(valueOf(row.values, "material_asset"), "version") === "number" ? `Phiên bản tệp hiện tại: v${String(valueOf(valueOf(row.values, "material_asset"), "version"))}` : "Chưa có tệp được tải lên."}</p>{typeof valueOf(valueOf(row.values, "material_asset"), "version") === "number" ? <MaterialViewButton productId={row.id} mimeType={String(valueOf(valueOf(row.values, "material_asset"), "mimeType") ?? "")} /> : null}<MaterialUploadForm productId={row.id} /></div> : null}
+        {kind === "material" && isValidUuid(row.id) ? <MaterialDirectAccessPanel materialId={row.id} /> : null}
         {isValidUuid(row.id) ? <><details className="mt-4 min-w-0"><summary className="cursor-pointer text-sm font-bold text-accent">Chỉnh sửa · {row.title}</summary><Editor kind={kind} id={row.id} values={row.values} subjects={subjects} /></details>
           <details className="mt-4 border-t border-ink/10 pt-4"><summary className="cursor-pointer text-sm font-bold text-rose-700">Xóa · {row.title}</summary><form action={remove.bind(null, row.id)} className="mt-3 space-y-3"><p className="text-sm text-ink/65">Thao tác xóa không thể hoàn tác. Nếu nội dung đang được sử dụng, yêu cầu có thể không thực hiện được.</p><label className="flex items-center gap-2 text-sm text-ink/65"><input type="checkbox" required />Tôi xác nhận xóa bản ghi này</label><button type="submit" className="min-h-11 rounded-full border border-rose-200 px-5 py-2 text-sm font-extrabold text-rose-700">Xác nhận xóa</button></form></details></> : <p className="mt-3 text-sm text-ink/65">Không thể chỉnh sửa bản ghi này.</p>}
       </article>)}
