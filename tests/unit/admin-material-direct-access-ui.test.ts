@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createElement } from "react";
+import { createElement, Fragment } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { createRequire } from "node:module";
@@ -16,6 +16,72 @@ const MATERIAL_ID = "2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64";
 const STUDENT_A = "3f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64";
 const STUDENT_B = "4f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64";
 const STUDENT_C = "5f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64";
+
+type FetchHandler = (url: string, init: RequestInit | undefined) => Promise<Response> | Response;
+
+async function withMountedPanel(handler: FetchHandler, callback: (ctx: { container: HTMLElement; dom: any; calls: Array<{ url: string; method: string; body: unknown }>; flush: () => Promise<void> }) => Promise<void>, materialId = MATERIAL_ID): Promise<void> {
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+  const originals = {
+    window: globalThis.window, document: globalThis.document, navigator: globalThis.navigator,
+    HTMLElement: globalThis.HTMLElement, Node: globalThis.Node,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT,
+    fetch: globalThis.fetch
+  };
+  const install = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+  install("window", dom.window); install("document", dom.window.document); install("navigator", dom.window.navigator);
+  install("HTMLElement", dom.window.HTMLElement); install("Node", dom.window.Node); install("IS_REACT_ACT_ENVIRONMENT", true);
+  const calls: Array<{ url: string; method: string; body: unknown }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input); const method = init?.method ?? "GET";
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+    calls.push({ url, method, body });
+    return handler(url, init);
+  };
+  dom.window.confirm = () => true;
+  const container = document.createElement("div"); document.body.append(container);
+  const root = createRoot(container);
+  const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+  try {
+    await act(async () => { root.render(createElement(MaterialDirectAccessPanel, { materialId })); });
+    await callback({ container, dom, calls, flush });
+  } finally {
+    await act(async () => root.unmount()); container.remove();
+    install("window", originals.window); install("document", originals.document); install("navigator", originals.navigator);
+    install("HTMLElement", originals.HTMLElement); install("Node", originals.Node); install("IS_REACT_ACT_ENVIRONMENT", originals.IS_REACT_ACT_ENVIRONMENT);
+    globalThis.fetch = originals.fetch;
+  }
+}
+
+function responseFor(url: string, method: string, grants: Record<string, unknown>[] = []): Response {
+  if (url.includes("/direct-grants") && method === "GET") return Response.json({ grants });
+  if (url.includes("/students/search")) return Response.json({ students: [] });
+  return Response.json({ grant: grants[0] ?? grant(STUDENT_A) }, { status: method === "POST" ? 201 : 200 });
+}
+
+function clickButton(container: HTMLElement, label: string): HTMLButtonElement {
+  const found = [...container.querySelectorAll("button")].find((candidate) => candidate.textContent?.includes(label));
+  assert.ok(found, `missing button ${label}`); return found as HTMLButtonElement;
+}
+
+async function setInput(dom: any, target: HTMLInputElement, value: string): Promise<void> {
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")?.set;
+    setter?.call(target, value); target.dispatchEvent(new dom.window.InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
+    await Promise.resolve();
+  });
+}
+
+async function setDateInput(dom: any, target: HTMLInputElement, value: string): Promise<void> {
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")?.set;
+    setter?.call(target, value); target.dispatchEvent(new dom.window.Event("input", { bubbles: true })); target.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    await Promise.resolve();
+  });
+}
+
+async function submitForm(form: HTMLFormElement, dom?: any): Promise<void> {
+  await act(async () => { form.dispatchEvent(new (dom?.window.Event ?? Event)("submit", { bubbles: true, cancelable: true })); await Promise.resolve(); });
+}
 
 function grant(userId: string, values: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -233,4 +299,115 @@ test("direct-access status and date helpers enforce the UI contract", () => {
   assert.equal(materialDirectPermissionLabel({ can_view: true, can_download: false, expires_at: null, revoked_at: null }), "Chỉ được xem");
   assert.equal(materialDirectPermissionLabel({ can_view: true, can_download: true, expires_at: null, revoked_at: null }), "Được xem và tải");
   assert.equal(materialDirectPermissionLabel({ can_view: false, can_download: false, expires_at: null, revoked_at: null }), "Chưa cấp quyền");
+});
+
+test("empty grant list renders a stable empty state", async () => {
+  await withMountedPanel((url, init) => responseFor(url, init?.method ?? "GET", []), async ({ container }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(container.textContent ?? "", /Chưa cấp quyền riêng cho tài liệu này/);
+    assert.doesNotMatch(container.textContent ?? "", /Được xem|Đã thu hồi|Hết hạn/);
+  });
+});
+
+test("search API errors are generic and clear loading", async () => {
+  await withMountedPanel((url, init) => url.includes("/students/search") ? Response.json({ error: "raw provider token" }, { status: 500 }) : responseFor(url, init?.method ?? "GET", []), async ({ container, dom }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const input = container.querySelector('input[aria-label="Tìm học viên"]') as HTMLInputElement;
+    await setInput(dom, input, "student"); await submitForm(input.form!, dom);
+    assert.match(container.textContent ?? "", /Không thể tìm học viên/);
+    assert.doesNotMatch(container.textContent ?? "", /raw provider token/);
+    assert.equal(clickButton(container, "Tìm học viên").disabled, false);
+  });
+});
+
+test("initial grant-list API errors render only the generic error state", async () => {
+  await withMountedPanel((url, init) => url.includes("/direct-grants") && (init?.method ?? "GET") === "GET" ? Response.json({ error: "raw database error" }, { status: 500 }) : responseFor(url, init?.method ?? "GET", []), async ({ container }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(container.textContent ?? "", /Không thể tải quyền truy cập riêng/);
+    assert.doesNotMatch(container.textContent ?? "", /raw database error|Được xem|Đã thu hồi/);
+  });
+});
+
+test("Enter submits student search exactly once", async () => {
+  let searchCalls = 0;
+  await withMountedPanel((url, init) => { if (url.includes("/students/search")) { searchCalls += 1; return Response.json({ students: [] }); } return responseFor(url, init?.method ?? "GET", []); }, async ({ container, dom }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const input = container.querySelector('input[aria-label="Tìm học viên"]') as HTMLInputElement;
+    await setInput(dom, input, "student");
+    await act(async () => { input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true })); input.form!.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true })); await Promise.resolve(); });
+    assert.equal(searchCalls, 1);
+  });
+});
+
+test("duplicate create clicks produce one pending POST and one refresh", async () => {
+  let releasePost: ((response: Response) => void) | null = null; let listCalls = 0; let postCalls = 0;
+  const student = { id: STUDENT_A, full_name: "Student A", email: "long@example.test", student_code: "A01" };
+  await withMountedPanel((url, init) => {
+    const method = init?.method ?? "GET";
+    if (url.includes("/students/search")) return Response.json({ students: [student] });
+    if (url.endsWith(`/direct-grants`) && method === "GET") { listCalls += 1; return Response.json({ grants: [] }); }
+    if (url.endsWith(`/direct-grants`) && method === "POST") { postCalls += 1; return new Promise<Response>((resolve) => { releasePost = resolve; }); }
+    return responseFor(url, method, []);
+  }, async ({ container, dom, flush }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); }); await flush();
+    const input = container.querySelector('input[aria-label="Tìm học viên"]') as HTMLInputElement; await setInput(dom, input, "A01"); await submitForm(input.form!, dom); await flush();
+    await act(async () => { clickButton(container, "Student A").click(); });
+    const form = [...container.querySelectorAll("form")].find((item) => item.textContent?.includes("Cấp quyền riêng")) as HTMLFormElement;
+    const create = clickButton(form, "Cấp quyền riêng");
+    await act(async () => { create.click(); create.click(); await Promise.resolve(); });
+    assert.equal(postCalls, 1); assert.equal(create.disabled, true); assert.ok(releasePost);
+    releasePost!(Response.json({ grant: grant(STUDENT_A) }, { status: 201 })); await flush();
+    assert.equal(listCalls, 2);
+  });
+});
+
+test("duplicate revoke clicks produce one pending DELETE and one refresh", async () => {
+  const existing = grant(STUDENT_A); let releaseDelete: ((response: Response) => void) | null = null; let deleteCalls = 0; let listCalls = 0;
+  await withMountedPanel((url, init) => {
+    const method = init?.method ?? "GET";
+    if (url.endsWith(`/direct-grants`) && method === "GET") { listCalls += 1; return Response.json({ grants: [existing] }); }
+    if (method === "DELETE") { deleteCalls += 1; return new Promise<Response>((resolve) => { releaseDelete = resolve; }); }
+    return responseFor(url, method, [existing]);
+  }, async ({ container, flush }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); }); await flush();
+    const revoke = clickButton(container, "Thu hồi");
+    await act(async () => { revoke.click(); revoke.click(); await Promise.resolve(); });
+    assert.equal(deleteCalls, 1); assert.equal(revoke.disabled, true); assert.ok(releaseDelete);
+    releaseDelete!(Response.json({ grant: { ...existing, revoked_at: "2026-09-11T00:00:00.000Z" } })); await flush();
+    assert.equal(listCalls, 2);
+  });
+});
+
+test("past expiry date blocks create through the real form interaction", async () => {
+  let postCalls = 0;
+  await withMountedPanel((url, init) => { if ((init?.method ?? "GET") === "POST") { postCalls += 1; } if (url.includes("/students/search")) return Response.json({ students: [{ id: STUDENT_A, full_name: "Student A", email: null, student_code: "A01" }] }); return responseFor(url, init?.method ?? "GET", []); }, async ({ container, dom, flush }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); }); await flush();
+    const input = container.querySelector('input[aria-label="Tìm học viên"]') as HTMLInputElement; await setInput(dom, input, "A01"); await submitForm(input.form!, dom); await flush(); await act(async () => { clickButton(container, "Student A").click(); });
+    const form = [...container.querySelectorAll("form")].find((item) => item.textContent?.includes("Cấp quyền riêng")) as HTMLFormElement;
+    await setDateInput(dom, form.querySelector('input[type="date"]') as HTMLInputElement, "2020-01-01"); await flush(); await submitForm(form, dom);
+    assert.equal(postCalls, 0); assert.match(container.textContent ?? "", /Ngày hết hạn phải là hôm nay/);
+  });
+});
+
+test("two mounted materials isolate grants and request identities", async () => {
+  const otherMaterial = "8f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64";
+  const grantA = grant(STUDENT_A); const grantB = { ...grant(STUDENT_B), material_id: otherMaterial }; const calls: string[] = [];
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+  const originals = { window: globalThis.window, document: globalThis.document, navigator: globalThis.navigator, HTMLElement: globalThis.HTMLElement, Node: globalThis.Node, IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT, fetch: globalThis.fetch };
+  const install = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+  install("window", dom.window); install("document", dom.window.document); install("navigator", dom.window.navigator); install("HTMLElement", dom.window.HTMLElement); install("Node", dom.window.Node); install("IS_REACT_ACT_ENVIRONMENT", true); dom.window.confirm = () => true;
+  globalThis.fetch = async (input, init) => { const url = String(input); calls.push(url); const id = url.includes(otherMaterial) ? otherMaterial : MATERIAL_ID; return url.includes("/direct-grants") && (init?.method ?? "GET") === "GET" ? Response.json({ grants: [id === MATERIAL_ID ? grantA : grantB] }) : Response.json({ students: [] }); };
+  const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
+  try {
+    await act(async () => { root.render(createElement(Fragment, null, createElement(MaterialDirectAccessPanel, { materialId: MATERIAL_ID }), createElement(MaterialDirectAccessPanel, { materialId: otherMaterial }))); });
+    const panels = [...container.querySelectorAll("[data-material-direct-access]")] as HTMLElement[]; assert.equal(panels.length, 2);
+    await act(async () => { clickButton(panels[0], "Quản lý quyền truy cập riêng").click(); clickButton(panels[1], "Quản lý quyền truy cập riêng").click(); await Promise.resolve(); }); await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(panels[0].textContent ?? "", new RegExp(STUDENT_A)); assert.doesNotMatch(panels[0].textContent ?? "", new RegExp(STUDENT_B));
+    assert.match(panels[1].textContent ?? "", new RegExp(STUDENT_B)); assert.doesNotMatch(panels[1].textContent ?? "", new RegExp(STUDENT_A));
+    assert.ok(calls.includes(`/api/admin/materials/${MATERIAL_ID}/direct-grants`)); assert.ok(calls.includes(`/api/admin/materials/${otherMaterial}/direct-grants`));
+  } finally { await act(async () => root.unmount()); container.remove(); install("window", originals.window); install("document", originals.document); install("navigator", originals.navigator); install("HTMLElement", originals.HTMLElement); install("Node", originals.Node); install("IS_REACT_ACT_ENVIRONMENT", originals.IS_REACT_ACT_ENVIRONMENT); globalThis.fetch = originals.fetch; }
 });

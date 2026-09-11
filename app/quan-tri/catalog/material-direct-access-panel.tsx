@@ -1,12 +1,13 @@
 "use client";
 
-import { type FormEvent, type KeyboardEvent, useState } from "react";
+import { type FormEvent, useRef, useState } from "react";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SEARCH_ERROR = "Không thể tìm học viên. Vui lòng thử lại sau.";
 const LOAD_ERROR = "Không thể tải quyền truy cập riêng. Vui lòng thử lại sau.";
 const MUTATION_ERROR = "Không thể cập nhật quyền truy cập riêng. Vui lòng thử lại sau.";
 const REVOKE_ERROR = "Không thể thu hồi quyền truy cập riêng. Vui lòng thử lại sau.";
+const INVALID_EXPIRY_ERROR = "Ngày hết hạn phải là hôm nay hoặc một ngày trong tương lai.";
 
 type Student = {
   id: string;
@@ -89,7 +90,7 @@ export function expiryDateValue(value: string): string | null {
   if (value === "") return null;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error("invalid-date");
   const timestamp = Date.parse(`${value}T23:59:59.999Z`);
-  if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString().slice(0, 10) !== value) throw new Error("invalid-date");
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString().slice(0, 10) !== value || timestamp <= Date.now()) throw new Error("invalid-date");
   return `${value}T23:59:59.999Z`;
 }
 
@@ -140,6 +141,7 @@ export default function MaterialDirectAccessPanel({ materialId }: MaterialDirect
   const [editDraft, setEditDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState<BusyAction | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const requestInFlight = useRef(false);
 
   async function loadGrants(): Promise<void> {
     setBusy("loading");
@@ -166,12 +168,14 @@ export default function MaterialDirectAccessPanel({ materialId }: MaterialDirect
 
   async function search(event?: FormEvent<HTMLFormElement>): Promise<void> {
     event?.preventDefault();
+    if (requestInFlight.current) return;
     const query = searchQuery.trim();
     if (query.length < 1 || query.length > 100) {
       setSearchResults([]);
       setError(SEARCH_ERROR);
       return;
     }
+    requestInFlight.current = true;
     setBusy("searching");
     setError(null);
     try {
@@ -184,6 +188,7 @@ export default function MaterialDirectAccessPanel({ materialId }: MaterialDirect
       setSearchResults([]);
       setError(SEARCH_ERROR);
     } finally {
+      requestInFlight.current = false;
       setBusy(null);
     }
   }
@@ -197,10 +202,11 @@ export default function MaterialDirectAccessPanel({ materialId }: MaterialDirect
 
   async function createGrant(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (!selectedStudent) return;
+    if (!selectedStudent || requestInFlight.current) return;
     let expiresAt: string | null;
-    try { expiresAt = expiryDateValue(createDraft.expiresAt); } catch { setError(MUTATION_ERROR); return; }
+    try { expiresAt = expiryDateValue(createDraft.expiresAt); } catch { setError(INVALID_EXPIRY_ERROR); return; }
     const userId = selectedStudent.id;
+    requestInFlight.current = true;
     setBusy(`create:${userId}`);
     setError(null);
     try {
@@ -213,6 +219,8 @@ export default function MaterialDirectAccessPanel({ materialId }: MaterialDirect
     } catch {
       setError(MUTATION_ERROR);
       setBusy(null);
+    } finally {
+      requestInFlight.current = false;
     }
   }
 
@@ -224,10 +232,11 @@ export default function MaterialDirectAccessPanel({ materialId }: MaterialDirect
 
   async function updateGrant(event: FormEvent<HTMLFormElement>, grant: Grant): Promise<void> {
     event.preventDefault();
-    if (!editDraft) return;
+    if (!editDraft || requestInFlight.current) return;
     let expiresAt: string | null;
-    try { expiresAt = expiryDateValue(editDraft.expiresAt); } catch { setError(MUTATION_ERROR); return; }
+    try { expiresAt = expiryDateValue(editDraft.expiresAt); } catch { setError(INVALID_EXPIRY_ERROR); return; }
     const userId = grant.user_id;
+    requestInFlight.current = true;
     setBusy(`update:${userId}`);
     setError(null);
     try {
@@ -242,12 +251,17 @@ export default function MaterialDirectAccessPanel({ materialId }: MaterialDirect
     } catch {
       setError(MUTATION_ERROR);
       setBusy(null);
+    } finally {
+      requestInFlight.current = false;
     }
   }
 
   async function revokeGrant(grant: Grant): Promise<void> {
+    if (requestInFlight.current) return;
     if (!window.confirm(`Thu hồi quyền riêng của ${studentLabel(students[grant.user_id], grant.user_id)} trên tài liệu này?`)) return;
+    if (requestInFlight.current) return;
     const userId = grant.user_id;
+    requestInFlight.current = true;
     setBusy(`revoke:${userId}`);
     setError(null);
     try {
@@ -256,6 +270,8 @@ export default function MaterialDirectAccessPanel({ materialId }: MaterialDirect
     } catch {
       setError(REVOKE_ERROR);
       setBusy(null);
+    } finally {
+      requestInFlight.current = false;
     }
   }
 
@@ -263,10 +279,6 @@ export default function MaterialDirectAccessPanel({ materialId }: MaterialDirect
     const next = { ...draft, [key]: value } as Draft;
     if (key === "canView" && value === false) next.canDownload = false;
     setter(next);
-  }
-
-  function handleSearchKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
-    if (event.key === "Enter") void search();
   }
 
   const statusId = `material-direct-access-status-${canonicalMaterialId}`;
@@ -285,16 +297,16 @@ export default function MaterialDirectAccessPanel({ materialId }: MaterialDirect
       <div className="mt-5 border-b border-ink/10 pb-5">
         <h5 className="text-sm font-black text-ink">Tìm học viên để cấp quyền</h5>
         <form onSubmit={(event) => void search(event)} className="mt-3 flex flex-wrap items-end gap-3">
-          <label className="min-w-[min(100%,_20rem)] flex-1 text-sm font-bold text-ink/65"><span>Tên, email hoặc mã học viên</span><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onInput={(event) => setSearchQuery(event.currentTarget.value)} onKeyDown={handleSearchKeyDown} className="notebook-input mt-1" aria-label="Tìm học viên" maxLength={100} autoComplete="off" /></label>
+          <label className="min-w-0 flex-1 text-sm font-bold text-ink/65 sm:min-w-[20rem]"><span className="break-words [overflow-wrap:anywhere]">Tên, email hoặc mã học viên</span><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onInput={(event) => setSearchQuery(event.currentTarget.value)} className="notebook-input mt-1 min-w-0 max-w-full" aria-label="Tìm học viên" maxLength={100} autoComplete="off" /></label>
           <button type="submit" disabled={busy !== null} className="notebook-submit-btn min-h-11 px-5 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50">{busy === "searching" ? "Đang tìm…" : "Tìm học viên"}</button>
         </form>
-        {searchResults.length > 0 ? <ul aria-label="Kết quả tìm học viên" className="mt-3 grid gap-2 sm:grid-cols-2">{searchResults.map((student) => <li key={student.id}><button type="button" onClick={() => chooseStudent(student)} disabled={busy !== null} className="w-full rounded-xl border border-ink/10 bg-white px-4 py-3 text-left text-sm transition hover:border-accent disabled:opacity-50"><span className="block font-extrabold text-ink">{student.full_name}</span><span className="mt-1 block text-xs text-ink/60">{student.student_code ?? student.email ?? "Học viên đã được xác thực"}</span></button></li>)}</ul> : searchQuery.trim() && busy !== "searching" && !error ? <p className="mt-3 text-sm text-ink/65">Không tìm thấy học viên phù hợp.</p> : null}
-        {selectedStudent ? <form onSubmit={(event) => void createGrant(event)} className="mt-4 rounded-xl border border-accent/15 bg-white p-4"><p className="text-sm font-black text-ink">Cấp quyền cho: {selectedStudent.full_name}</p><p className="mt-1 text-xs text-ink/60">{selectedStudent.student_code ?? selectedStudent.email ?? "Học viên đã được xác thực"}</p><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="flex items-center gap-2 text-sm font-bold text-ink"><input type="checkbox" checked={createDraft.canView} onChange={(event) => updateDraft(setCreateDraft, createDraft, "canView", event.target.checked)} disabled={busy !== null} />Được xem tài liệu</label><label className="flex items-center gap-2 text-sm font-bold text-ink"><input type="checkbox" checked={createDraft.canDownload} onChange={(event) => updateDraft(setCreateDraft, createDraft, "canDownload", event.target.checked)} disabled={!createDraft.canView || busy !== null} />Được tải tài liệu</label><label className="text-sm font-bold text-ink/65 sm:col-span-2"><span>Ngày hết hạn (tùy chọn)</span><input type="date" value={createDraft.expiresAt} onChange={(event) => setCreateDraft({ ...createDraft, expiresAt: event.target.value })} disabled={busy !== null} className="notebook-input mt-1 max-w-xs" /></label></div><button type="submit" disabled={busy !== null} className="notebook-submit-btn mt-4 min-h-11 px-5 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50">{busy === `create:${selectedStudent.id}` ? "Đang cấp quyền…" : "Cấp quyền riêng"}</button></form> : null}
+        {searchResults.length > 0 ? <ul aria-label="Kết quả tìm học viên" className="mt-3 grid gap-2 sm:grid-cols-2">{searchResults.map((student) => <li key={student.id} className="min-w-0"><button type="button" onClick={() => chooseStudent(student)} disabled={busy !== null} className="w-full min-w-0 rounded-xl border border-ink/10 bg-white px-4 py-3 text-left text-sm transition hover:border-accent disabled:opacity-50"><span className="block min-w-0 break-words font-extrabold text-ink [overflow-wrap:anywhere]">{student.full_name}</span><span className="mt-1 block min-w-0 break-words text-xs text-ink/60 [overflow-wrap:anywhere]">{student.student_code ?? student.email ?? "Học viên đã được xác thực"}</span></button></li>)}</ul> : searchQuery.trim() && busy !== "searching" && !error ? <p className="mt-3 text-sm text-ink/65">Không tìm thấy học viên phù hợp.</p> : null}
+        {selectedStudent ? <form onSubmit={(event) => void createGrant(event)} className="mt-4 min-w-0 rounded-xl border border-accent/15 bg-white p-4"><p className="min-w-0 break-words text-sm font-black text-ink [overflow-wrap:anywhere]">Cấp quyền cho: {selectedStudent.full_name}</p><p className="mt-1 min-w-0 break-words text-xs text-ink/60 [overflow-wrap:anywhere]">{selectedStudent.student_code ?? selectedStudent.email ?? "Học viên đã được xác thực"}</p><div className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2"><label className="flex min-w-0 items-center gap-2 text-sm font-bold text-ink"><input type="checkbox" checked={createDraft.canView} onChange={(event) => updateDraft(setCreateDraft, createDraft, "canView", event.target.checked)} disabled={busy !== null} />Được xem tài liệu</label><label className="flex min-w-0 items-center gap-2 text-sm font-bold text-ink"><input type="checkbox" checked={createDraft.canDownload} onChange={(event) => updateDraft(setCreateDraft, createDraft, "canDownload", event.target.checked)} disabled={!createDraft.canView || busy !== null} />Được tải tài liệu</label><label className="min-w-0 text-sm font-bold text-ink/65 sm:col-span-2"><span>Ngày hết hạn (tùy chọn)</span><input type="date" value={createDraft.expiresAt} onChange={(event) => setCreateDraft({ ...createDraft, expiresAt: event.target.value })} onInput={(event) => setCreateDraft({ ...createDraft, expiresAt: event.currentTarget.value })} disabled={busy !== null} className="notebook-input mt-1 max-w-xs" /></label></div><button type="submit" disabled={busy !== null} className="notebook-submit-btn mt-4 min-h-11 px-5 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50">{busy === `create:${selectedStudent.id}` ? "Đang cấp quyền…" : "Cấp quyền riêng"}</button></form> : null}
       </div>
       <div className="pt-5">
         <div className="flex flex-wrap items-baseline justify-between gap-2"><h5 className="text-sm font-black text-ink">Danh sách quyền riêng của tài liệu</h5>{loading ? <span role="status" className="text-xs font-semibold text-ink/60">Đang tải danh sách…</span> : null}</div>
         {!loading && loaded && grants.length === 0 ? <p className="mt-3 rounded-xl border border-dashed border-ink/15 bg-white/70 p-4 text-sm text-ink/65">Chưa cấp quyền riêng cho tài liệu này.</p> : null}
-        <ul className="mt-3 space-y-3">{grants.map((grant) => { const editing = editingUserId === grant.user_id && editDraft !== null; return <li key={grant.user_id} className="rounded-xl border border-ink/10 bg-white p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-extrabold text-ink">{studentLabel(students[grant.user_id], grant.user_id)}</p>{students[grant.user_id]?.student_code || students[grant.user_id]?.email ? <p className="mt-1 text-xs text-ink/60">{students[grant.user_id].student_code ?? students[grant.user_id].email}</p> : null}<p className="mt-2 text-sm font-bold text-ink/70">{materialDirectPermissionLabel(grant)} · {formatExpiry(grant.expires_at)}</p><p className="mt-1 text-xs text-ink/55">Trạng thái: {statusLabel(grant)}</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => startEdit(grant)} disabled={busy !== null} className="min-h-10 rounded-full border border-accent/30 px-4 py-2 text-xs font-extrabold text-accent disabled:cursor-not-allowed disabled:opacity-50">Sửa quyền</button><button type="button" onClick={() => void revokeGrant(grant)} disabled={busy !== null} className="min-h-10 rounded-full border border-rose-200 px-4 py-2 text-xs font-extrabold text-rose-700 disabled:cursor-not-allowed disabled:opacity-50">{busy === `revoke:${grant.user_id}` ? "Đang thu hồi…" : "Thu hồi"}</button></div></div>{editing ? <form onSubmit={(event) => void updateGrant(event, grant)} className="mt-4 border-t border-ink/10 pt-4"><div className="grid gap-3 sm:grid-cols-2"><label className="flex items-center gap-2 text-sm font-bold text-ink"><input type="checkbox" checked={editDraft.canView} onChange={(event) => updateDraft(setEditDraft, editDraft, "canView", event.target.checked)} disabled={busy !== null} />Được xem tài liệu</label><label className="flex items-center gap-2 text-sm font-bold text-ink"><input type="checkbox" checked={editDraft.canDownload} onChange={(event) => updateDraft(setEditDraft, editDraft, "canDownload", event.target.checked)} disabled={!editDraft.canView || busy !== null} />Được tải tài liệu</label><label className="text-sm font-bold text-ink/65 sm:col-span-2"><span>Ngày hết hạn (tùy chọn)</span><input type="date" value={editDraft.expiresAt} onChange={(event) => setEditDraft({ ...editDraft, expiresAt: event.target.value })} disabled={busy !== null} className="notebook-input mt-1 max-w-xs" /></label></div><div className="mt-4 flex flex-wrap gap-2"><button type="submit" disabled={busy !== null} className="notebook-submit-btn min-h-10 px-4 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50">{busy === `update:${grant.user_id}` ? "Đang lưu…" : "Lưu quyền"}</button><button type="button" onClick={() => { setEditingUserId(null); setEditDraft(null); }} disabled={busy !== null} className="min-h-10 rounded-full border border-ink/15 px-4 py-2 text-xs font-extrabold text-ink/70 disabled:opacity-50">Hủy</button></div></form> : null}</li>; })}</ul>
+        <ul className="mt-3 space-y-3">{grants.map((grant) => { const editing = editingUserId === grant.user_id && editDraft !== null; return <li key={grant.user_id} className="min-w-0 rounded-xl border border-ink/10 bg-white p-4"><div className="flex min-w-0 flex-wrap items-start justify-between gap-3"><div className="min-w-0 max-w-full"><p className="min-w-0 break-words font-extrabold text-ink [overflow-wrap:anywhere]">{studentLabel(students[grant.user_id], grant.user_id)}</p>{students[grant.user_id]?.student_code || students[grant.user_id]?.email ? <p className="mt-1 min-w-0 break-words text-xs text-ink/60 [overflow-wrap:anywhere]">{students[grant.user_id].student_code ?? students[grant.user_id].email}</p> : null}<p className="mt-2 min-w-0 break-words text-sm font-bold text-ink/70 [overflow-wrap:anywhere]">{materialDirectPermissionLabel(grant)} · {formatExpiry(grant.expires_at)}</p><p className="mt-1 min-w-0 break-words text-xs text-ink/55 [overflow-wrap:anywhere]">Trạng thái: {statusLabel(grant)}</p></div><div className="flex min-w-0 max-w-full flex-wrap gap-2"><button type="button" onClick={() => startEdit(grant)} disabled={busy !== null} className="min-h-10 rounded-full border border-accent/30 px-4 py-2 text-xs font-extrabold text-accent disabled:cursor-not-allowed disabled:opacity-50">Sửa quyền</button><button type="button" onClick={() => void revokeGrant(grant)} disabled={busy !== null} className="min-h-10 rounded-full border border-rose-200 px-4 py-2 text-xs font-extrabold text-rose-700 disabled:cursor-not-allowed disabled:opacity-50">{busy === `revoke:${grant.user_id}` ? "Đang thu hồi…" : "Thu hồi"}</button></div></div>{editing ? <form onSubmit={(event) => void updateGrant(event, grant)} className="mt-4 min-w-0 border-t border-ink/10 pt-4"><div className="grid min-w-0 gap-3 sm:grid-cols-2"><label className="flex min-w-0 items-center gap-2 text-sm font-bold text-ink"><input type="checkbox" checked={editDraft.canView} onChange={(event) => updateDraft(setEditDraft, editDraft, "canView", event.target.checked)} disabled={busy !== null} />Được xem tài liệu</label><label className="flex min-w-0 items-center gap-2 text-sm font-bold text-ink"><input type="checkbox" checked={editDraft.canDownload} onChange={(event) => updateDraft(setEditDraft, editDraft, "canDownload", event.target.checked)} disabled={!editDraft.canView || busy !== null} />Được tải tài liệu</label><label className="min-w-0 text-sm font-bold text-ink/65 sm:col-span-2"><span>Ngày hết hạn (tùy chọn)</span><input type="date" value={editDraft.expiresAt} onChange={(event) => setEditDraft({ ...editDraft, expiresAt: event.target.value })} onInput={(event) => setEditDraft({ ...editDraft, expiresAt: event.currentTarget.value })} disabled={busy !== null} className="notebook-input mt-1 max-w-xs" /></label></div><div className="mt-4 flex flex-wrap gap-2"><button type="submit" disabled={busy !== null} className="notebook-submit-btn min-h-10 px-4 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50">{busy === `update:${grant.user_id}` ? "Đang lưu…" : "Lưu quyền"}</button><button type="button" onClick={() => { setEditingUserId(null); setEditDraft(null); }} disabled={busy !== null} className="min-h-10 rounded-full border border-ink/15 px-4 py-2 text-xs font-extrabold text-ink/70 disabled:opacity-50">Hủy</button></div></form> : null}</li>; })}</ul>
       </div>
     </div> : null}
   </section>;
