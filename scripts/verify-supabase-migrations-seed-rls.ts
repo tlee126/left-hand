@@ -50,6 +50,8 @@ const immutableMigrationHashes = {
   "0027_consultation_rpc_private_boundary.sql": "774388ad8fdc272930e563657ae90ceafe64a997c44e23f40e0925d52aae478e"
 } as const;
 
+const materialDirectAccessMigration0042Hash = "c4a60e3bb1d7b7db041499299efe173f3fa08a88f9949aee0fd09d6fb8174138";
+
 export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
 
 function canonicalMigrationContent(content: string): string {
@@ -2222,6 +2224,32 @@ export function assertMaterialDirectAccessMigrationContract(sql0042: string): vo
   });
 }
 
+/** Locks migration 0042 so the additive service_role grant cannot rewrite its boundary. */
+export function assertMaterialDirectAccessMigration0042Unchanged(sql0042: string): void {
+  const actualHash = createHash("sha256").update(canonicalMigrationContent(sql0042), "utf8").digest("hex");
+  if (actualHash !== materialDirectAccessMigration0042Hash) {
+    throw new Error("Migration 0042 must remain unchanged (canonical SHA-256 mismatch)");
+  }
+}
+
+/** Exact read-only service_role privilege contract for migration 0043. */
+export function assertMaterialAccessSelectGrantMigrationContract(sql0043: string): void {
+  const statements = stripSqlCommentsAndSplitStatements(sql0043).map(normalizeMigrationStatement);
+  const expected = [
+    "grant select on table public.profiles to service_role",
+    "grant select on table public.materials to service_role",
+    "grant select on table public.material_direct_grants to service_role"
+  ];
+  if (statements.length !== expected.length || statements.some((statement, index) => statement.toLowerCase() !== expected[index])) {
+    throw new Error("Migration 0043 must contain exactly the three service_role SELECT grants");
+  }
+  if (/\b(?:insert|update|delete|truncate|references|trigger)\b/i.test(statements.join(" ; "))
+    || /\bgrant\s+(?!select\b)[^;]+\bto\s+service_role\b/i.test(statements.join(" ; "))
+    || /\bto\s+(?:public|anon|authenticated)\b/i.test(statements.join(" ; "))) {
+    throw new Error("Migration 0043 must not grant write privileges, extra service_role privileges, or direct public-role access");
+  }
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -2279,7 +2307,8 @@ export async function runAudit(): Promise<boolean> {
       "0039_grant_material_assets_select_to_service_role.sql",
       "0040_material_download_permission.sql",
       "0041_material_atomic_update.sql",
-      "0042_material_direct_access.sql"
+      "0042_material_direct_access.sql",
+      "0043_grant_service_role_material_access_select.sql"
     ];
 
     const migrationNumbers = sqlFiles.map((filename) => {
@@ -2292,7 +2321,7 @@ export async function runAudit(): Promise<boolean> {
       && expected.every((filename, index) => sqlFiles[index] === filename);
     results.push({
       category: "Migrations",
-      check: "All 42 migration files exist with complete strict numerical order",
+      check: "All 43 migration files exist with complete strict numerical order",
       passed: matchesCanonicalList && hasStrictSequentialNumbers,
       details: sqlFiles.join(", ")
     });
@@ -2911,6 +2940,17 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0042_material_direct_access", check: "Adds per-learner material grants with approved-admin-only atomic mutations", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0042ContractValid) results.push({ category: "0042_material_direct_access", check: "Adds per-learner material grants with approved-admin-only atomic mutations", passed: true, details: "Foreign keys, unique user/material scope, RLS boundary, expiry/revocation checks, and three approved-admin RPCs verified" });
+
+    const sql0043 = await fs.readFile(path.join(migrationsDir, "0043_grant_service_role_material_access_select.sql"), "utf-8");
+    let migration0043ContractValid = true;
+    try {
+      assertMaterialDirectAccessMigration0042Unchanged(sql0042);
+      assertMaterialAccessSelectGrantMigrationContract(sql0043);
+    } catch (error) {
+      migration0043ContractValid = false;
+      results.push({ category: "0043_grant_service_role_material_access_select", check: "Preserves migration 0042 and grants only service_role SELECT on profiles, materials, and material_direct_grants", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0043ContractValid) results.push({ category: "0043_grant_service_role_material_access_select", check: "Preserves migration 0042 and grants only service_role SELECT on profiles, materials, and material_direct_grants", passed: true, details: "Exact three read grants verified; no write, public-role, or extra privilege grants" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
