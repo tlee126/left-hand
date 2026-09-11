@@ -1,6 +1,28 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { test } from "node:test";
-import { hasCurrentMaterialAsset, isVideoMaterialMimeType, materialViewLabel, openMaterialDocument } from "../../app/quan-tri/catalog/material-view-button";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
+import {
+  beginMaterialViewerLoad,
+  closeMaterialViewer,
+  completeMaterialViewerLoad,
+  createMaterialViewerState,
+  fetchMaterialDocumentUrl,
+  hasCurrentMaterialAsset,
+  isValidMaterialUrl,
+  isVideoMaterialMimeType,
+  materialViewLabel,
+  materialViewerKind,
+  default as MaterialViewButton
+} from "../../app/quan-tri/catalog/material-view-button";
+
+const { JSDOM } = createRequire(import.meta.url)("jsdom") as { JSDOM: new (html?: string, options?: { url?: string }) => any };
+
+const PRODUCT_ID = "2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64";
+const SIGNED_URL = "https://storage.example/material?signed=1";
 
 test("material view button visibility follows current asset presence", () => {
   assert.equal(hasCurrentMaterialAsset(undefined), false);
@@ -9,216 +31,278 @@ test("material view button visibility follows current asset presence", () => {
   assert.equal(hasCurrentMaterialAsset(2), true);
 });
 
-test("material view labels use the stored MIME type", () => {
+test("material labels and viewer kinds use the stored MIME type", () => {
   assert.equal(materialViewLabel("application/pdf"), "Xem tài liệu");
   assert.equal(materialViewLabel("video/mp4"), "Xem video");
   assert.equal(materialViewLabel("video/webm"), "Xem video");
   assert.equal(materialViewLabel("video/quicktime"), "Xem video");
-  assert.equal(isVideoMaterialMimeType("video/mp4"), true);
-  assert.equal(isVideoMaterialMimeType("video/webm"), true);
-  assert.equal(isVideoMaterialMimeType("video/quicktime"), true);
+  assert.equal(materialViewerKind("application/pdf"), "pdf");
+  assert.equal(materialViewerKind("video/mp4"), "video");
+  assert.equal(materialViewerKind("video/webm"), "video");
+  assert.equal(materialViewerKind("video/quicktime"), "video");
+  assert.equal(materialViewerKind("application/octet-stream"), null);
+  assert.equal(materialViewerKind("text/plain"), null);
+  assert.equal(materialViewerKind(undefined), null);
+  assert.equal(materialViewerKind(null), null);
   assert.equal(isVideoMaterialMimeType("application/pdf"), false);
 });
 
-test("material video viewer calls the signed-url API with the product id and opens the signed URL", async () => {
-  const opened = { location: { href: "" }, close: () => undefined };
-  const originalWindow = globalThis.window;
+test("unsupported MIME renders no viewer and cannot call the signed-url API", () => {
+  let fetchCalls = 0;
   const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  globalThis.fetch = async () => { fetchCalls += 1; return Response.json({ url: SIGNED_URL }); };
   globalThis.window = {
-    open: () => opened,
-    location: { assign: () => assert.fail("video popup should not use fallback") }
+    open: () => { throw new Error("window.open must not be called"); },
+    location: { assign: () => { throw new Error("window.location.assign must not be called"); } }
   } as unknown as Window & typeof globalThis;
-  globalThis.fetch = async (input) => {
-    assert.equal(input, "/api/materials/2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64/signed-url");
-    return Response.json({ url: "https://storage.example/video.mp4?signed=1" });
-  };
   try {
-    await openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64");
-    assert.equal(opened.location.href, "https://storage.example/video.mp4?signed=1");
+    const html = renderToStaticMarkup(createElement(MaterialViewButton, { productId: PRODUCT_ID, mimeType: "application/octet-stream" }));
+    assert.equal(html, "");
+    assert.equal(fetchCalls, 0);
+    assert.doesNotMatch(html, /iframe|video/);
   } finally {
-    globalThis.window = originalWindow;
     globalThis.fetch = originalFetch;
+    globalThis.window = originalWindow;
   }
 });
 
-test("material viewer opens the popup before fetching and navigates it to the signed url", async () => {
-  const events: string[] = [];
-  const opened = { location: { href: "" }, close: () => undefined };
-  const originalWindow = globalThis.window;
-  const originalFetch = globalThis.fetch;
-  globalThis.window = {
-    open: () => {
-      events.push("open");
-      return opened;
-    },
-    location: { assign: () => events.push("fallback") }
-  } as unknown as Window & typeof globalThis;
-  globalThis.fetch = async (input) => {
-    events.push("fetch");
-    assert.equal(input, "/api/materials/2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64/signed-url");
-    return Response.json({ url: "https://storage.example/signed-url" });
-  };
-  try {
-    await openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64");
-    assert.deepEqual(events, ["open", "fetch"]);
-    assert.equal(opened.location.href, "https://storage.example/signed-url");
-  } finally {
-    globalThis.window = originalWindow;
-    globalThis.fetch = originalFetch;
-  }
-});
+test("mounted unsupported MIME values never fetch, navigate, or render a viewer", async () => {
+  const unsupportedMimeTypes: Array<string | undefined | null> = ["text/plain", undefined, null];
 
-test("material viewer falls back to the current tab when the popup is blocked", async () => {
-  const events: string[] = [];
-  const originalWindow = globalThis.window;
-  const originalFetch = globalThis.fetch;
-  globalThis.window = {
-    open: () => {
-      events.push("open");
-      return null;
-    },
-    location: {
-      assign: (url: string) => {
-        events.push(`assign:${url}`);
+  for (const mimeType of unsupportedMimeTypes) {
+    const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+    const originalGlobals = {
+      window: globalThis.window,
+      document: globalThis.document,
+      navigator: globalThis.navigator,
+      HTMLElement: globalThis.HTMLElement,
+      Node: globalThis.Node,
+      DOMException: globalThis.DOMException,
+      IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT,
+      fetch: globalThis.fetch
+    };
+    const navigationCalls: string[] = [];
+    const installGlobal = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, value, writable: true });
+    installGlobal("window", {
+      open: () => { navigationCalls.push("window.open"); },
+      location: { assign: () => { navigationCalls.push("window.location.assign"); } }
+    } as unknown as Window & typeof globalThis);
+    installGlobal("document", dom.window.document);
+    installGlobal("navigator", dom.window.navigator);
+    installGlobal("HTMLElement", dom.window.HTMLElement);
+    installGlobal("Node", dom.window.Node);
+    installGlobal("DOMException", dom.window.DOMException);
+    installGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+
+    let fetchCalls = 0;
+    globalThis.fetch = async () => {
+      fetchCalls += 1;
+      return Response.json({ url: SIGNED_URL });
+    };
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(createElement(MaterialViewButton, { productId: PRODUCT_ID, mimeType: mimeType as string }));
+      });
+      assert.equal(container.innerHTML, "");
+      assert.equal(fetchCalls, 0);
+      assert.equal(navigationCalls.length, 0);
+      assert.equal(container.querySelector('[role="dialog"]'), null);
+      assert.equal(container.querySelector("iframe, embed, object, video"), null);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      globalThis.fetch = originalGlobals.fetch;
+      for (const [name, value] of Object.entries(originalGlobals)) {
+        if (name !== "fetch") installGlobal(name, value);
       }
     }
-  } as unknown as Window & typeof globalThis;
-  globalThis.fetch = async (input) => {
-    events.push("fetch");
-    assert.equal(input, "/api/materials/2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64/signed-url");
-    return Response.json({ url: "https://storage.example/signed-url" });
+  }
+});
+
+test("mounted PDF and video viewers close, reset their URL, and reopen with a fresh signed URL", async () => {
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+  const originalGlobals = {
+    window: globalThis.window,
+    document: globalThis.document,
+    navigator: globalThis.navigator,
+    HTMLElement: globalThis.HTMLElement,
+    Node: globalThis.Node,
+    DOMException: globalThis.DOMException,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT,
+    fetch: globalThis.fetch
   };
+  const installGlobal = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, value, writable: true });
+  installGlobal("window", dom.window);
+  installGlobal("document", dom.window.document);
+  installGlobal("navigator", dom.window.navigator);
+  installGlobal("HTMLElement", dom.window.HTMLElement);
+  installGlobal("Node", dom.window.Node);
+  installGlobal("DOMException", dom.window.DOMException);
+  installGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+
+  const pendingResponses: Array<(response: Response) => void> = [];
+  const fetchCalls: string[] = [];
+  globalThis.fetch = async (input) => {
+    fetchCalls.push(String(input));
+    return new Promise<Response>((resolve) => pendingResponses.push(resolve));
+  };
+
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const render = (mimeType: string) => act(async () => {
+    root.render(createElement(MaterialViewButton, { productId: PRODUCT_ID, mimeType }));
+  });
+  const resolveNext = async (url: string) => act(async () => {
+    const resolveResponse = pendingResponses.shift();
+    assert.ok(resolveResponse, "the viewer should have an outstanding signed-url request");
+    resolveResponse(Response.json({ url }));
+    await Promise.resolve();
+  });
+  const clickButton = async (label: string) => act(async () => {
+    const button = [...container.querySelectorAll("button")].find((candidate) => candidate.textContent === label);
+    assert.ok(button, `expected button ${label}`);
+    button.click();
+  });
+  const clickClose = async () => act(async () => {
+    const dialog = container.querySelector('[role="dialog"]');
+    assert.ok(dialog, "expected an open viewer dialog");
+    const closeButton = [...dialog.querySelectorAll("button")].find((candidate) => candidate.textContent === "Đóng");
+    assert.ok(closeButton, "expected the Đóng button");
+    closeButton.click();
+  });
+
   try {
-    await openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64");
-    assert.deepEqual(events, ["open", "fetch", "assign:https://storage.example/signed-url"]);
+    await render("application/pdf");
+    await clickButton("Xem tài liệu");
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(container.querySelector('[role="dialog"]') !== null, true);
+    assert.equal(container.querySelector("iframe"), null);
+    await resolveNext(SIGNED_URL);
+    const firstPdf = container.querySelector("iframe");
+    assert.ok(firstPdf);
+    assert.equal(firstPdf.getAttribute("src"), SIGNED_URL);
+    await clickClose();
+    assert.equal(container.querySelector('[role="dialog"]'), null);
+    assert.equal(container.querySelector("iframe"), null);
+    assert.doesNotMatch(container.innerHTML, /storage\.example\/material\?signed=1/);
+
+    const reopenedPdfUrl = "https://storage.example/material?signed=2";
+    await clickButton("Xem tài liệu");
+    await resolveNext(reopenedPdfUrl);
+    const reopenedPdf = container.querySelector("iframe");
+    assert.ok(reopenedPdf);
+    assert.equal(reopenedPdf.getAttribute("src"), reopenedPdfUrl);
+    assert.notEqual(reopenedPdf.getAttribute("src"), SIGNED_URL);
+    await clickClose();
+
+    await render("video/mp4");
+    await clickButton("Xem video");
+    await resolveNext("https://storage.example/video?signed=3");
+    const firstVideo = container.querySelector("video");
+    assert.ok(firstVideo);
+    assert.equal(firstVideo.controls, true);
+    assert.equal(firstVideo.autoplay, false);
+    assert.equal(firstVideo.getAttribute("src"), "https://storage.example/video?signed=3");
+    await clickClose();
+    assert.equal(container.querySelector("video"), null);
+    assert.doesNotMatch(container.innerHTML, /storage\.example\/video\?signed=3/);
+
+    await clickButton("Xem video");
+    await resolveNext("https://storage.example/video?signed=4");
+    const reopenedVideo = container.querySelector("video");
+    assert.ok(reopenedVideo);
+    assert.equal(reopenedVideo.getAttribute("src"), "https://storage.example/video?signed=4");
+    assert.notEqual(reopenedVideo.getAttribute("src"), "https://storage.example/video?signed=3");
+    await clickClose();
+
+    await render("application/octet-stream");
+    assert.equal(container.innerHTML, "");
+    assert.equal(fetchCalls.length, 4);
   } finally {
-    globalThis.window = originalWindow;
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("material viewer accepts a valid http url", async () => {
-  const opened = { location: { href: "" }, close: () => undefined };
-  const originalWindow = globalThis.window;
-  const originalFetch = globalThis.fetch;
-  globalThis.window = {
-    open: () => opened,
-    location: { assign: () => assert.fail("valid popup url should not use fallback") }
-  } as unknown as Window & typeof globalThis;
-  globalThis.fetch = async () => Response.json({ url: "http://storage.example/material.pdf" });
-  try {
-    await openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64");
-    assert.equal(opened.location.href, "http://storage.example/material.pdf");
-  } finally {
-    globalThis.window = originalWindow;
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("material viewer rejects unsafe or malformed urls and closes the popup", async () => {
-  const invalidUrls: unknown[] = [
-    "",
-    "   ",
-    " https://storage.example/material.pdf",
-    "https://storage.example/material.pdf ",
-    "https://example.com/material file.pdf",
-    "https://[malformed",
-    "javascript:alert(1)",
-    "data:application/pdf;base64,ZmFrZQ==",
-    "blob:https://storage.example/asset-id",
-    "file:///tmp/material.pdf",
-    "ftp://storage.example/material.pdf",
-    "custom://storage.example/material.pdf",
-    "/materials/material.pdf",
-    undefined,
-    null,
-    42,
-    { url: "https://storage.example/material.pdf" }
-  ];
-
-  for (const invalidUrl of invalidUrls) {
-    let closed = false;
-    let assigned = false;
-    let popupHref = "";
-    const originalWindow = globalThis.window;
-    const originalFetch = globalThis.fetch;
-    globalThis.window = {
-      open: () => ({ location: { get href() { return popupHref; }, set href(value: string) { popupHref = value; } }, close: () => { closed = true; } }),
-      location: { assign: () => { assigned = true; } }
-    } as unknown as Window & typeof globalThis;
-    globalThis.fetch = async () => Response.json({ url: invalidUrl });
-    try {
-      await assert.rejects(openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64"), /Không thể mở tài liệu/);
-      assert.equal(closed, true, `popup should close for ${JSON.stringify(invalidUrl)}`);
-      assert.equal(popupHref, "", `popup should not navigate for ${JSON.stringify(invalidUrl)}`);
-      assert.equal(assigned, false, `fallback should not run for ${JSON.stringify(invalidUrl)}`);
-    } finally {
-      globalThis.window = originalWindow;
-      globalThis.fetch = originalFetch;
+    await act(async () => root.unmount());
+    container.remove();
+    globalThis.fetch = originalGlobals.fetch;
+    for (const [name, value] of Object.entries(originalGlobals)) {
+      if (name !== "fetch") installGlobal(name, value);
     }
   }
 });
 
-test("material viewer does not fall back when a blocked popup receives an invalid url", async () => {
-  let assigned = false;
-  const originalWindow = globalThis.window;
+test("viewer lifecycle resets URL on close and never reuses the previous URL", () => {
+  const initial = createMaterialViewerState();
+  const loading = beginMaterialViewerLoad();
+  const first = completeMaterialViewerLoad(SIGNED_URL);
+  const closed = closeMaterialViewer();
+  const second = completeMaterialViewerLoad("https://storage.example/other?signed=2");
+  assert.equal(initial.viewerOpen, false);
+  assert.equal(loading.viewerUrl, null);
+  assert.equal(first.viewerOpen, true);
+  assert.equal(closed.viewerOpen, false);
+  assert.equal(closed.viewerUrl, null);
+  assert.notEqual(second.viewerUrl, first.viewerUrl);
+  assert.equal(second.viewerOpen, true);
+});
+
+test("viewer shell has a visible close control and the supported renderers", async () => {
+  const source = await readFile("app/quan-tri/catalog/material-view-button.tsx", "utf8");
+  assert.match(source, />Đóng<\/button>/);
+  assert.match(source, /<iframe title="Tài liệu PDF"/);
+  assert.match(source, /<video controls/);
+  assert.match(source, /closeMaterialViewer\(\)/);
+  assert.doesNotMatch(source, /window\.open|window\.location\.assign/);
+  assert.doesNotMatch(source, /autoPlay/);
+});
+
+test("viewer fetches the signed URL with the product id and does not navigate a popup", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.window = {
-    open: () => null,
-    location: { assign: () => { assigned = true; } }
-  } as unknown as Window & typeof globalThis;
-  globalThis.fetch = async () => Response.json({ url: "javascript:alert(1)" });
+  globalThis.fetch = async (input, init) => {
+    assert.equal(input, `/api/materials/${PRODUCT_ID}/signed-url`);
+    assert.equal((init?.headers as Record<string, string>).Accept, "application/json");
+    return Response.json({ url: SIGNED_URL });
+  };
   try {
-    await assert.rejects(openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64"), /Không thể mở tài liệu/);
-    assert.equal(assigned, false);
+    assert.equal(await fetchMaterialDocumentUrl(PRODUCT_ID), SIGNED_URL);
   } finally {
-    globalThis.window = originalWindow;
     globalThis.fetch = originalFetch;
   }
 });
 
-test("material viewer handles API errors without navigating to an invalid url", async () => {
-  let closed = false;
-  let assigned = false;
-  const originalWindow = globalThis.window;
-  const originalFetch = globalThis.fetch;
-  globalThis.window = {
-    open: () => ({ location: { href: "" }, close: () => { closed = true; } }),
-    location: { assign: () => { assigned = true; } }
-  } as unknown as Window & typeof globalThis;
-  globalThis.fetch = async () => new Response(null, { status: 404 });
-  try {
-    await assert.rejects(openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64"), /Không thể mở tài liệu/);
-    assert.equal(closed, true);
-    assert.equal(assigned, false);
-  } finally {
-    globalThis.window = originalWindow;
-    globalThis.fetch = originalFetch;
-  }
+test("viewer rejects empty, malformed, relative, whitespace and unsafe URLs", () => {
+  const invalidUrls: unknown[] = [
+    "", "   ", " https://storage.example/material.pdf", "https://storage.example/material.pdf ",
+    "https://example.com/material file.pdf", "https://[malformed", "javascript:alert(1)",
+    "data:application/pdf;base64,ZmFrZQ==", "blob:https://storage.example/asset-id",
+    "file:///tmp/material.pdf", "ftp://storage.example/material.pdf", "custom://storage.example/material.pdf",
+    "/materials/material.pdf", undefined, null, 42, { url: SIGNED_URL }
+  ];
+  for (const value of invalidUrls) assert.equal(isValidMaterialUrl(value), false, JSON.stringify(value));
+  assert.equal(isValidMaterialUrl("http://storage.example/material.pdf"), true);
+  assert.equal(isValidMaterialUrl(SIGNED_URL), true);
 });
 
-test("material viewer does not log the signed url or token", async () => {
-  const signedUrl = "https://storage.example/signed-url?token=secret-token";
-  const logged: unknown[][] = [];
-  const originalWindow = globalThis.window;
+test("API errors and malformed payloads become a generic error without logging the URL", async () => {
   const originalFetch = globalThis.fetch;
   const originalLog = console.log;
   const originalWarn = console.warn;
   const originalError = console.error;
-  globalThis.window = {
-    open: () => ({ location: { href: "" }, close: () => undefined }),
-    location: { assign: () => undefined }
-  } as unknown as Window & typeof globalThis;
-  globalThis.fetch = async () => Response.json({ url: signedUrl });
-  console.log = (...args: unknown[]) => logged.push(args);
-  console.warn = (...args: unknown[]) => logged.push(args);
-  console.error = (...args: unknown[]) => logged.push(args);
+  const logged: unknown[] = [];
+  globalThis.fetch = async () => new Response(null, { status: 404 });
+  console.log = (...args: unknown[]) => logged.push(...args);
+  console.warn = (...args: unknown[]) => logged.push(...args);
+  console.error = (...args: unknown[]) => logged.push(...args);
   try {
-    await openMaterialDocument("2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64");
-    assert.equal(logged.flat().some((value) => String(value).includes(signedUrl)), false);
-    assert.equal(logged.flat().some((value) => String(value).includes("secret-token")), false);
+    await assert.rejects(fetchMaterialDocumentUrl(PRODUCT_ID), /Không thể mở tài liệu/);
+    globalThis.fetch = async () => Response.json({ url: "javascript:alert(1)" });
+    await assert.rejects(fetchMaterialDocumentUrl(PRODUCT_ID), /Không thể mở tài liệu/);
+    assert.equal(logged.length, 0);
   } finally {
-    globalThis.window = originalWindow;
     globalThis.fetch = originalFetch;
     console.log = originalLog;
     console.warn = originalWarn;
