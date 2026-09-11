@@ -30,6 +30,10 @@ async function withMountedPanel(handler: FetchHandler, callback: (ctx: { contain
   const install = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
   install("window", dom.window); install("document", dom.window.document); install("navigator", dom.window.navigator);
   install("HTMLElement", dom.window.HTMLElement); install("Node", dom.window.Node); install("IS_REACT_ACT_ENVIRONMENT", true);
+  // ReactDOM is imported before JSDOM exists in this test process and falls back to
+  // its legacy input-event path; provide the DOM methods that path expects.
+  (dom.window.HTMLElement.prototype as any).attachEvent = () => {};
+  (dom.window.HTMLElement.prototype as any).detachEvent = () => {};
   const calls: Array<{ url: string; method: string; body: unknown }> = [];
   globalThis.fetch = async (input, init) => {
     const url = String(input); const method = init?.method ?? "GET";
@@ -338,8 +342,73 @@ test("Enter submits student search exactly once", async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const input = container.querySelector('input[aria-label="Tìm học viên"]') as HTMLInputElement;
     await setInput(dom, input, "student");
-    await act(async () => { input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true })); input.form!.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true })); await Promise.resolve(); });
+    await act(async () => { input.focus(); input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true })); input.form!.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true })); await Promise.resolve(); });
     assert.equal(searchCalls, 1);
+  });
+});
+
+test("duplicate search clicks are blocked while pending and the guard releases after success", async () => {
+  let releaseSearch: ((response: Response) => void) | null = null;
+  const calls: Array<{ url: string; method: string; body: unknown }> = [];
+  await withMountedPanel((url, init) => {
+    const method = init?.method ?? "GET";
+    if (url.includes("/students/search")) {
+      calls.push({ url, method, body: init?.body ?? null });
+      return new Promise<Response>((resolve) => { releaseSearch = resolve; });
+    }
+    return responseFor(url, method, []);
+  }, async ({ container, dom, flush }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); }); await flush();
+    const input = container.querySelector('input[aria-label="Tìm học viên"]') as HTMLInputElement;
+    await setInput(dom, input, "pending-query");
+    const searchButton = clickButton(container, "Tìm học viên");
+    await submitForm(input.form!, dom);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0], { url: "/api/admin/students/search?q=pending-query", method: "GET", body: null });
+    assert.equal(searchButton.disabled, true);
+    searchButton.click(); searchButton.click();
+    assert.equal(calls.length, 1);
+    releaseSearch!(Response.json({ students: [{ id: STUDENT_A, full_name: "Pending Result", email: "pending@example.test", student_code: "P01" }] }));
+    await flush();
+    assert.equal(searchButton.disabled, false);
+    assert.match(container.textContent ?? "", /Pending Result/);
+
+    await submitForm(input.form!, dom);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1], { url: "/api/admin/students/search?q=pending-query", method: "GET", body: null });
+  });
+});
+
+test("search retry after failure creates exactly one new request and renders its result", async () => {
+  let searchCalls = 0;
+  const calls: Array<{ url: string; method: string; body: unknown }> = [];
+  await withMountedPanel((url, init) => {
+    const method = init?.method ?? "GET";
+    if (url.includes("/students/search")) {
+      calls.push({ url, method, body: init?.body ?? null });
+      searchCalls += 1;
+      if (searchCalls === 1) return Response.json({ error: "raw search provider secret" }, { status: 500 });
+      return Response.json({ students: [{ id: STUDENT_B, full_name: "Retry Result", email: "retry@example.test", student_code: "R02" }] });
+    }
+    return responseFor(url, method, []);
+  }, async ({ container, dom, flush }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); }); await flush();
+    const input = container.querySelector('input[aria-label="Tìm học viên"]') as HTMLInputElement;
+    await setInput(dom, input, "retry-query");
+    await submitForm(input.form!, dom);
+    await flush();
+    assert.equal(searchCalls, 1);
+    assert.deepEqual(calls[0], { url: "/api/admin/students/search?q=retry-query", method: "GET", body: null });
+    assert.match(container.textContent ?? "", /Không thể tìm học viên/);
+    assert.doesNotMatch(container.textContent ?? "", /raw search provider secret/);
+    assert.equal(clickButton(container, "Tìm học viên").disabled, false);
+
+    await submitForm(input.form!, dom);
+    await flush();
+    assert.equal(searchCalls, 2);
+    assert.deepEqual(calls[1], { url: "/api/admin/students/search?q=retry-query", method: "GET", body: null });
+    assert.match(container.textContent ?? "", /Retry Result/);
+    assert.doesNotMatch(container.textContent ?? "", /Không thể tìm học viên/);
   });
 });
 
