@@ -162,6 +162,36 @@ test("direct-granted materials are visible without entitlement and use direct do
   assert.deepEqual(result?.materials.map((row: any) => ({ productId: row.productId, allowDownload: row.allowDownload })), [{ productId: products[0].id, allowDownload: true }]);
 });
 
+test("entitled materials explicitly fall back to materials.allow_download when no direct grant exists", async () => {
+  configureProducts(1);
+  products[0].kind = "material";
+  for (const allowDownload of [true, false]) {
+    materials = [{ product_id: products[0].id, pages: 3, allow_download: allowDownload }];
+    directGrants = [];
+
+    const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
+
+    assert.deepEqual(result?.materials.map((row: any) => ({ productId: row.productId, allowDownload: row.allowDownload })), [{ productId: products[0].id, allowDownload }]);
+    assert.deepEqual(directGrantBatchCalls, [[products[0].id]], `direct-grant lookup must not replace entitlement fallback for allow_download=${allowDownload}`);
+    resetData();
+    configureProducts(1);
+    products[0].kind = "material";
+  }
+});
+
+test("a direct grant for another subject/product does not alter the current workspace", async () => {
+  configureProducts(1);
+  products[0].kind = "material";
+  materials = [{ product_id: products[0].id, pages: 3, allow_download: false }];
+  const otherSubjectProductId = "750e8400-e29b-41d4-a716-446655440000";
+  directGrants = [{ user_id: USER_ID, material_id: otherSubjectProductId, can_view: true, can_download: true, revoked_at: null, expires_at: null }];
+
+  const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
+
+  assert.deepEqual(result?.materials.map((row: any) => ({ productId: row.productId, allowDownload: row.allowDownload })), [{ productId: products[0].id, allowDownload: false }]);
+  assert.deepEqual(directGrantBatchCalls, [[products[0].id]]);
+});
+
 test("direct grants override entitlement visibility and download policy without fallback", async () => {
   configureProducts(1);
   products[0].kind = "material";
