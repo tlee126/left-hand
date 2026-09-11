@@ -339,6 +339,11 @@ before(async () => {
     }
   });
   setMock(require.resolve("../../lib/supabase/server"), { createClient: async () => createSupabaseMock() });
+  setMock(require.resolve("../../lib/supabase/server-admin"), { createServerAdminClient: () => createSupabaseMock() });
+  setMock(require.resolve("../../lib/repositories/material-direct-access-repository"), {
+    getMaterialDirectGrantsForUserAndMaterials: async () => [],
+    isActiveMaterialDirectGrant: () => false
+  });
   setMock(require.resolve("../../components/site/header"), { Header: runtimeAdapter("header") });
   setMock(require.resolve("../../components/site/footer"), { Footer: runtimeAdapter("footer") });
   setMock(require.resolve("../../components/site/floating-actions"), { FloatingActions: runtimeAdapter("aside") });

@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import type { Database } from "@/lib/supabase/database.types";
+import type { MaterialDirectGrant } from "@/lib/repositories/material-direct-access-repository";
 
 type SubjectRow = Database["public"]["Tables"]["subjects"]["Row"];
 type ProductRow = Database["public"]["Tables"]["products"]["Row"];
@@ -131,6 +132,7 @@ export async function getAuthorizedStudentWorkspace(userId: string, slug: string
   if (!canonicalUserId || !Number.isSafeInteger(page) || page < 1 || page > STUDENT_WORKSPACE_MAX_PAGES) throw new StudentWorkspaceRepositoryError();
   try {
     const supabase = await createClient();
+    const { getMaterialDirectGrantsForUserAndMaterials, isActiveMaterialDirectGrant } = await import("@/lib/repositories/material-direct-access-repository");
     const { data: subjectData, error: subjectError } = await supabase.from("subjects").select("id, slug, name, category, faculty_group, color_theme").eq("slug", slug).maybeSingle();
     if (subjectError) throw new Error();
     if (!subjectData) return null;
@@ -143,26 +145,39 @@ export async function getAuthorizedStudentWorkspace(userId: string, slug: string
     let authorizedProductCount = 0;
     let hasNextPage = false;
     let hasHardOverflow = false;
+    const directGrantsByMaterialId = new Map<string, MaterialDirectGrant>();
     productPages: for (let offset = 0; ; offset += STUDENT_WORKSPACE_PAGE_SIZE) {
       const productPage = await readProductPage(supabase, canonicalSubjectId, offset);
       const productIds = productPage.rows.map((product) => canonicalUuid(product.id)).filter((productId): productId is string => productId !== null);
       const entitlementData = await readEntitlements(supabase, canonicalUserId, productIds);
+      const directGrantData = await getMaterialDirectGrantsForUserAndMaterials(canonicalUserId, productIds);
       const entitlementsByProductId = new Map<string, StudentWorkspaceEntitlement>();
       for (const entitlement of entitlementData) {
         const productId = canonicalUuid(entitlement.product_id);
         if (productId && entitlementsByProductId.has(productId)) throw new Error();
         if (productId) entitlementsByProductId.set(productId, entitlement);
       }
+      for (const directGrant of directGrantData) {
+        const materialId = canonicalUuid(directGrant.material_id);
+        if (materialId && directGrantsByMaterialId.has(materialId)) throw new Error();
+        if (materialId) directGrantsByMaterialId.set(materialId, directGrant);
+      }
       for (const product of productPage.rows) {
         const productId = canonicalUuid(product.id);
         if (!productId) continue;
         const entitlement = entitlementsByProductId.get(productId);
-        if (!entitlement
-          || entitlement.status !== "active"
-          || entitlement.revoked_at !== null
-          || (entitlement.expires_at !== null && Date.parse(entitlement.expires_at) <= Date.now())
-          || canonicalUuid(entitlement.user_id) !== canonicalUserId
-          || canonicalUuid(entitlement.product_id) !== productId) continue;
+        const directGrant = product.kind === "material" ? directGrantsByMaterialId.get(productId) : undefined;
+        const hasActiveDirectView = directGrant !== undefined
+          && isActiveMaterialDirectGrant(directGrant, canonicalUserId, productId)
+          && directGrant.can_view;
+        const hasDirectGrant = directGrant !== undefined;
+        const hasActiveEntitlement = entitlement !== undefined
+          && entitlement.status === "active"
+          && entitlement.revoked_at === null
+          && (entitlement.expires_at === null || Date.parse(entitlement.expires_at) > Date.now())
+          && canonicalUuid(entitlement.user_id) === canonicalUserId
+          && canonicalUuid(entitlement.product_id) === productId;
+        if (product.kind === "material" ? (hasDirectGrant ? !hasActiveDirectView : !hasActiveEntitlement) : !hasActiveEntitlement) continue;
         if (authorizedProductCount >= STUDENT_WORKSPACE_MAX_AUTHORIZED_PRODUCTS) {
           hasHardOverflow = true;
           break productPages;
@@ -188,7 +203,7 @@ export async function getAuthorizedStudentWorkspace(userId: string, slug: string
     const materialByProductId = new Map(materialRows.map((row) => [canonicalUuid(row.product_id), row]));
     return {
       subject: { slug: subject.slug, name: subject.name, category: subject.category, facultyGroup: subject.faculty_group, colorTheme: subject.color_theme },
-      materials: materialProducts.flatMap((product) => { const material = materialByProductId.get(product.canonicalId); return material ? [{ productId: product.canonicalId, title: product.title, description: product.description, pages: material.pages, allowDownload: material.allow_download, mimeType: null }] : []; }),
+      materials: materialProducts.flatMap((product) => { const material = materialByProductId.get(product.canonicalId); const directGrant = directGrantsByMaterialId.get(product.canonicalId); return material ? [{ productId: product.canonicalId, title: product.title, description: product.description, pages: material.pages, allowDownload: directGrant ? directGrant.can_download : material.allow_download, mimeType: null }] : []; }),
       courses: courseProducts.map((product) => ({ productId: product.canonicalId, title: product.title, lessons: lessonRows.filter((lesson) => canonicalUuid(lesson.course_id) === product.canonicalId).map((lesson) => ({ id: lesson.id, title: lesson.title, description: lesson.description, durationMinutes: lesson.duration_minutes, orderIndex: lesson.order_index })) })),
       page,
       hasPreviousPage: page > 1,

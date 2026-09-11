@@ -10,9 +10,11 @@ type Row = Record<string, any>;
 let subject: Row;
 let products: Row[];
 let entitlements: Row[];
+let directGrants: Row[];
 let materials: Row[];
 let lessons: Row[];
 let requests: QueryRecord[];
+let directGrantBatchCalls: string[][];
 let repository: any;
 
 function uuid(index: number): string {
@@ -23,9 +25,11 @@ function resetData(): void {
   subject = { id: SUBJECT_ID, slug: "ke-toan", name: "Kế toán", category: "Kế toán", faculty_group: "UFM", color_theme: "accounting" };
   products = [];
   entitlements = [];
+  directGrants = [];
   materials = [];
   lessons = [];
   requests = [];
+  directGrantBatchCalls = [];
 }
 
 function execute(table: string, filters: Array<[string, unknown]>, inFilter: [string, unknown[]] | null, range: [number, number] | null, limit: number | null, orders: string[]): { data: unknown; error: null } {
@@ -101,6 +105,16 @@ before(async () => {
     loaded: true,
     exports: { createClient: async () => createMockClient() }
   } as any;
+  const directAccessPath = require.resolve("../../lib/repositories/material-direct-access-repository");
+  require.cache[directAccessPath] = {
+    id: directAccessPath,
+    filename: directAccessPath,
+    loaded: true,
+    exports: {
+      getMaterialDirectGrantsForUserAndMaterials: async (_userId: string, materialIds: string[]) => { directGrantBatchCalls.push([...materialIds]); return directGrants.filter((grant) => materialIds.includes(grant.material_id)); },
+      isActiveMaterialDirectGrant: (grant: Row, userId: string, materialId: string) => grant.user_id === userId && grant.material_id === materialId && grant.revoked_at === null && (grant.expires_at === null || Date.parse(grant.expires_at) > Date.now())
+    }
+  } as any;
   repository = await import("../../lib/repositories/student-workspace-repository");
 });
 
@@ -136,6 +150,87 @@ test("workspace skips child and entitlement queries when their ID lists are empt
   assert.equal(requests.some((request) => request.table === "materials"), false);
 });
 
+test("direct-granted materials are visible without entitlement and use direct download permission", async () => {
+  configureProducts(1);
+  entitlements = [];
+  products[0].kind = "material";
+  materials = [{ product_id: products[0].id, pages: 3, allow_download: false }];
+  directGrants = [{ user_id: USER_ID, material_id: products[0].id, can_view: true, can_download: true, revoked_at: null, expires_at: null }];
+
+  const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
+
+  assert.deepEqual(result?.materials.map((row: any) => ({ productId: row.productId, allowDownload: row.allowDownload })), [{ productId: products[0].id, allowDownload: true }]);
+});
+
+test("entitled materials explicitly fall back to materials.allow_download when no direct grant exists", async () => {
+  configureProducts(1);
+  products[0].kind = "material";
+  for (const allowDownload of [true, false]) {
+    materials = [{ product_id: products[0].id, pages: 3, allow_download: allowDownload }];
+    directGrants = [];
+
+    const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
+
+    assert.deepEqual(result?.materials.map((row: any) => ({ productId: row.productId, allowDownload: row.allowDownload })), [{ productId: products[0].id, allowDownload }]);
+    assert.deepEqual(directGrantBatchCalls, [[products[0].id]], `direct-grant lookup must not replace entitlement fallback for allow_download=${allowDownload}`);
+    resetData();
+    configureProducts(1);
+    products[0].kind = "material";
+  }
+});
+
+test("a direct grant for another subject/product does not alter the current workspace", async () => {
+  configureProducts(1);
+  products[0].kind = "material";
+  materials = [{ product_id: products[0].id, pages: 3, allow_download: false }];
+  const otherSubjectProductId = "750e8400-e29b-41d4-a716-446655440000";
+  directGrants = [{ user_id: USER_ID, material_id: otherSubjectProductId, can_view: true, can_download: true, revoked_at: null, expires_at: null }];
+
+  const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
+
+  assert.deepEqual(result?.materials.map((row: any) => ({ productId: row.productId, allowDownload: row.allowDownload })), [{ productId: products[0].id, allowDownload: false }]);
+  assert.deepEqual(directGrantBatchCalls, [[products[0].id]]);
+});
+
+test("direct grants override entitlement visibility and download policy without fallback", async () => {
+  configureProducts(1);
+  products[0].kind = "material";
+  materials = [{ product_id: products[0].id, pages: 3, allow_download: true }];
+
+  for (const grant of [
+    { user_id: USER_ID, material_id: products[0].id, can_view: true, can_download: false, revoked_at: null, expires_at: null },
+    { user_id: USER_ID, material_id: products[0].id, can_view: true, can_download: true, revoked_at: null, expires_at: null },
+    { user_id: USER_ID, material_id: products[0].id, can_view: false, can_download: false, revoked_at: null, expires_at: null },
+    { user_id: USER_ID, material_id: products[0].id, can_view: true, can_download: true, revoked_at: "2026-09-01T00:00:00.000Z", expires_at: null },
+    { user_id: USER_ID, material_id: products[0].id, can_view: true, can_download: true, revoked_at: null, expires_at: "2020-01-01T00:00:00.000Z" }
+  ]) {
+    directGrants = [grant];
+    const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
+    if (grant.can_view && grant.revoked_at === null && (grant.expires_at === null || Date.parse(grant.expires_at) > Date.now())) {
+      assert.equal(result?.materials[0].allowDownload, grant.can_download);
+    } else {
+      assert.equal(result, null);
+    }
+  }
+});
+
+test("direct grants are isolated by learner and material identity", async () => {
+  configureProducts(2);
+  products[0].kind = "material";
+  products[1].kind = "material";
+  materials = products.map((product) => ({ product_id: product.id, pages: 3, allow_download: false }));
+  directGrants = [
+    { user_id: "750e8400-e29b-41d4-a716-446655440000", material_id: products[0].id, can_view: true, can_download: true, revoked_at: null, expires_at: null },
+    { user_id: USER_ID, material_id: products[1].id, can_view: true, can_download: true, revoked_at: null, expires_at: null }
+  ];
+  entitlements = [];
+
+  const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
+
+  assert.deepEqual(result?.materials.map((row: any) => row.productId), [products[1].id]);
+  assert.equal(result?.materials[0].allowDownload, true);
+});
+
 test("workspace page boundary sizes are bounded and never claim an incomplete page is complete", async () => {
   for (const count of [0, 1, 99, 100, 101, 499, 500]) {
     resetData();
@@ -168,6 +263,8 @@ test("workspace continuation returns every authorized product once in determinis
   assert.ok(requests.every((request) => !request.inValues || request.inValues.length <= repository.STUDENT_WORKSPACE_ID_CHUNK_SIZE));
   assert.ok(requests.filter((request) => request.table === "product_entitlements").length < 205);
   assert.ok(requests.filter((request) => request.table === "product_entitlements").every((request) => request.orders.includes("product_id")));
+  assert.equal(directGrantBatchCalls.length, 8);
+  assert.ok(directGrantBatchCalls.every((batch) => batch.length <= repository.STUDENT_WORKSPACE_ID_CHUNK_SIZE));
   assert.ok(requests.filter((request) => request.table === "course_lessons").every((request) => request.orders.join(",") === "course_id,order_index,id"));
 });
 
