@@ -2,9 +2,11 @@ import "server-only";
 
 import { getAccountAccess } from "@/lib/auth/session";
 import { getCurrentMaterialAsset, getMaterialDownloadPermission } from "@/lib/repositories/material-asset-repository";
+import { getMaterialDirectGrant, isActiveMaterialDirectGrant } from "@/lib/repositories/material-direct-access-repository";
 import { getActiveProductEntitlement } from "@/lib/repositories/product-entitlement-repository";
 import {
   fetchMaterialObjectForViewer,
+  isValidMaterialRangeHeader,
   isValidMaterialStoragePathForProduct,
   isValidMaterialUuid
 } from "@/lib/storage/material-storage";
@@ -46,7 +48,7 @@ function isValidAsset(value: unknown, productId: string): value is { productId: 
 
 /** Streams a private material as an attachment only after server-side entitlement and policy checks. */
 export async function GET(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ id: string }> }
 ): Promise<Response> {
   let access;
@@ -62,17 +64,25 @@ export async function GET(
   const productId = id.toLowerCase();
   if (access.status !== "approved" || !access.user || !isValidMaterialUuid(access.user.id)) return unavailable();
   const userId = access.user.id.toLowerCase();
+  const rangeHeader = request.headers.get("range");
   const isAdmin = access.profile?.role === "admin";
 
   if (!isAdmin) {
     if (access.profile?.role !== "student") return unavailable();
     try {
-      if (!isValidEntitlement(await getActiveProductEntitlement(userId, productId), userId, productId)) return unavailable();
-      if (await getMaterialDownloadPermission(productId) !== true) return unavailable();
+      const directGrant = await getMaterialDirectGrant(userId, productId);
+      if (directGrant) {
+        if (!isActiveMaterialDirectGrant(directGrant, userId, productId) || !directGrant.can_view || !directGrant.can_download) return unavailable();
+      } else {
+        if (!isValidEntitlement(await getActiveProductEntitlement(userId, productId), userId, productId)) return unavailable();
+        if (await getMaterialDownloadPermission(productId) !== true) return unavailable();
+      }
     } catch {
       return unavailable();
     }
   }
+
+  if (rangeHeader && !isValidMaterialRangeHeader(rangeHeader)) return unavailable(416);
 
   let asset;
   try {
@@ -83,7 +93,8 @@ export async function GET(
   if (!isValidAsset(asset, productId)) return unavailable();
 
   try {
-    const upstream = await fetchMaterialObjectForViewer(asset.storagePath, productId);
+    const upstream = await fetchMaterialObjectForViewer(asset.storagePath, productId, rangeHeader);
+    if (upstream.status === 416) return unavailable(416);
     const headers = new Headers({
       "Cache-Control": CACHE_CONTROL,
       "Content-Type": asset.mimeType,

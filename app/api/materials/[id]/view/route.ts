@@ -2,6 +2,7 @@ import "server-only";
 
 import { getAccountAccess } from "@/lib/auth/session";
 import { getCurrentMaterialAsset } from "@/lib/repositories/material-asset-repository";
+import { getMaterialDirectGrant, isActiveMaterialDirectGrant } from "@/lib/repositories/material-direct-access-repository";
 import { getActiveProductEntitlement } from "@/lib/repositories/product-entitlement-repository";
 import { fetchMaterialObjectForViewer, isValidMaterialStoragePathForProduct, isValidMaterialUuid } from "@/lib/storage/material-storage";
 
@@ -64,7 +65,12 @@ export async function GET(
   if (access.profile?.role !== "admin") {
     if (access.profile?.role !== "student") return unavailable();
     try {
-      if (!isValidEntitlement(await getActiveProductEntitlement(userId, productId), userId, productId)) return unavailable();
+      const directGrant = await getMaterialDirectGrant(userId, productId);
+      if (directGrant) {
+        if (!isActiveMaterialDirectGrant(directGrant, userId, productId) || !directGrant.can_view) return unavailable();
+      } else if (!isValidEntitlement(await getActiveProductEntitlement(userId, productId), userId, productId)) {
+        return unavailable();
+      }
     } catch {
       return unavailable();
     }

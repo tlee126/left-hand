@@ -309,8 +309,12 @@ export async function createMaterialSignedUrl(storagePath: unknown, expectedProd
 }
 
 /** Proxies a private object for an authorized application viewer without returning its provider URL. */
+export function isValidMaterialRangeHeader(value: unknown): value is string {
+  return typeof value === "string" && /^bytes=(?:\d+-\d+|\d+-|-\d+)$/.test(value);
+}
+
 export async function fetchMaterialObjectForViewer(storagePath: unknown, expectedProductId: unknown, rangeHeader?: string | null): Promise<Response> {
-  if (typeof rangeHeader === "string" && rangeHeader !== "" && !/^bytes=\d*-\d*$/.test(rangeHeader)) {
+  if (typeof rangeHeader === "string" && rangeHeader !== "" && !isValidMaterialRangeHeader(rangeHeader)) {
     throw new MaterialStorageInputError();
   }
   const signedUrl = await createMaterialSignedUrl(storagePath, expectedProductId);
@@ -319,6 +323,8 @@ export async function fetchMaterialObjectForViewer(storagePath: unknown, expecte
       cache: "no-store",
       headers: rangeHeader ? { Range: rangeHeader } : undefined
     });
+    if (response.status === 416) return response;
+    if (rangeHeader && response.status !== 206) throw new Error();
     if (!response.ok || !response.body) throw new Error();
     return response;
   } catch (error) {

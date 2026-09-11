@@ -2181,6 +2181,47 @@ export function assertConsultationRpcPrivateBoundaryMigrationContract(sql0027: s
   }
 }
 
+/** Exact security, integrity, and approved-admin mutation contract for migration 0042. */
+export function assertMaterialDirectAccessMigrationContract(sql0042: string): void {
+  const statements = stripSqlCommentsAndSplitStatements(sql0042).map(normalizeMigrationStatement);
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const code = statements.join(" ; ");
+  fail(statements.length === 14, "Migration 0042 must contain only the direct-access schema and RPC boundary statements");
+  fail(/^create table public\.material_direct_grants \(/i.test(statements[0] ?? ""), "Migration 0042 must create the direct grant table");
+  fail(/user_id uuid not null references public\.profiles\(id\) on delete cascade/i.test(code), "Direct grants must reference profiles");
+  fail(/material_id uuid not null references public\.materials\(product_id\) on delete cascade/i.test(code), "Direct grants must reference materials");
+  fail(/granted_by uuid not null references auth\.users\(id\) on delete restrict/i.test(code), "Direct grants must retain a valid granting actor");
+  fail(/can_view boolean not null/i.test(code) && /can_download boolean not null/i.test(code), "Direct grants must store view and download permissions");
+  fail(/expires_at timestamptz null/i.test(code) && /revoked_at timestamptz null/i.test(code), "Direct grants must store expiry and revocation timestamps");
+  fail(/created_at timestamptz not null/i.test(code) && /updated_at timestamptz not null/i.test(code), "Direct grants must store creation and update timestamps");
+  fail(/unique \(user_id, material_id\)/i.test(code), "Direct grants must be unique per user and material");
+  fail(/check \(can_download = false or can_view = true\)/i.test(code), "Direct grants must reject download without view");
+  fail(/alter table public\.material_direct_grants enable row level security/i.test(code), "Direct grants must enable RLS");
+  fail(/revoke all on table public\.material_direct_grants from anon, public, authenticated/i.test(code), "Direct grants must have no direct learner table privileges");
+  for (const functionName of [
+    "admin_material_direct_grant_upsert",
+    "admin_material_direct_grant_update",
+    "admin_material_direct_grant_revoke"
+  ]) {
+    fail(new RegExp(`create or replace function public\\.${functionName}\\(`, "i").test(code), `Migration 0042 must define ${functionName}`);
+    fail(new RegExp(`revoke all on function public\\.${functionName}\\(`, "i").test(code), `Migration 0042 must revoke public execution for ${functionName}`);
+    fail(new RegExp(`grant execute on function public\\.${functionName}\\([^)]+\\) to authenticated`, "i").test(code), `Migration 0042 must grant ${functionName} only to authenticated`);
+  }
+  fail((code.match(/security definer/gi) ?? []).length === 3, "Only direct-grant mutation RPCs may be SECURITY DEFINER");
+  fail((code.match(/public\.is_approved_admin\(\)/gi) ?? []).length >= 3, "Every direct-grant mutation must require an approved admin");
+  fail(/insert into public\.material_direct_grants[\s\S]*on conflict \(user_id, material_id\) do update/i.test(code), "Granting must be atomic and unique-key safe");
+  fail(/profiles\.role = 'student'[\s\S]*profiles\.account_status = 'approved'/i.test(code), "Grants must target approved student profiles");
+  fail(/select \*[\s\S]*from public\.material_direct_grants[\s\S]*for update/i.test(code), "Permission updates must lock the existing grant row");
+  fail(/update public\.material_direct_grants[\s\S]*set revoked_at = coalesce/i.test(code), "Revocation must be persisted server-side");
+  fail(!/product_entitlements|allow_download|service_role|bypassrls|execute\s+immediate|set\s+role/i.test(code), "Migration 0042 must not modify entitlement or storage policy boundaries");
+  assertNestedFunctionSqlScope(statements, {
+    allowDmlTables: ["material_direct_grants"],
+    allowSelectTables: ["material_direct_grants", "materials", "profiles"]
+  });
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -2237,7 +2278,8 @@ export async function runAudit(): Promise<boolean> {
       "0038_fix_material_upload_filename_regex.sql",
       "0039_grant_material_assets_select_to_service_role.sql",
       "0040_material_download_permission.sql",
-      "0041_material_atomic_update.sql"
+      "0041_material_atomic_update.sql",
+      "0042_material_direct_access.sql"
     ];
 
     const migrationNumbers = sqlFiles.map((filename) => {
@@ -2250,7 +2292,7 @@ export async function runAudit(): Promise<boolean> {
       && expected.every((filename, index) => sqlFiles[index] === filename);
     results.push({
       category: "Migrations",
-      check: "All 41 migration files exist with complete strict numerical order",
+      check: "All 42 migration files exist with complete strict numerical order",
       passed: matchesCanonicalList && hasStrictSequentialNumbers,
       details: sqlFiles.join(", ")
     });
@@ -2861,6 +2903,14 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0041_material_atomic_update", check: "Updates material metadata and download policy in one approved-admin transaction", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0041ContractValid) results.push({ category: "0041_material_atomic_update", check: "Updates material metadata and download policy in one approved-admin transaction", passed: true, details: "Metadata and allow_download are delegated/updated by one SECURITY DEFINER RPC with approved-admin authorization" });
+
+    const sql0042 = await fs.readFile(path.join(migrationsDir, "0042_material_direct_access.sql"), "utf-8");
+    let migration0042ContractValid = true;
+    try { assertMaterialDirectAccessMigrationContract(sql0042); } catch (error) {
+      migration0042ContractValid = false;
+      results.push({ category: "0042_material_direct_access", check: "Adds per-learner material grants with approved-admin-only atomic mutations", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0042ContractValid) results.push({ category: "0042_material_direct_access", check: "Adds per-learner material grants with approved-admin-only atomic mutations", passed: true, details: "Foreign keys, unique user/material scope, RLS boundary, expiry/revocation checks, and three approved-admin RPCs verified" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
