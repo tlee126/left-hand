@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { test } from "node:test";
-import { createElement } from "react";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   beginMaterialViewerLoad,
@@ -16,6 +18,8 @@ import {
   materialViewerKind,
   default as MaterialViewButton
 } from "../../app/quan-tri/catalog/material-view-button";
+
+const { JSDOM } = createRequire(import.meta.url)("jsdom") as { JSDOM: new (html?: string, options?: { url?: string }) => any };
 
 const PRODUCT_ID = "2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64";
 const SIGNED_URL = "https://storage.example/material?signed=1";
@@ -60,6 +64,116 @@ test("unsupported MIME renders no viewer and cannot call the signed-url API", ()
   } finally {
     globalThis.fetch = originalFetch;
     globalThis.window = originalWindow;
+  }
+});
+
+test("mounted PDF and video viewers close, reset their URL, and reopen with a fresh signed URL", async () => {
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+  const originalGlobals = {
+    window: globalThis.window,
+    document: globalThis.document,
+    navigator: globalThis.navigator,
+    HTMLElement: globalThis.HTMLElement,
+    Node: globalThis.Node,
+    DOMException: globalThis.DOMException,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT,
+    fetch: globalThis.fetch
+  };
+  const installGlobal = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, value, writable: true });
+  installGlobal("window", dom.window);
+  installGlobal("document", dom.window.document);
+  installGlobal("navigator", dom.window.navigator);
+  installGlobal("HTMLElement", dom.window.HTMLElement);
+  installGlobal("Node", dom.window.Node);
+  installGlobal("DOMException", dom.window.DOMException);
+  installGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+
+  const pendingResponses: Array<(response: Response) => void> = [];
+  const fetchCalls: string[] = [];
+  globalThis.fetch = async (input) => {
+    fetchCalls.push(String(input));
+    return new Promise<Response>((resolve) => pendingResponses.push(resolve));
+  };
+
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const render = (mimeType: string) => act(async () => {
+    root.render(createElement(MaterialViewButton, { productId: PRODUCT_ID, mimeType }));
+  });
+  const resolveNext = async (url: string) => act(async () => {
+    const resolveResponse = pendingResponses.shift();
+    assert.ok(resolveResponse, "the viewer should have an outstanding signed-url request");
+    resolveResponse(Response.json({ url }));
+    await Promise.resolve();
+  });
+  const clickButton = async (label: string) => act(async () => {
+    const button = [...container.querySelectorAll("button")].find((candidate) => candidate.textContent === label);
+    assert.ok(button, `expected button ${label}`);
+    button.click();
+  });
+  const clickClose = async () => act(async () => {
+    const dialog = container.querySelector('[role="dialog"]');
+    assert.ok(dialog, "expected an open viewer dialog");
+    const closeButton = [...dialog.querySelectorAll("button")].find((candidate) => candidate.textContent === "Đóng");
+    assert.ok(closeButton, "expected the Đóng button");
+    closeButton.click();
+  });
+
+  try {
+    await render("application/pdf");
+    await clickButton("Xem tài liệu");
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(container.querySelector('[role="dialog"]') !== null, true);
+    assert.equal(container.querySelector("iframe"), null);
+    await resolveNext(SIGNED_URL);
+    const firstPdf = container.querySelector("iframe");
+    assert.ok(firstPdf);
+    assert.equal(firstPdf.getAttribute("src"), SIGNED_URL);
+    await clickClose();
+    assert.equal(container.querySelector('[role="dialog"]'), null);
+    assert.equal(container.querySelector("iframe"), null);
+    assert.doesNotMatch(container.innerHTML, /storage\.example\/material\?signed=1/);
+
+    const reopenedPdfUrl = "https://storage.example/material?signed=2";
+    await clickButton("Xem tài liệu");
+    await resolveNext(reopenedPdfUrl);
+    const reopenedPdf = container.querySelector("iframe");
+    assert.ok(reopenedPdf);
+    assert.equal(reopenedPdf.getAttribute("src"), reopenedPdfUrl);
+    assert.notEqual(reopenedPdf.getAttribute("src"), SIGNED_URL);
+    await clickClose();
+
+    await render("video/mp4");
+    await clickButton("Xem video");
+    await resolveNext("https://storage.example/video?signed=3");
+    const firstVideo = container.querySelector("video");
+    assert.ok(firstVideo);
+    assert.equal(firstVideo.controls, true);
+    assert.equal(firstVideo.autoplay, false);
+    assert.equal(firstVideo.getAttribute("src"), "https://storage.example/video?signed=3");
+    await clickClose();
+    assert.equal(container.querySelector("video"), null);
+    assert.doesNotMatch(container.innerHTML, /storage\.example\/video\?signed=3/);
+
+    await clickButton("Xem video");
+    await resolveNext("https://storage.example/video?signed=4");
+    const reopenedVideo = container.querySelector("video");
+    assert.ok(reopenedVideo);
+    assert.equal(reopenedVideo.getAttribute("src"), "https://storage.example/video?signed=4");
+    assert.notEqual(reopenedVideo.getAttribute("src"), "https://storage.example/video?signed=3");
+    await clickClose();
+
+    await render("application/octet-stream");
+    assert.equal(container.innerHTML, "");
+    assert.equal(fetchCalls.length, 4);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    globalThis.fetch = originalGlobals.fetch;
+    for (const [name, value] of Object.entries(originalGlobals)) {
+      if (name !== "fetch") installGlobal(name, value);
+    }
   }
 });
 
