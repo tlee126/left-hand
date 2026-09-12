@@ -569,6 +569,14 @@ test("real client renders only server-authorized fields and uses the view-only A
   const materialButton = capturedButtons.find((button) => flattenText(button.children).includes("Mở tài liệu"));
   assert.ok(materialButton);
   assert.match(markup, /Tài liệu được cấp quyền/);
+  assert.match(markup, /<h3>Tài liệu được cấp quyền<\/h3>/);
+  assert.match(markup, /Theo quyền môn học/);
+  const directMarkup = await renderRealClient({
+    ...workspaceData,
+    materials: [{ ...workspaceData.materials[0], accessSource: "direct_grant" }]
+  });
+  assert.match(directMarkup, /<h3>Tài liệu được cấp quyền<\/h3>/);
+  assert.match(directMarkup, /Được cấp riêng/);
   assert.doesNotMatch(markup, /UNAUTHORIZED|purchasedSubjects|localStorage|left-hand-demo-auth/);
   assert.doesNotMatch(markup, new RegExp(`${STORAGE_PATH}|${BUCKET_NAME}|${RAW_ERROR}|${PII}`));
 
