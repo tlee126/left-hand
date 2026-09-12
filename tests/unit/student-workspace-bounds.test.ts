@@ -162,6 +162,33 @@ test("workspace reports a missing authorized material surface row as a retryable
   assert.ok(requests.some((request) => request.table === "learner_material_read_surface"));
 });
 
+test("workspace rejects duplicate authorized learner material metadata without returning partial data", async () => {
+  configureProducts(1);
+  const materialId = products[0].id;
+  materials = [
+    { product_id: materialId, pages: 3, allow_download: false },
+    { product_id: materialId, pages: 99, allow_download: true }
+  ];
+
+  let returnedWorkspace: unknown = null;
+  await assert.rejects(
+    async () => { returnedWorkspace = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan"); },
+    (error: any) => error.name === "StudentWorkspaceRepositoryError"
+      && error.message === "Student workspace data is unavailable."
+      && !error.message.includes(materialId)
+      && !error.message.includes("99")
+  );
+
+  assert.equal(returnedWorkspace, null, "the duplicate metadata must not produce a partial workspace using either row");
+  assert.deepEqual(requests.map((request) => request.table), [
+    "student_workspace_product_read_surface",
+    "product_entitlements",
+    "learner_material_read_surface"
+  ], "repository stops after the duplicated metadata read; no lesson query follows");
+  assert.equal(requests.filter((request) => request.table === "learner_material_read_surface").length, 1);
+  assert.equal(requests.some((request) => request.table === "course_lessons"), false);
+});
+
 test("direct-granted materials are visible without entitlement and use direct download permission", async () => {
   configureProducts(1);
   entitlements = [];
