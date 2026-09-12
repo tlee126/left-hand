@@ -373,6 +373,24 @@ test("learner view-only viewer uses an app-controlled PDF canvas and app view/do
   assert.doesNotMatch(source, /console\.(?:log|info|warn|error)|localStorage|sessionStorage/);
 });
 
+test("learner viewer dialog is layered above the shared site header", async () => {
+  const [learnerSource, headerSource] = await Promise.all([
+    readFile("app/ca-nhan/mon/[slug]/material-viewer.tsx", "utf8"),
+    readFile("components/site/header.tsx", "utf8")
+  ]);
+  const dialogClass = learnerSource.match(/<section role="dialog"[\s\S]*?className="([^"]+)"/)?.[1];
+  const headerClass = headerSource.match(/<div className="(fixed inset-x-0 top-4 z-\[\d+\][^"]*)">/)?.[1];
+  const getZIndex = (className: string | undefined): number => {
+    const value = className?.match(/(?:^|\s)z-\[(\d+)\](?:\s|$)/)?.[1];
+    assert.ok(value, `expected an explicit z-index class in: ${className}`);
+    return Number(value);
+  };
+
+  assert.ok(dialogClass, "learner dialog class should be present");
+  assert.match(dialogClass, /(?:^|\s)fixed inset-0(?:\s|$)/);
+  assert.ok(getZIndex(dialogClass) > getZIndex(headerClass));
+});
+
 test("learner PDF viewer uses the bundled worker, renders multiple pages, and cleans up", async () => {
   const { stdout } = await execFileAsync(process.execPath, ["--import", "tsx/esm", "-e", learnerPdfRuntimeHarness], {
     cwd: process.cwd(),
