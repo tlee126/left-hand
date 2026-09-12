@@ -2,8 +2,8 @@ import "server-only";
 
 import { getAccountAccess } from "@/lib/auth/session";
 import { BoundedJsonError, BoundedJsonErrorCode, readBoundedJson } from "@/lib/http/bounded-json";
-import { getActiveProductEntitlement } from "@/lib/repositories/product-entitlement-repository";
 import {
+  hasLearningProgressAccessForProducts,
   getLearningProgressForProducts,
   isLearningProgressItemForProduct,
   LearningProgressInputError,
@@ -39,13 +39,16 @@ export async function GET(request: Request): Promise<Response> {
     return response({ error: "Progress is unavailable." }, 401);
   }
   if (access.status === "unauthenticated") return response({ error: "Progress is unavailable." }, 401);
-  if (access.status !== "approved" || access.profile?.role === "admin" || !access.user || !isValidMaterialUuid(access.user.id)) {
+  if (access.status !== "approved" || access.profile?.role !== "student" || !access.user || !isValidMaterialUuid(access.user.id)) {
     return response({ error: "Progress is unavailable." }, 404);
   }
 
   const productIds = requestUrlProductIds(request);
   if (!productIds || productIds.length === 0) return response({ error: "Progress is unavailable." }, 400);
   try {
+    if (!await hasLearningProgressAccessForProducts(access.user.id, productIds)) {
+      return response({ error: "Progress is unavailable." }, 404);
+    }
     const progress = await getLearningProgressForProducts(access.user.id, productIds);
     return progressResponse(progress);
   } catch {
@@ -59,18 +62,6 @@ function requestUrlProductIds(request: Request): string[] | null {
   return [...new Set(values.map((value) => value.toLowerCase()))];
 }
 
-function matchingActiveEntitlement(value: unknown, userId: string, productId: string): boolean {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const entitlement = value as Record<string, unknown>;
-  if (entitlement.status !== "active" || entitlement.revoked_at !== null) return false;
-  if (!isValidMaterialUuid(entitlement.user_id) || !isValidMaterialUuid(entitlement.product_id)) return false;
-  if (entitlement.user_id.toLowerCase() !== userId || entitlement.product_id.toLowerCase() !== productId) return false;
-  if (entitlement.expires_at === null) return true;
-  return typeof entitlement.expires_at === "string"
-    && Number.isFinite(Date.parse(entitlement.expires_at))
-    && Date.parse(entitlement.expires_at) > Date.now();
-}
-
 export async function POST(request: Request): Promise<Response> {
   let access;
   try {
@@ -81,7 +72,7 @@ export async function POST(request: Request): Promise<Response> {
 
   if (access.status === "unauthenticated" || !access.user) return response({ error: "Authentication required." }, 401);
   if (access.status !== "approved") return response({ error: "Workspace access is unavailable." }, 403);
-  if (access.profile?.role === "admin") return response({ error: "Workspace access is unavailable." }, 403);
+  if (access.profile?.role !== "student") return response({ error: "Workspace access is unavailable." }, 403);
   if (!isValidMaterialUuid(access.user.id)) return response({ error: "Workspace access is unavailable." }, 403);
   const userId = access.user.id.toLowerCase();
 
@@ -113,14 +104,12 @@ export async function POST(request: Request): Promise<Response> {
     return response({ error: "Progress is unavailable." }, 500);
   }
 
-  let entitlement;
   try {
-    entitlement = await getActiveProductEntitlement(userId, input.productId);
+    if (!await hasLearningProgressAccessForProducts(userId, [input.productId], input.itemType)) {
+      return response({ error: "Progress is unavailable." }, 404);
+    }
   } catch {
     return response({ error: "Progress is unavailable." }, 500);
-  }
-  if (!matchingActiveEntitlement(entitlement, userId, input.productId)) {
-    return response({ error: "Progress is unavailable." }, 404);
   }
 
   try {

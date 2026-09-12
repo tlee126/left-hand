@@ -19,6 +19,9 @@ type StoredRow = Record<string, unknown>;
 
 let rows: StoredRow[] = [];
 let entitlement: unknown | typeof UNSET = UNSET;
+let products: StoredRow[] = [];
+let directGrants: StoredRow[] = [];
+let directGrantsOverride: unknown | typeof UNSET = UNSET;
 let materials: StoredRow[] = [];
 let lessons: StoredRow[] = [];
 let queryError: unknown = null;
@@ -144,9 +147,28 @@ function activeEntitlement(overrides: StoredRow = {}): StoredRow {
   };
 }
 
+function activeDirectGrant(overrides: StoredRow = {}): StoredRow {
+  return {
+    id: OTHER_ITEM_ID,
+    user_id: USER_ID,
+    material_id: PRODUCT_ID,
+    can_view: true,
+    can_download: false,
+    expires_at: null,
+    revoked_at: null,
+    granted_by: OTHER_USER_ID,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides
+  };
+}
+
 function reset() {
   rows = [];
   entitlement = UNSET;
+  products = [{ id: PRODUCT_ID, kind: "course" }];
+  directGrants = [];
+  directGrantsOverride = UNSET;
   materials = [{ product_id: PRODUCT_ID }];
   lessons = [{ id: ITEM_ID, course_id: PRODUCT_ID }];
   queryError = null;
@@ -170,12 +192,26 @@ function resultFor(table: string, filters: Array<[string, unknown]>, operation: 
     return { data: operation === "many" ? paged : paged[0] ?? null, error: null };
   }
   if (table === "product_entitlements") {
-    if (entitlement !== UNSET) return { data: entitlement, error: null };
     const userId = filters.find(([field]) => field === "user_id")?.[1];
     const productId = filters.find(([field]) => field === "product_id")?.[1];
-    const status = filters.find(([field]) => field === "status")?.[1];
-    const found = activeEntitlement({ user_id: userId, product_id: productId });
-    return { data: status === "active" ? found : null, error: null };
+    const productIds = filters.find(([field]) => field === "product_id[]")?.[1];
+    const values = entitlement === UNSET
+      ? (Array.isArray(productIds) ? productIds : productId ? [productId] : []).map((id) => activeEntitlement({ user_id: userId, product_id: id }))
+      : entitlement === null ? [] : Array.isArray(entitlement) ? entitlement : [entitlement];
+    const matching = values.filter((row) => row && typeof row === "object"
+      && String((row as StoredRow).user_id).toLowerCase() === String(userId).toLowerCase()
+      && (Array.isArray(productIds)
+        ? productIds.map(String).some((id) => id.toLowerCase() === String((row as StoredRow).product_id).toLowerCase())
+        : String((row as StoredRow).product_id).toLowerCase() === String(productId).toLowerCase()));
+    return { data: operation === "many" ? matching : matching[0] ?? null, error: null };
+  }
+  if (table === "products") {
+    const ids = filters.find(([field]) => field === "id[]")?.[1];
+    const id = filters.find(([field]) => field === "id")?.[1];
+    const matching = products.filter((row) => Array.isArray(ids)
+      ? ids.map(String).some((value) => value.toLowerCase() === String(row.id).toLowerCase())
+      : String(row.id).toLowerCase() === String(id).toLowerCase());
+    return { data: matching, error: null };
   }
   if (table === "materials") {
     const id = filters.find(([field]) => field === "product_id")?.[1];
@@ -216,6 +252,8 @@ function createMockClient() {
       calls.push({ method: "from", table, args: [] });
       if (table === "materials" || table === "course_lessons") {
         timeline.push("subject", "product");
+      } else if (table === "products") {
+        timeline.push("access products");
       } else if (table === "product_entitlements") {
         timeline.push("entitlement");
       } else if (table === "learning_progress" && recordProgressRead) {
@@ -327,6 +365,28 @@ before(async () => {
     return originalModuleLoad.call(this, requestName, ...args);
   };
   try {
+    const directAccessPath = require.resolve("../../lib/repositories/material-direct-access-repository");
+    require.cache[directAccessPath] = {
+      id: directAccessPath,
+      filename: directAccessPath,
+      loaded: true,
+      exports: {
+        getMaterialDirectGrantsForUserAndMaterials: async (userId: string, materialIds: string[]) => {
+          if (!materialIds.length) return [];
+          calls.push({ method: "directGrantBatch", table: "material_direct_grants", args: [userId, [...materialIds]] });
+          timeline.push("direct grants");
+          if (directGrantsOverride !== UNSET) return directGrantsOverride;
+          return directGrants.filter((grant) => String(grant.user_id).toLowerCase() === userId.toLowerCase()
+            && materialIds.includes(String(grant.material_id).toLowerCase()));
+        },
+        isActiveMaterialDirectGrant: (grant: StoredRow, userId: string, materialId: string) => (
+          String(grant.user_id).toLowerCase() === userId.toLowerCase()
+          && String(grant.material_id).toLowerCase() === materialId.toLowerCase()
+          && grant.revoked_at === null
+          && (grant.expires_at === null || Date.parse(String(grant.expires_at)) > Date.now())
+        )
+      }
+    } as any;
     const repository = await import("../../lib/repositories/learning-progress-repository");
     const authPath = require.resolve("../../lib/auth/session");
     require.cache[authPath] = { id: authPath, filename: authPath, loaded: true, exports: {
@@ -450,12 +510,12 @@ test("repository item identity and errors fail closed without raw details", asyn
   });
 });
 
-test("API authenticates and validates before entitlement/progress access, then persists only entitled items", async () => {
+test("API authenticates and validates before current-access checks and progress writes", async () => {
   const responseModule = Route;
   let response = await responseModule.POST(request(VALID_INPUT));
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { success: true });
-  assert.deepEqual(timeline, ["auth", "subject", "product", "entitlement", "progress write"]);
+  assert.deepEqual(timeline, ["auth", "subject", "product", "access products", "entitlement", "progress write"]);
   assert.deepEqual(calls.filter((call: Call) => call.method === "rpc")[0]?.args, ["save_learning_progress", {
     p_product_id: PRODUCT_ID,
     p_item_type: "lesson",
@@ -478,6 +538,109 @@ test("API authenticates and validates before entitlement/progress access, then p
     assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
     assert.equal(calls.some((call: Call) => call.table === "product_entitlements"), false);
   }
+
+  reset();
+  access.profile = { role: "admin" };
+  response = await responseModule.POST(request(VALID_INPUT));
+  assert.equal(response.status, 403);
+  assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
+  assert.equal(calls.some((call: Call) => call.table === "products"), false);
+});
+
+test("material progress allows a current view grant regardless of download permission", async () => {
+  const responseModule = Route;
+  for (const canDownload of [false, true]) {
+    reset();
+    products = [{ id: PRODUCT_ID, kind: "material" }];
+    entitlement = null;
+    directGrants = [activeDirectGrant({ can_download: canDownload })];
+    const response = await responseModule.POST(request({
+      ...VALID_INPUT,
+      itemType: "material",
+      itemId: PRODUCT_ID
+    }));
+    assert.equal(response.status, 200);
+    assert.equal(calls.some((call: Call) => call.method === "rpc"), true);
+    assert.deepEqual(timeline.slice(-2), ["direct grants", "progress write"]);
+  }
+});
+
+test("approved tutor with a valid direct grant is rejected before progress authorization or RPC access", async () => {
+  reset();
+  access.profile = { role: "tutor" };
+  products = [{ id: PRODUCT_ID, kind: "material" }];
+  directGrants = [activeDirectGrant({ can_view: true, can_download: true })];
+
+  const response = await Route.POST(request({
+    ...VALID_INPUT,
+    itemType: "material",
+    itemId: PRODUCT_ID
+  }));
+
+  assert.equal(response.status, 403);
+  assert.equal(calls.some((call: Call) => call.table === "products"), false);
+  assert.equal(calls.some((call: Call) => call.method === "directGrantBatch"), false);
+  assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
+});
+
+test("inactive or mismatched direct grants deny material progress without entitlement fallback", async () => {
+  for (const grant of [
+    activeDirectGrant({ expires_at: "2020-01-01T00:00:00.000Z" }),
+    activeDirectGrant({ revoked_at: NOW }),
+    activeDirectGrant({ can_view: false })
+  ]) {
+    reset();
+    products = [{ id: PRODUCT_ID, kind: "material" }];
+    entitlement = activeEntitlement();
+    directGrantsOverride = [grant];
+    const response = await Route.POST(request({ ...VALID_INPUT, itemType: "material", itemId: PRODUCT_ID }));
+    assert.equal(response.status, 404);
+    assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
+  }
+
+  for (const grant of [
+    activeDirectGrant({ user_id: OTHER_USER_ID }),
+    activeDirectGrant({ material_id: OTHER_PRODUCT_ID })
+  ]) {
+    reset();
+    products = [{ id: PRODUCT_ID, kind: "material" }];
+    entitlement = activeEntitlement();
+    directGrantsOverride = [grant];
+    const response = await Route.POST(request({ ...VALID_INPUT, itemType: "material", itemId: PRODUCT_ID }));
+    assert.equal(response.status, 500, "mismatched repository rows fail closed generically");
+    assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
+  }
+
+  for (const grant of [
+    activeDirectGrant({ expires_at: "2020-01-01T00:00:00.000Z" }),
+    activeDirectGrant({ revoked_at: NOW }),
+    activeDirectGrant({ can_view: false })
+  ]) {
+    reset();
+    products = [{ id: PRODUCT_ID, kind: "material" }];
+    entitlement = activeEntitlement();
+    directGrants = [grant];
+    const response = await Route.POST(request({ ...VALID_INPUT, itemType: "material", itemId: PRODUCT_ID }));
+    assert.equal(response.status, 404);
+    assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
+  }
+});
+
+test("direct grants do not authorize course lessons, while entitlement-only material progress remains valid", async () => {
+  reset();
+  products = [{ id: OTHER_PRODUCT_ID, kind: "course" }];
+  lessons = [{ id: ITEM_ID, course_id: OTHER_PRODUCT_ID }];
+  directGrants = [activeDirectGrant()];
+  entitlement = null;
+  const lessonDenied = await Route.POST(request({ ...VALID_INPUT, productId: OTHER_PRODUCT_ID }));
+  assert.equal(lessonDenied.status, 404);
+  assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
+
+  reset();
+  products = [{ id: PRODUCT_ID, kind: "material" }];
+  entitlement = activeEntitlement();
+  const materialAllowed = await Route.POST(request({ ...VALID_INPUT, itemType: "material", itemId: PRODUCT_ID }));
+  assert.equal(materialAllowed.status, 200);
 });
 
 test("API rejects arbitrary fields, invalid progress values, expired/revoked/wrong entitlement, and wrong product items", async () => {
@@ -525,7 +688,7 @@ test("API writes only after binding and entitlement, and maps a progress write f
   upsertError = new Error(RAW_ERROR);
   const response = await Route.POST(request(VALID_INPUT));
   assert.equal(response.status, 500);
-  assert.deepEqual(timeline, ["auth", "subject", "product", "entitlement", "progress write"]);
+  assert.deepEqual(timeline, ["auth", "subject", "product", "access products", "entitlement", "progress write"]);
   const body = JSON.stringify(await response.json());
   assert.doesNotMatch(body, /database|user@example|secret=jwt/);
   assert.equal(rows.length, 0);
@@ -566,13 +729,86 @@ test("API exposes a generic conflict when the database rejects a stale progress 
   assert.deepEqual(await response.json(), { error: "Progress conflict." });
 });
 
-test("API GET returns the authenticated user's fresh batch progress", async () => {
+test("API GET authorizes the product before reading only the authenticated user's fresh progress", async () => {
   reset();
-  rows = [progressRow({ item_type: "material", item_id: PRODUCT_ID, version: 8 })];
+  products = [{ id: PRODUCT_ID, kind: "material" }];
+  entitlement = null;
+  directGrants = [activeDirectGrant({ can_download: false })];
+  rows = [progressRow({ item_type: "material", item_id: PRODUCT_ID, version: 8 }), progressRow({ user_id: OTHER_USER_ID })];
+  recordProgressRead = true;
   const response = await Route.GET(new Request(`http://localhost/api/progress?productId=${PRODUCT_ID}`));
   assert.equal(response.status, 200);
   assert.deepEqual((await response.json()).progress[0], rows[0]);
   assert.equal(calls.some((call) => call.method === "in" && call.table === "learning_progress"), true);
+  assert.deepEqual(timeline, ["auth", "access products", "entitlement", "direct grants", "progress read"]);
+  recordProgressRead = false;
+});
+
+test("API GET rejects unauthorized or invalid-grant batches before any progress read", async () => {
+  for (const grant of [
+    activeDirectGrant({ expires_at: "2020-01-01T00:00:00.000Z" }),
+    activeDirectGrant({ revoked_at: NOW }),
+    activeDirectGrant({ can_view: false })
+  ]) {
+    reset();
+    products = [{ id: PRODUCT_ID, kind: "material" }];
+    entitlement = activeEntitlement();
+    directGrants = [grant];
+    recordProgressRead = true;
+    const response = await Route.GET(new Request(`http://localhost/api/progress?productId=${PRODUCT_ID}`));
+    assert.equal(response.status, 404);
+    assert.equal(calls.some((call) => call.table === "learning_progress"), false);
+  }
+
+  reset();
+  products = [{ id: PRODUCT_ID, kind: "course" }, { id: OTHER_PRODUCT_ID, kind: "course" }];
+  entitlement = [activeEntitlement({ product_id: PRODUCT_ID })];
+  recordProgressRead = true;
+  const batch = new URLSearchParams();
+  batch.append("productId", PRODUCT_ID);
+  batch.append("productId", OTHER_PRODUCT_ID);
+  const response = await Route.GET(new Request(`http://localhost/api/progress?${batch.toString()}`));
+  assert.equal(response.status, 404);
+  assert.equal(calls.some((call) => call.table === "learning_progress"), false);
+});
+
+test("API GET uses bounded batch authorization and rejects admin access", async () => {
+  reset();
+  products = Array.from({ length: 100 }, (_, index) => ({ id: uuid(index + 1), kind: index % 2 ? "course" : "material" }));
+  directGrants = products.filter((product) => product.kind === "material")
+    .map((product) => activeDirectGrant({ material_id: product.id }));
+  recordProgressRead = true;
+  const params = new URLSearchParams();
+  products.forEach((product) => params.append("productId", String(product.id)));
+  const response = await Route.GET(new Request(`http://localhost/api/progress?${params.toString()}`));
+  assert.equal(response.status, 200);
+  const productFilters = calls.filter((call) => call.method === "in" && call.table === "products");
+  const entitlementFilters = calls.filter((call) => call.method === "in" && call.table === "product_entitlements");
+  assert.equal(productFilters.length, 1);
+  assert.equal(entitlementFilters.length, 1);
+  assert.equal((productFilters[0].args[1] as unknown[]).length, 100);
+  assert.equal((entitlementFilters[0].args[1] as unknown[]).length, 100);
+  const directGrantBatches = calls.filter((call) => call.method === "directGrantBatch");
+  assert.equal(directGrantBatches.length, 1);
+  assert.equal(directGrantBatches[0].args[0], USER_ID);
+  assert.equal((directGrantBatches[0].args[1] as unknown[]).length, 50);
+  assert.ok(timeline.indexOf("progress read") > timeline.indexOf("access products"));
+
+  reset();
+  access.profile = { role: "admin" };
+  const admin = await Route.GET(new Request(`http://localhost/api/progress?productId=${PRODUCT_ID}`));
+  assert.equal(admin.status, 404);
+  assert.equal(calls.some((call) => call.table === "learning_progress"), false);
+});
+
+test("API GET normalizes repository failures without leaking raw errors or secrets", async () => {
+  reset();
+  queryError = new Error(`${RAW_ERROR} bearer=eyJhbGciOiJ secret=signed-url`);
+  const response = await Route.GET(new Request(`http://localhost/api/progress?productId=${PRODUCT_ID}`));
+  assert.equal(response.status, 500);
+  const body = JSON.stringify(await response.json());
+  assert.doesNotMatch(body, /database|user@example|secret=|bearer=|signed-url/);
+  assert.equal(calls.some((call) => call.table === "learning_progress"), false);
 });
 
 test("API maps repository/database failures to generic responses without raw error leakage", async () => {
@@ -590,6 +826,7 @@ test("page and real workspace client preserve the auth-to-render timeline and pe
   const workspacePath = require.resolve("../../lib/repositories/student-workspace-repository");
   timeline = [];
   rows = [];
+  products = [{ id: PRODUCT_ID, kind: "material" }];
   const pageWorkspace = {
     subject: { slug: "ke-toan", name: "Kế toán", category: "Kế toán", facultyGroup: "UFM", colorTheme: "accounting" },
     materials: [{ productId: PRODUCT_ID, title: "Material", description: "Description", pages: 1 }],

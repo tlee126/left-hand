@@ -2,6 +2,10 @@ import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
 import type { Database } from "@/lib/supabase/database.types";
+import {
+  getMaterialDirectGrantsForUserAndMaterials,
+  isActiveMaterialDirectGrant
+} from "@/lib/repositories/material-direct-access-repository";
 
 type LearningProgressRow = Database["public"]["Tables"]["learning_progress"]["Row"];
 
@@ -39,6 +43,16 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const MAX_PROGRESS_ROWS = 500;
 export const LEARNING_PROGRESS_PRODUCT_CHUNK_SIZE = 100;
 export const LEARNING_PROGRESS_MAX_PRODUCTS = 500;
+
+type LearningProgressProductKind = "material" | "course";
+type LearningProgressProductAccess = { id: string; kind: LearningProgressProductKind };
+type LearningProgressEntitlement = {
+  user_id: string;
+  product_id: string;
+  status: string;
+  revoked_at: string | null;
+  expires_at: string | null;
+};
 
 export const LEARNING_PROGRESS_COLUMNS = [
   "user_id",
@@ -254,6 +268,115 @@ export async function getLearningProgressForProducts(
       }
     }
     return [...results.values()].sort((left, right) => canonicalUuid(left.product_id).localeCompare(canonicalUuid(right.product_id)) || compareProgressRows(left, right));
+  } catch (error) {
+    if (error instanceof LearningProgressInputError || error instanceof LearningProgressRepositoryError) throw error;
+    return repositoryFailure();
+  }
+}
+
+function isValidEntitlementForProgress(value: unknown, userId: string, productId: string): value is LearningProgressEntitlement {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  const isValidOptionalTimestamp = (timestamp: unknown) => timestamp === null
+    || (typeof timestamp === "string" && Number.isFinite(Date.parse(timestamp)));
+  if (typeof row.user_id !== "string" || !UUID_PATTERN.test(row.user_id)
+    || typeof row.product_id !== "string" || !UUID_PATTERN.test(row.product_id)
+    || typeof row.status !== "string"
+    || !isValidOptionalTimestamp(row.revoked_at)
+    || !isValidOptionalTimestamp(row.expires_at)) return false;
+  return row.user_id.toLowerCase() === userId && row.product_id.toLowerCase() === productId;
+}
+
+function isActiveEntitlementForProgress(row: LearningProgressEntitlement): boolean {
+  return row.status === "active"
+    && row.revoked_at === null
+    && (row.expires_at === null || Date.parse(row.expires_at) > Date.now());
+}
+
+/** Checks current access for a bounded set of products before progress reads or writes. */
+export async function hasLearningProgressAccessForProducts(
+  userId: string,
+  productIds: readonly string[],
+  expectedItemType?: LearningProgressItemType
+): Promise<boolean> {
+  if (arguments.length < 2 || arguments.length > 3 || !Array.isArray(productIds)) throw new LearningProgressInputError();
+  const canonicalUserId = canonicalUuid(userId);
+  const canonicalProductIds = [...new Set(productIds.map((productId) => canonicalUuid(productId)))];
+  if (canonicalProductIds.length > LEARNING_PROGRESS_MAX_PRODUCTS
+    || (expectedItemType !== undefined && !ITEM_TYPES.has(expectedItemType))) throw new LearningProgressInputError();
+  if (canonicalProductIds.length === 0) return true;
+
+  try {
+    const supabase = await createClient();
+    const productsById = new Map<string, LearningProgressProductAccess>();
+    const entitlementsByProductId = new Map<string, LearningProgressEntitlement>();
+
+    for (const productIdChunk of chunks(canonicalProductIds, LEARNING_PROGRESS_PRODUCT_CHUNK_SIZE)) {
+      const { data, error } = await supabase
+        .from("products")
+        .select("id, kind")
+        .in("id", productIdChunk)
+        .order("id", { ascending: true })
+        .limit(productIdChunk.length + 1);
+      if (error || !Array.isArray(data) || data.length > productIdChunk.length) return repositoryFailure();
+      for (const value of data as unknown[]) {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) return repositoryFailure();
+        const row = value as Record<string, unknown>;
+        if (typeof row.id !== "string" || !UUID_PATTERN.test(row.id)
+          || (row.kind !== "material" && row.kind !== "course")) return repositoryFailure();
+        const productId = row.id.toLowerCase();
+        if (!productIdChunk.includes(productId) || productsById.has(productId)) return repositoryFailure();
+        productsById.set(productId, { id: productId, kind: row.kind });
+      }
+
+      const entitlementResult = await supabase
+        .from("product_entitlements")
+        .select("user_id, product_id, status, revoked_at, expires_at")
+        .eq("user_id", canonicalUserId)
+        .in("product_id", productIdChunk)
+        .order("product_id", { ascending: true })
+        .limit(productIdChunk.length + 1);
+      if (entitlementResult.error || !Array.isArray(entitlementResult.data) || entitlementResult.data.length > productIdChunk.length) return repositoryFailure();
+      for (const value of entitlementResult.data as unknown[]) {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) return repositoryFailure();
+        const candidate = value as Record<string, unknown>;
+        const productId = typeof candidate.product_id === "string" && UUID_PATTERN.test(candidate.product_id)
+          ? candidate.product_id.toLowerCase()
+          : "";
+        if (!productIdChunk.includes(productId)
+          || !isValidEntitlementForProgress(value, canonicalUserId, productId)
+          || entitlementsByProductId.has(productId)) return repositoryFailure();
+        entitlementsByProductId.set(productId, value);
+      }
+    }
+
+    if (canonicalProductIds.some((productId) => !productsById.has(productId))) return false;
+    if (expectedItemType !== undefined && canonicalProductIds.some((productId) => (
+      productsById.get(productId)?.kind !== (expectedItemType === "material" ? "material" : "course")
+    ))) return false;
+
+    const materialIds = canonicalProductIds.filter((productId) => productsById.get(productId)?.kind === "material");
+    const directGrants = await getMaterialDirectGrantsForUserAndMaterials(canonicalUserId, materialIds);
+    const directGrantsByMaterialId = new Map<string, (typeof directGrants)[number]>();
+    for (const grant of directGrants) {
+      if (grant.user_id !== canonicalUserId
+        || !materialIds.includes(grant.material_id)
+        || directGrantsByMaterialId.has(grant.material_id)) return repositoryFailure();
+      directGrantsByMaterialId.set(grant.material_id, grant);
+    }
+
+    return canonicalProductIds.every((productId) => {
+      const product = productsById.get(productId)!;
+      const entitlement = entitlementsByProductId.get(productId);
+      const hasActiveEntitlement = entitlement !== undefined && isActiveEntitlementForProgress(entitlement);
+      if (product.kind === "course") return hasActiveEntitlement;
+
+      const directGrant = directGrantsByMaterialId.get(productId);
+      if (directGrant !== undefined) {
+        return isActiveMaterialDirectGrant(directGrant, canonicalUserId, productId) && directGrant.can_view;
+      }
+      return hasActiveEntitlement;
+    });
   } catch (error) {
     if (error instanceof LearningProgressInputError || error instanceof LearningProgressRepositoryError) throw error;
     return repositoryFailure();
