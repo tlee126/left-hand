@@ -29,11 +29,13 @@ function isVideo(mimeType: string): boolean {
 export default function MaterialViewer({
   productId,
   mimeType,
-  allowDownload
+  allowDownload,
+  autoOpen = false
 }: {
   productId: string;
   mimeType: string | null;
   allowDownload: boolean;
+  autoOpen?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -76,6 +78,10 @@ export default function MaterialViewer({
     destroyLoadingTask();
     destroyPdf();
   }, []);
+
+  useEffect(() => {
+    if (autoOpen) void openViewer();
+  }, [autoOpen]);
 
   useEffect(() => {
     if (!open || !pdf || !canvasRef.current) return;

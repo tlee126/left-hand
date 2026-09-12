@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getAccountAccess } from "@/lib/auth/session";
 import type { StudyPlan, StudyPlanSubject } from "@/lib/repositories/study-plan-repository";
+import type { StudentMaterialDiscoveryData } from "@/lib/repositories/student-material-discovery-repository";
 import { StudentDashboardClient } from "./dashboard-client";
 
 /**
@@ -88,17 +89,26 @@ export default async function StudentDashboardPage({
   let initialStudyPlans: StudyPlan[] = [];
   let studyPlanSubjects: StudyPlanSubject[] = [];
   let studyPlanLoadError = false;
+  let materialDiscovery: StudentMaterialDiscoveryData = { subjects: [], directMaterials: [] };
+  let materialDiscoveryLoadError = false;
   try {
-    const { listStudyPlanSubjects, listStudyPlans } = await import("@/lib/repositories/study-plan-repository");
-    const [plansResult, subjectsResult] = await Promise.allSettled([
+    const [{ listStudyPlanSubjects, listStudyPlans }, { getStudentMaterialDiscovery }] = await Promise.all([
+      import("@/lib/repositories/study-plan-repository"),
+      import("@/lib/repositories/student-material-discovery-repository")
+    ]);
+    const [plansResult, subjectsResult, discoveryResult] = await Promise.allSettled([
       listStudyPlans(access.user.id, { startDate: historyStartDate, endDate: futureEndDate }),
-      listStudyPlanSubjects()
+      listStudyPlanSubjects(),
+      getStudentMaterialDiscovery(access.user.id)
     ]);
     if (plansResult.status === "fulfilled") initialStudyPlans = plansResult.value;
     else studyPlanLoadError = true;
     if (subjectsResult.status === "fulfilled") studyPlanSubjects = subjectsResult.value;
+    if (discoveryResult.status === "fulfilled") materialDiscovery = discoveryResult.value;
+    else materialDiscoveryLoadError = true;
   } catch {
     studyPlanLoadError = true;
+    materialDiscoveryLoadError = true;
   }
   return (
     <StudentDashboardClient
@@ -108,6 +118,8 @@ export default async function StudentDashboardPage({
       studyPlanSubjects={studyPlanSubjects}
       todayDate={todayDate}
       studyPlanLoadError={studyPlanLoadError}
+      materialDiscovery={materialDiscovery}
+      materialDiscoveryLoadError={materialDiscoveryLoadError}
     />
   );
 }

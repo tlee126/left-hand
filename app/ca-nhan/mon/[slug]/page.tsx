@@ -1,7 +1,9 @@
 import { notFound, redirect } from "next/navigation";
 import { getAccountAccess } from "@/lib/auth/session";
 import { getAuthorizedStudentWorkspace } from "@/lib/repositories/student-workspace-repository";
-import { SubjectWorkspaceClient } from "./workspace-client";
+import { SubjectWorkspaceClient, UnavailableMaterial } from "./workspace-client";
+
+const MATERIAL_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type LearningProgress = {
   user_id: string;
@@ -92,12 +94,20 @@ export default async function SubjectWorkspacePage({
 
   const page = getWorkspacePage(resolvedSearchParams.page);
   if (page === null) notFound();
+  const requestedMaterialValue = resolvedSearchParams.material;
+  const requestedMaterialId = typeof requestedMaterialValue === "string" && MATERIAL_UUID_PATTERN.test(requestedMaterialValue)
+    ? requestedMaterialValue.toLowerCase()
+    : null;
 
   let workspace;
   try {
     workspace = await getAuthorizedStudentWorkspace(access.user!.id, slug, page);
   } catch {
     notFound();
+  }
+
+  if (!workspace && requestedMaterialId) {
+    return <StudentMaterialUnavailable />;
   }
 
   if (!workspace) {
@@ -114,7 +124,14 @@ export default async function SubjectWorkspacePage({
     progressUnavailable = true;
   }
 
+  const workspaceWithRequest = requestedMaterialId
+    ? { ...workspace, initialMaterialId: requestedMaterialId, requestedMaterialUnavailable: !workspace.materials.some((material) => material.productId === requestedMaterialId) }
+    : workspace;
   return progress.length > 0
-    ? <SubjectWorkspaceClient workspace={{ ...workspace, progress }} />
-    : <SubjectWorkspaceClient workspace={progressUnavailable ? { ...workspace, progressUnavailable } : workspace} />;
+    ? <SubjectWorkspaceClient workspace={{ ...workspaceWithRequest, progress }} />
+    : <SubjectWorkspaceClient workspace={progressUnavailable ? { ...workspaceWithRequest, progressUnavailable } : workspaceWithRequest} />;
+}
+
+function StudentMaterialUnavailable() {
+  return <UnavailableMaterial />;
 }

@@ -50,7 +50,7 @@ function createQuery(table: string) {
       if (queryError) return Promise.reject(queryError).then(resolve, reject);
       const userId = query.filters.find(([field]) => field === "user_id")?.[1];
       const materialIds = query.inValues ?? [];
-      const data = rows.filter((candidate) => candidate.user_id === userId && materialIds.includes(String(candidate.material_id)));
+      const data = rows.filter((candidate) => candidate.user_id === userId && (query.inValues === null || materialIds.includes(String(candidate.material_id))));
       return Promise.resolve({ data, error: null }).then(resolve, reject);
     }
   };
@@ -130,6 +130,18 @@ test("more than 100 material IDs use bounded batches without N+1 queries", async
   assert.deepEqual(queries.map((query) => query.inValues?.length), [100, 100, 5]);
   assert.ok(queries.every((query) => (query.inValues?.length ?? 0) <= 100));
   assert.ok(queries.every((query) => query.filters.some(([field, value]) => field === "user_id" && value === USER_ID)));
+});
+
+test("discovery query is scoped to one learner and has a bounded result", async () => {
+  const materialIds = [uuid(11), uuid(12), uuid(13)];
+  rows = [row(materialIds[0]), row(materialIds[1], OTHER_USER_ID), row(materialIds[2])];
+
+  const result = await repository.getMaterialDirectGrantsForUser(USER_ID.toUpperCase());
+
+  assert.equal(queries.length, 1);
+  assert.deepEqual(queries[0].filters.find(([field]) => field === "user_id"), ["user_id", USER_ID]);
+  assert.equal(queries[0].limit, 501);
+  assert.deepEqual(result.map((grant) => grant.material_id), [materialIds[0], materialIds[2]]);
 });
 
 test("invalid UUIDs fail before database access and database errors normalize to repository errors", async () => {

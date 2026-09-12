@@ -36,6 +36,7 @@ const plans = [{ id: "950e8400-e29b-41d4-a716-446655440000", user_id: USER_ID, r
 const authModule = "data:text/javascript,study-plan-page-auth";
 const navigationModule = "data:text/javascript,study-plan-page-navigation";
 const repositoryModule = "data:text/javascript,study-plan-page-repository";
+const discoveryModule = "data:text/javascript,study-plan-page-discovery";
 const dashboardModule = "data:text/javascript,study-plan-page-dashboard";
 mock.module(authModule, { namedExports: { getAccountAccess: async () => { timeline.push("auth"); return scenario.access === "anonymous" ? { status: "unauthenticated", user: null, profile: null } : { status: scenario.access, user: { id: USER_ID }, profile: scenario.access === "profile_missing" ? null : { id: USER_ID, role: "student" } }; } } });
 mock.module(navigationModule, { namedExports: { redirect: (location) => { timeline.push("redirect"); throw new Error("REDIRECT:" + location); } } });
@@ -43,11 +44,12 @@ mock.module(repositoryModule, { namedExports: {
   listStudyPlans: async (...args) => { timeline.push("plans"); repositoryCalls.push(["plans", ...args]); return plans; },
   listStudyPlanSubjects: async () => { timeline.push("subjects"); return [{ id: "650e8400-e29b-41d4-a716-446655440000", slug: "that", name: "Môn thật", category: "Kế toán", color_theme: "accounting" }]; }
 } });
+mock.module(discoveryModule, { namedExports: { getStudentMaterialDiscovery: async () => ({ subjects: [], directMaterials: [] }) } });
 mock.module(dashboardModule, { namedExports: { StudentDashboardClient: (props) => { timeline.push("render"); return { type: "Dashboard", props }; } } });
 try {
   let source = await readFile(process.cwd() + "/app/ca-nhan/page.tsx", "utf8");
-  source = source.replaceAll("@/lib/auth/session", authModule).replaceAll("next/navigation", navigationModule).replaceAll("@/lib/repositories/study-plan-repository", repositoryModule).replaceAll("./dashboard-client", dashboardModule);
-  source = source.replace('return (\n    <StudentDashboardClient\n      initialProfile={access.profile}\n      authUserEmail={access.user?.email ?? null}\n      initialStudyPlans={initialStudyPlans}\n      studyPlanSubjects={studyPlanSubjects}\n      todayDate={todayDate}\n      studyPlanLoadError={studyPlanLoadError}\n    />\n  );', 'return { type: "Dashboard", props: { initialProfile: access.profile, authUserEmail: access.user?.email ?? null, initialStudyPlans, studyPlanSubjects, todayDate, studyPlanLoadError } };');
+  source = source.replaceAll("@/lib/auth/session", authModule).replaceAll("next/navigation", navigationModule).replaceAll("@/lib/repositories/study-plan-repository", repositoryModule).replaceAll("@/lib/repositories/student-material-discovery-repository", discoveryModule).replaceAll("./dashboard-client", dashboardModule);
+  source = source.replace('return (\n    <StudentDashboardClient\n      initialProfile={access.profile}\n      authUserEmail={access.user?.email ?? null}\n      initialStudyPlans={initialStudyPlans}\n      studyPlanSubjects={studyPlanSubjects}\n      todayDate={todayDate}\n      studyPlanLoadError={studyPlanLoadError}\n      materialDiscovery={materialDiscovery}\n      materialDiscoveryLoadError={materialDiscoveryLoadError}\n    />\n  );', 'return { type: "Dashboard", props: { initialProfile: access.profile, authUserEmail: access.user?.email ?? null, initialStudyPlans, studyPlanSubjects, todayDate, studyPlanLoadError, materialDiscovery, materialDiscoveryLoadError } };');
   const compiled = await transform(source, { loader: "ts", format: "esm", sourcefile: "page.tsx" });
   const mod = await import("data:text/javascript," + encodeURIComponent(compiled.code));
   const result = await mod.default({});

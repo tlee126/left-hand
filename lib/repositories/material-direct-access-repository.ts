@@ -233,6 +233,27 @@ export async function getMaterialDirectGrantsForUserAndMaterials(
   }
 }
 
+/** Reads one learner's direct grants across the bounded discovery surface. */
+export async function getMaterialDirectGrantsForUser(userId: string): Promise<MaterialDirectGrant[]> {
+  const canonicalUserId = canonicalUuid(userId);
+  const maxRows = 500;
+
+  try {
+    const supabase = createServerAdminClient();
+    const { data, error } = await supabase
+      .from("material_direct_grants")
+      .select(MATERIAL_DIRECT_GRANT_SELECT)
+      .eq("user_id", canonicalUserId)
+      .order("material_id", { ascending: true })
+      .limit(maxRows + 1);
+    if (error || !Array.isArray(data) || data.length > maxRows) throw new Error();
+    return data.map(validateGrantRow);
+  } catch (error) {
+    if (error instanceof MaterialDirectAccessInputError || error instanceof MaterialDirectAccessRepositoryError) throw error;
+    throw new MaterialDirectAccessRepositoryError();
+  }
+}
+
 /** Returns null when the material does not exist; an empty array means it exists without grants. */
 export async function getMaterialDirectGrants(materialId: string): Promise<MaterialDirectGrant[] | null> {
   const canonicalMaterialId = canonicalUuid(materialId);
