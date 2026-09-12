@@ -31,12 +31,14 @@ import { transform } from "esbuild";
 const scenario = JSON.parse(process.argv[1]);
 const queryData = scenario;
 globalThis.__seenTables = [];
+globalThis.__seenSelections = [];
 function client() {
   return {
     from(table) {
         globalThis.__seenTables.push(table);
       return {
-        select() {
+        select(columns) {
+          globalThis.__seenSelections.push([table, columns]);
           const filters = [];
           const inByField = new Map();
           const query = {
@@ -67,7 +69,7 @@ const source = (await readFile("lib/repositories/student-material-discovery-repo
   .replace(/import \{[\s\S]*?\} from "@\/lib\/repositories\/material-direct-access-repository";/, "const getMaterialDirectGrantsForUser = async (userId) => " + directRows + ".filter((grant) => grant.user_id === userId); const isActiveMaterialDirectGrant = (grant, userId, materialId) => grant.user_id === userId && grant.material_id === materialId && grant.can_view && grant.revoked_at === null && (grant.expires_at === null || Date.parse(grant.expires_at) > Date.now());");
 const compiled = await transform(source, { loader: "ts", format: "esm", sourcefile: "student-material-discovery-repository.ts" });
 const loaded = await import("data:text/javascript," + encodeURIComponent(compiled.code));
-console.log(JSON.stringify({ result: await loaded.getStudentMaterialDiscovery(scenario.userId), queryTables: globalThis.__seenTables }));
+console.log(JSON.stringify({ result: await loaded.getStudentMaterialDiscovery(scenario.userId), queryTables: globalThis.__seenTables, selections: globalThis.__seenSelections }));
 `;
 
 async function runDiscovery(data: Record<string, unknown>): Promise<any> {
@@ -95,7 +97,7 @@ function createClientMock() {
   return {
     from(table: string) {
       return {
-        select() {
+        select(_columns: string) {
           const filters: Array<[string, unknown]> = [];
           const inValuesByField = new Map<string, unknown[]>();
           const query: any = {
@@ -140,6 +142,11 @@ test("discovery returns entitlement and direct-grant subjects with one bounded b
     workspacePage: 1
   }]);
   assert.deepEqual(discovery.queryTables.sort(), ["materials", "product_entitlements", "products", "subjects"]);
+  assert.deepEqual(discovery.selections.filter(([table]: [string, string]) => table === "products" || table === "materials").sort(), [
+    ["materials", "product_id, allow_download"],
+    ["products", "id, subject_id, kind, title, description"]
+  ]);
+  assert.ok(discovery.selections.every(([, columns]: [string, string]) => columns !== "*"));
 });
 
 test("direct-grant-only published, draft, and archived materials satisfy the discovery repository contract", async () => {

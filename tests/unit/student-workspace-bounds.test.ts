@@ -4,7 +4,7 @@ import { afterEach, before, test } from "node:test";
 const USER_ID = "550e8400-e29b-41d4-a716-446655440000";
 const SUBJECT_ID = "650e8400-e29b-41d4-a716-446655440000";
 
-type QueryRecord = { table: string; inValues: unknown[] | null; range: [number, number] | null; limit: number | null; orders: string[] };
+type QueryRecord = { table: string; columns: string; inValues: unknown[] | null; range: [number, number] | null; limit: number | null; orders: string[] };
 type Row = Record<string, any>;
 
 let subject: Row;
@@ -55,7 +55,7 @@ function createMockClient() {
   return {
     from(table: string) {
       return {
-        select(_columns: string) {
+        select(columns: string) {
           const filters: Array<[string, unknown]> = [];
           let inFilter: [string, unknown[]] | null = null;
           let range: [number, number] | null = null;
@@ -69,7 +69,7 @@ function createMockClient() {
             limit(value: number) { limit = value; return query; },
             maybeSingle: async () => execute(table, filters, inFilter, range, limit, orders),
             then(resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) {
-              requests.push({ table, inValues: inFilter?.[1] ?? null, range, limit, orders: [...orders] });
+              requests.push({ table, columns, inValues: inFilter?.[1] ?? null, range, limit, orders: [...orders] });
               return Promise.resolve(execute(table, filters, inFilter, range, limit, orders)).then(resolve, reject);
             }
           };
@@ -130,6 +130,11 @@ test("workspace reads normal material/course data with deterministic bounded que
   assert.deepEqual(result?.courses[0].lessons.map((row: any) => row.orderIndex), [1, 2]);
   assert.ok(requests.every((request) => !request.inValues || request.inValues.length <= repository.STUDENT_WORKSPACE_ID_CHUNK_SIZE));
   assert.ok(requests.some((request) => request.table === "products" && request.range?.[0] === 0));
+  assert.deepEqual(requests.filter((request) => request.table === "products" || request.table === "materials").map(({ table, columns }) => [table, columns]).sort(), [
+    ["materials", "product_id, pages, allow_download"],
+    ["products", "id, subject_id, kind, title, description"]
+  ]);
+  assert.ok(requests.every((request) => request.columns !== "*"));
 });
 
 test("workspace skips child and entitlement queries when their ID lists are empty", async () => {

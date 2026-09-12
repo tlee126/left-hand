@@ -53,6 +53,7 @@ const immutableMigrationHashes = {
 const materialDirectAccessMigration0042Hash = "c4a60e3bb1d7b7db041499299efe173f3fa08a88f9949aee0fd09d6fb8174138";
 const materialAccessSelectGrantMigration0043Hash = "c59782a31de476a00ac15a6f06391d6fb68daa8b9a2e6da71d787b2c478e47cd";
 const learningProgressMigration0044Hash = "f6d9e8d0d88901b0a9176526f8eb01f4b98eae55f549459973a7f46a9508b8c3";
+const directGrantedMaterialVisibilityMigration0046Hash = "0002517e5f99c2a4cf3b2a7d3f03c65e2d865cd4e6d950e72b2a53f56fd38fda";
 
 export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
 
@@ -2457,6 +2458,76 @@ export function assertDirectGrantedMaterialVisibilityMigrationContract(
   assertMaterialAccessSelectGrantMigrationContract(sql0043);
 }
 
+/** Pins the F-01 row policy migration before the additive column-privilege boundary. */
+export function assertDirectGrantedMaterialVisibilityMigration0046Unchanged(sql0046: string): void {
+  const actualHash = createHash("sha256").update(canonicalMigrationContent(sql0046), "utf8").digest("hex");
+  if (actualHash !== directGrantedMaterialVisibilityMigration0046Hash) {
+    throw new Error("Migration 0046 must remain unchanged (canonical SHA-256 mismatch)");
+  }
+}
+
+/** Exact least-privilege column grant boundary, derived from current public, learner, and admin queries. */
+export function assertCatalogColumnSelectBoundaryMigrationContract(
+  sql0047: string,
+  sql0002: string,
+  sql0003: string,
+  sql0046: string
+): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const statements = stripSqlCommentsAndSplitStatements(sql0047);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const expected = [
+    "REVOKE SELECT ON TABLE public.products FROM anon, authenticated",
+    "REVOKE SELECT ON TABLE public.materials FROM anon, authenticated",
+    `GRANT SELECT (
+      id, slug, kind, title, description, subject_id, category, delivery_kind,
+      publication_status, price_vnd, old_price_vnd, is_contact_for_price,
+      rating, is_hot, color_theme, created_at, updated_at, search_document
+    ) ON TABLE public.products TO anon, authenticated`,
+    `GRANT SELECT (
+      product_id, pages, tags, includes, suitable_for
+    ) ON TABLE public.materials TO anon, authenticated`,
+    `GRANT SELECT (
+      allow_download, created_at, updated_at
+    ) ON TABLE public.materials TO authenticated`
+  ].map(normalizeMigrationStatement);
+
+  fail(statements.length === expected.length && normalized.every((statement, index) => statement === expected[index]),
+    "Migration 0047 must contain only the exact table SELECT revokes and inventoried column grants");
+  fail(!/\bgrant\s+select\s+on\s+table\s+public\.(?:products|materials)\b/i.test(normalized.join(" ; ")),
+    "Migration 0047 must not restore table-wide SELECT");
+  fail(!/\b(?:insert|update|delete|truncate|references|trigger|service_role|material_direct_grants|alter\s+table|create\s+policy|drop\s+policy)\b/i.test(normalized.join(" ; ")),
+    "Migration 0047 must not change DML, service_role, direct-grant table, schema, or RLS policy privileges");
+
+  const publishedProductsPolicy = normalizeMigrationStatement(`
+    CREATE POLICY "Allow public read access on published products"
+    ON products FOR SELECT TO anon, authenticated
+    USING (publication_status = 'published')
+  `);
+  const publishedMaterialsPolicy = normalizeMigrationStatement(`
+    CREATE POLICY "Allow public read access on published materials"
+    ON materials FOR SELECT TO anon, authenticated
+    USING (
+      EXISTS (
+        SELECT 1 FROM products
+        WHERE products.id = materials.product_id
+          AND products.publication_status = 'published'
+      )
+    )
+  `);
+  const priorTableGrants = stripSqlCommentsAndSplitStatements(sql0003).map(normalizeMigrationStatement);
+  fail(stripSqlCommentsAndSplitStatements(sql0002).map(normalizeMigrationStatement).includes(publishedProductsPolicy),
+    "Migration 0002 published products policy must remain unchanged");
+  fail(stripSqlCommentsAndSplitStatements(sql0002).map(normalizeMigrationStatement).includes(publishedMaterialsPolicy),
+    "Migration 0002 published materials policy must remain unchanged");
+  fail(priorTableGrants.includes(normalizeMigrationStatement("GRANT SELECT ON TABLE products TO anon, authenticated"))
+    && priorTableGrants.includes(normalizeMigrationStatement("GRANT SELECT ON TABLE materials TO anon, authenticated")),
+  "Migration 0047 must revoke the original 0003 table-wide catalog grants");
+  assertDirectGrantedMaterialVisibilityMigration0046Unchanged(sql0046);
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -2518,7 +2589,8 @@ export async function runAudit(): Promise<boolean> {
       "0043_grant_service_role_material_access_select.sql",
       "0044_learning_progress_material_direct_grant.sql",
       "0045_learning_progress_student_role_guard.sql",
-      "0046_direct_granted_material_visibility.sql"
+      "0046_direct_granted_material_visibility.sql",
+      "0047_catalog_column_select_boundary.sql"
     ];
 
     const migrationNumbers = sqlFiles.map((filename) => {
@@ -2531,7 +2603,7 @@ export async function runAudit(): Promise<boolean> {
       && expected.every((filename, index) => sqlFiles[index] === filename);
     results.push({
       category: "Migrations",
-      check: "All 46 migration files exist with complete strict numerical order",
+      check: "All 47 migration files exist with complete strict numerical order",
       passed: matchesCanonicalList && hasStrictSequentialNumbers,
       details: sqlFiles.join(", ")
     });
@@ -3191,6 +3263,20 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0046_direct_granted_material_visibility", check: "Adds row-scoped direct-grant visibility for unpublished materials without broadening catalog privileges", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0046ContractValid) results.push({ category: "0046_direct_granted_material_visibility", check: "Adds row-scoped direct-grant visibility for unpublished materials without broadening catalog privileges", passed: true, details: "Exact approved-student active can_view predicate, material/product binding, unchanged published policies and SELECT grants, and immutable 0042/0043 verified. Static contract only; no live RLS behavior tested." });
+
+    const sql0047 = await fs.readFile(path.join(migrationsDir, "0047_catalog_column_select_boundary.sql"), "utf-8");
+    let migration0047ContractValid = true;
+    try {
+      const [sql0002, sql0003] = await Promise.all([
+        fs.readFile(path.join(migrationsDir, "0002_public_catalog_read_policies.sql"), "utf-8"),
+        fs.readFile(path.join(migrationsDir, "0003_public_catalog_table_grants.sql"), "utf-8")
+      ]);
+      assertCatalogColumnSelectBoundaryMigrationContract(sql0047, sql0002, sql0003, sql0046);
+    } catch (error) {
+      migration0047ContractValid = false;
+      results.push({ category: "0047_catalog_column_select_boundary", check: "Replaces table-wide catalog SELECT with exact query-required column grants", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0047ContractValid) results.push({ category: "0047_catalog_column_select_boundary", check: "Replaces table-wide catalog SELECT with exact query-required column grants", passed: true, details: "Exact products/materials revokes and column grants verified; products.search_document is required by public text search, while materials.allow_download and timestamps remain authenticated-only for learner workspace/admin repository queries. Migration 0046 hash and published policies are pinned. Static contract only; no live privilege/RLS behavior tested." });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
