@@ -213,7 +213,7 @@ export default function MaterialViewer({
     <button type="button" onClick={() => void openViewer()} disabled={loading} className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full bg-[#132a67] px-4 text-xs font-bold text-white disabled:opacity-60">
       <Eye className="h-3.5 w-3.5" />{loading ? "Đang mở..." : "Mở tài liệu"}
     </button>
-    {open ? <section role="dialog" aria-modal="true" aria-labelledby={`student-material-viewer-title-${productId}`} className="fixed inset-0 z-50 flex min-h-screen items-center justify-center bg-ink/70 p-3 sm:p-6">
+    {open ? <section role="dialog" aria-modal="true" aria-labelledby={`student-material-viewer-title-${productId}`} className="fixed inset-0 z-[90] flex min-h-screen items-center justify-center bg-ink/70 p-3 sm:p-6">
       <div className="flex max-h-[calc(100vh-1.5rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl sm:max-h-[calc(100vh-3rem)]">
         <header className="flex shrink-0 items-center justify-between gap-4 border-b border-ink/10 px-4 py-3 sm:px-6">
           <h2 id={`student-material-viewer-title-${productId}`} className="text-base font-black text-ink sm:text-lg">Xem {pdfMaterial ? "tài liệu PDF" : "video"}</h2>
