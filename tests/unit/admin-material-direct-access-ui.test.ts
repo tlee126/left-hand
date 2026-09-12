@@ -99,6 +99,7 @@ function grant(userId: string, values: Record<string, unknown> = {}): Record<str
     granted_by: "7f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64",
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
+    student: null,
     ...values
   };
 }
@@ -311,6 +312,28 @@ test("empty grant list renders a stable empty state", async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.match(container.textContent ?? "", /Chưa cấp quyền riêng cho tài liệu này/);
     assert.doesNotMatch(container.textContent ?? "", /Được xem|Đã thu hồi|Hết hạn/);
+  });
+});
+
+test("grant list renders student identity returned by GET after a fresh mount", async () => {
+  const listedGrant = grant(STUDENT_A, {
+    student: { id: STUDENT_A, full_name: "Nguyễn Văn A", email: "a@example.test", student_code: "A01" }
+  });
+  await withMountedPanel((url, init) => responseFor(url, init?.method ?? "GET", [listedGrant]), async ({ container }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(container.textContent ?? "", /Nguyễn Văn A/);
+    assert.match(container.textContent ?? "", /A01/);
+    assert.doesNotMatch(container.textContent ?? "", new RegExp(`Học viên · ${STUDENT_A}`));
+  });
+});
+
+test("grant list falls back safely when the student profile is missing", async () => {
+  await withMountedPanel((url, init) => responseFor(url, init?.method ?? "GET", [grant(STUDENT_A)]), async ({ container }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(container.textContent ?? "", new RegExp(`Học viên · ${STUDENT_A}`));
+    assert.doesNotMatch(container.textContent ?? "", /a@example\.test|A01/);
   });
 });
 
