@@ -56,7 +56,9 @@ import {
   assertLearningProgressDirectAccessMigrationContract,
   assertLearningProgressStudentRoleMigrationContract,
   assertDirectGrantedMaterialVisibilityMigration0046Unchanged,
+  assertCatalogColumnSelectBoundaryMigration0047Unchanged,
   assertCatalogColumnSelectBoundaryMigrationContract,
+  assertSafeCatalogReadSurfaceMigrationContract,
   stripSqlCommentsAndSplitStatements,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
@@ -299,6 +301,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ,"0045_learning_progress_student_role_guard.sql"
       ,"0046_direct_granted_material_visibility.sql"
       ,"0047_catalog_column_select_boundary.sql"
+      ,"0048_safe_catalog_read_surface.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -2142,10 +2145,10 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
 
     const discoveryRepository = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/student-material-discovery-repository.ts"), "utf8");
     const workspaceRepository = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/student-workspace-repository.ts"), "utf8");
-    assert.match(discoveryRepository, /\.from\("products"\)\s*\.select\("id, subject_id, kind, title, description"\)/);
-    assert.match(discoveryRepository, /\.from\("materials"\)\s*\.select\("product_id, allow_download"\)/);
-    assert.match(workspaceRepository, /\.from\("products"\)\s*\.select\("id, subject_id, kind, title, description"\)/);
-    assert.match(workspaceRepository, /\.from\("materials"\)\s*\.select\("product_id, pages, allow_download"\)/);
+    assert.match(discoveryRepository, /\.from\("student_workspace_product_read_surface"\)\s*\.select\("id, subject_id, kind, title, description"\)/);
+    assert.match(discoveryRepository, /\.from\("learner_material_read_surface"\)\s*\.select\("product_id, allow_download"\)/);
+    assert.match(workspaceRepository, /\.from\("student_workspace_product_read_surface"\)\s*\.select\("id, subject_id, kind, title, description"\)/);
+    assert.match(workspaceRepository, /\.from\("learner_material_read_surface"\)\s*\.select\("product_id, pages, allow_download"\)/);
     assert.doesNotMatch(discoveryRepository, /createServerAdminClient|SUPABASE_SERVICE_ROLE_KEY|material_assets|storage_path/i);
     assert.doesNotMatch(workspaceRepository, /createServerAdminClient|SUPABASE_SERVICE_ROLE_KEY|material_assets|storage_path/i);
 
@@ -2163,6 +2166,7 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
     ]);
 
     assert.doesNotThrow(() => assertCatalogColumnSelectBoundaryMigrationContract(sql0047, sql0002, sql0003, sql0046));
+    assert.doesNotThrow(() => assertCatalogColumnSelectBoundaryMigration0047Unchanged(sql0047));
     assert.doesNotThrow(() => assertDirectGrantedMaterialVisibilityMigration0046Unchanged(sql0046));
     assert.throws(() => assertDirectGrantedMaterialVisibilityMigration0046Unchanged(`${sql0046}\n-- changed`), /unchanged/i);
 
@@ -2185,12 +2189,58 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
     const adminRepository = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/admin-catalog-repository.ts"), "utf8");
     const discoveryRepository = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/student-material-discovery-repository.ts"), "utf8");
     const workspaceRepository = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/student-workspace-repository.ts"), "utf8");
-    assert.match(catalogRepository, /search_document/);
+    assert.match(catalogRepository, /search_public_catalog_product_ids/);
+    assert.match(catalogRepository, /from\("public_catalog_read_surface"\)/);
     assert.match(catalogRepository, /PRODUCT_COLUMNS = "id, slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, is_contact_for_price, rating, is_hot, color_theme, created_at"/);
     assert.match(adminRepository, /"created_at",\s*"updated_at"/);
     assert.match(discoveryRepository, /\.select\("id, subject_id, kind, title, description"\)/);
     assert.match(discoveryRepository, /\.select\("product_id, allow_download"\)/);
     assert.match(workspaceRepository, /\.select\("product_id, pages, allow_download"\)/);
     // This verifies source contracts only; it does not execute grants or RLS in PostgreSQL.
+  });
+
+  test("migration 0048 revokes base reads and exposes exact public, learner, workspace, and admin projections", async () => {
+    const migrationsPath = path.resolve(process.cwd(), "supabase/migrations");
+    const [sql0002, sql0046, sql0047, sql0048] = await Promise.all([
+      fs.readFile(path.join(migrationsPath, "0002_public_catalog_read_policies.sql"), "utf8"),
+      fs.readFile(path.join(migrationsPath, "0046_direct_granted_material_visibility.sql"), "utf8"),
+      fs.readFile(path.join(migrationsPath, "0047_catalog_column_select_boundary.sql"), "utf8"),
+      fs.readFile(path.join(migrationsPath, "0048_safe_catalog_read_surface.sql"), "utf8")
+    ]);
+
+    assert.doesNotThrow(() => assertSafeCatalogReadSurfaceMigrationContract(sql0048, sql0047, sql0002, sql0046));
+    for (const hostile of [
+      sql0048.replace("REVOKE SELECT (id, slug", "REVOKE SELECT (slug"),
+      `${sql0048}\nGRANT SELECT (internal_note) ON TABLE public.products TO authenticated;`,
+      `${sql0048}\nGRANT SELECT ON TABLE public.materials TO anon;`,
+      sql0048.replace("material.allow_download\nFROM public.products", "material.allow_download, product.search_document\nFROM public.products"),
+      sql0048.replace("learner.role = 'student'", "learner.role <> 'admin'"),
+      sql0048.replace("learner.account_status = 'approved'", "learner.account_status <> 'suspended'"),
+      sql0048.replace("public.has_active_direct_granted_material_visibility(material.product_id)", "true"),
+      sql0048.replace("'course'::public.product_kind_enum AS kind", "'tutor'::public.product_kind_enum AS kind"),
+      sql0048.replace("student_workspace_product_read_surface TO authenticated", "student_workspace_product_read_surface TO anon, authenticated")
+    ]) assert.throws(() => assertSafeCatalogReadSurfaceMigrationContract(hostile, sql0047, sql0002, sql0046));
+
+    const catalogRepository = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/catalog-repository.ts"), "utf8");
+    const discoveryRepository = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/student-material-discovery-repository.ts"), "utf8");
+    const workspaceRepository = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/student-workspace-repository.ts"), "utf8");
+    const progressRepository = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/learning-progress-repository.ts"), "utf8");
+    const adminRepository = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/admin-catalog-repository.ts"), "utf8");
+    const consultationRepository = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/consultation-repository.ts"), "utf8");
+    const materialAssetRepository = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/material-asset-repository.ts"), "utf8");
+    for (const [name, source] of Object.entries({ catalogRepository, discoveryRepository, workspaceRepository, progressRepository, adminRepository, consultationRepository })) {
+      assert.doesNotMatch(source, /\.from\(["'](?:products|materials)["']\)/, `${name} must not query learner/public base tables directly`);
+    }
+    const materialExistenceReader = /export async function isMaterialProduct[\s\S]*?export async function reserveMaterialAssetUpload/.exec(materialAssetRepository)?.[0] ?? "";
+    assert.ok(materialExistenceReader.length > 0);
+    assert.doesNotMatch(materialExistenceReader, /\.from\(["']materials["']\)/, "upload validation must use the approved-admin read surface, not authenticated base SELECT");
+    assert.match(catalogRepository, /from\("public_catalog_read_surface"\)/);
+    assert.match(catalogRepository, /search_public_catalog_product_ids/);
+    assert.match(discoveryRepository, /student_workspace_product_read_surface/);
+    assert.match(workspaceRepository, /learner_material_read_surface/);
+    assert.match(adminRepository, /admin_catalog_read_surface/);
+    assert.match(consultationRepository, /public_catalog_read_surface/);
+    assert.match(materialAssetRepository, /admin_catalog_read_surface/);
+    // Static/unit evidence only; no PostgreSQL role or RLS session is run here.
   });
 });

@@ -50,9 +50,9 @@ function client() {
               const eq = (field, value) => filters.find(([name]) => name === field)?.[1] === value;
               let rows = [];
               if (table === "product_entitlements") rows = queryData.entitlements.filter((row) => eq("user_id", row.user_id) && eq("status", row.status));
-              if (table === "products") rows = queryData.products.filter((row) => inByField.get("id")?.includes(row.id) && inByField.get("kind")?.includes(row.kind));
+              if (table === "student_workspace_product_read_surface") rows = queryData.products.filter((row) => inByField.get("id")?.includes(row.id) && inByField.get("kind")?.includes(row.kind));
               if (table === "subjects") rows = queryData.subjects.filter((row) => inByField.get("id")?.includes(row.id));
-              if (table === "materials") rows = queryData.materials.filter((row) => inByField.get("product_id")?.includes(row.product_id));
+              if (table === "learner_material_read_surface") rows = queryData.materials.filter((row) => inByField.get("product_id")?.includes(row.product_id));
               return Promise.resolve({ data: rows, error: null }).then(resolve, reject);
             }
           };
@@ -110,9 +110,9 @@ function createClientMock() {
               const eq = (field: string, value: unknown) => filters.find(([name]) => name === field)?.[1] === value;
               let rows: Row[] = [];
               if (table === "product_entitlements") rows = entitlements.filter((row) => eq("user_id", row.user_id) && eq("status", row.status));
-              if (table === "products") rows = products.filter((row) => inValuesByField.get("id")?.includes(row.id) && inValuesByField.get("kind")?.includes(row.kind));
+              if (table === "student_workspace_product_read_surface") rows = products.filter((row) => inValuesByField.get("id")?.includes(row.id) && inValuesByField.get("kind")?.includes(row.kind));
               if (table === "subjects") rows = subjects.filter((row) => inValuesByField.get("id")?.includes(row.id));
-              if (table === "materials") rows = materials.filter((row) => inValuesByField.get("product_id")?.includes(row.product_id));
+              if (table === "learner_material_read_surface") rows = materials.filter((row) => inValuesByField.get("product_id")?.includes(row.product_id));
               return Promise.resolve({ data: rows, error: null }).then(resolve, reject);
             }
           };
@@ -141,10 +141,10 @@ test("discovery returns entitlement and direct-grant subjects with one bounded b
     expiresAt: "2099-01-01T00:00:00.000Z",
     workspacePage: 1
   }]);
-  assert.deepEqual(discovery.queryTables.sort(), ["materials", "product_entitlements", "products", "subjects"]);
-  assert.deepEqual(discovery.selections.filter(([table]: [string, string]) => table === "products" || table === "materials").sort(), [
-    ["materials", "product_id, allow_download"],
-    ["products", "id, subject_id, kind, title, description"]
+  assert.deepEqual(discovery.queryTables.sort(), ["learner_material_read_surface", "product_entitlements", "student_workspace_product_read_surface", "subjects"]);
+  assert.deepEqual(discovery.selections.filter(([table]: [string, string]) => table === "student_workspace_product_read_surface" || table === "learner_material_read_surface").sort(), [
+    ["learner_material_read_surface", "product_id, allow_download"],
+    ["student_workspace_product_read_surface", "id, subject_id, kind, title, description"]
   ]);
   assert.ok(discovery.selections.every(([, columns]: [string, string]) => columns !== "*"));
 });
@@ -165,7 +165,7 @@ test("direct-grant-only published, draft, and archived materials satisfy the dis
     assert.deepEqual(discovery.result.directMaterials.map((material: Row) => material.productId), [MATERIAL_A], publicationStatus);
     assert.equal(discovery.result.directMaterials[0].allowDownload, false, "a view grant must not inherit materials.allow_download");
     assert.deepEqual(discovery.result.subjects.map((subject: Row) => subject.accessSource), ["direct_grant"]);
-    assert.deepEqual(discovery.queryTables.sort(), ["materials", "product_entitlements", "products", "subjects"]);
+    assert.deepEqual(discovery.queryTables.sort(), ["learner_material_read_surface", "product_entitlements", "student_workspace_product_read_surface", "subjects"]);
   }
 });
 
@@ -202,7 +202,7 @@ test("draft and archived materials without a direct grant or entitlement are not
       materials: [{ product_id: MATERIAL_A, allow_download: true }]
     });
     assert.deepEqual(discovery.result, { subjects: [], directMaterials: [] }, publicationStatus);
-    assert.equal(discovery.queryTables.includes("products"), false, "unauthorized unpublished IDs are never queried");
+    assert.equal(discovery.queryTables.includes("student_workspace_product_read_surface"), false, "no published/draft product candidates are returned without an entitlement or direct grant");
   }
 });
 

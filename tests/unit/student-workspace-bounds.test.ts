@@ -37,9 +37,9 @@ function execute(table: string, filters: Array<[string, unknown]>, inFilter: [st
   const ids = inFilter?.[1].map(String) ?? [];
   let rows: Row[];
   if (table === "subjects") rows = subject && eq("slug", subject.slug) ? [subject] : [];
-  else if (table === "products") rows = products.filter((row) => eq("subject_id", row.subject_id) && ids.includes(row.kind));
+  else if (table === "student_workspace_product_read_surface") rows = products.filter((row) => eq("subject_id", row.subject_id) && ids.includes(row.kind));
   else if (table === "product_entitlements") rows = entitlements.filter((row) => eq("user_id", row.user_id) && ids.includes(row.product_id));
-  else if (table === "materials") rows = materials.filter((row) => ids.includes(row.product_id));
+  else if (table === "learner_material_read_surface") rows = materials.filter((row) => ids.includes(row.product_id));
   else if (table === "course_lessons") rows = lessons.filter((row) => ids.includes(row.course_id));
   else rows = [];
 
@@ -129,10 +129,10 @@ test("workspace reads normal material/course data with deterministic bounded que
   assert.deepEqual(result?.courses.map((row: any) => row.productId), [products[1].id]);
   assert.deepEqual(result?.courses[0].lessons.map((row: any) => row.orderIndex), [1, 2]);
   assert.ok(requests.every((request) => !request.inValues || request.inValues.length <= repository.STUDENT_WORKSPACE_ID_CHUNK_SIZE));
-  assert.ok(requests.some((request) => request.table === "products" && request.range?.[0] === 0));
-  assert.deepEqual(requests.filter((request) => request.table === "products" || request.table === "materials").map(({ table, columns }) => [table, columns]).sort(), [
-    ["materials", "product_id, pages, allow_download"],
-    ["products", "id, subject_id, kind, title, description"]
+  assert.ok(requests.some((request) => request.table === "student_workspace_product_read_surface" && request.range?.[0] === 0));
+  assert.deepEqual(requests.filter((request) => request.table === "student_workspace_product_read_surface" || request.table === "learner_material_read_surface").map(({ table, columns }) => [table, columns]).sort(), [
+    ["learner_material_read_surface", "product_id, pages, allow_download"],
+    ["student_workspace_product_read_surface", "id, subject_id, kind, title, description"]
   ]);
   assert.ok(requests.every((request) => request.columns !== "*"));
 });
@@ -152,7 +152,7 @@ test("workspace skips child and entitlement queries when their ID lists are empt
   lessons = [{ id: uuid(30_000), course_id: products[0].id, title: "Lesson", description: null, duration_minutes: 1, order_index: 1 }];
   const courseOnly = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
   assert.equal(courseOnly?.courses.length, 1);
-  assert.equal(requests.some((request) => request.table === "materials"), false);
+  assert.equal(requests.some((request) => request.table === "learner_material_read_surface"), false);
 });
 
 test("direct-granted materials are visible without entitlement and use direct download permission", async () => {
@@ -181,7 +181,7 @@ test("direct-grant-only published, draft, and archived materials satisfy the wor
 
     assert.deepEqual(result?.materials.map((row: any) => row.productId), [products[0].id], publicationStatus);
     assert.equal(result?.materials[0].allowDownload, false, "can_view does not inherit the material's download setting");
-    assert.deepEqual(requests.map((request) => request.table), ["products", "product_entitlements", "materials"]);
+    assert.deepEqual(requests.map((request) => request.table), ["student_workspace_product_read_surface", "product_entitlements", "learner_material_read_surface"]);
     assert.deepEqual(directGrantBatchCalls, [[products[0].id]], "grant lookup remains one bounded batch, not one query per row");
   }
 });
@@ -198,7 +198,7 @@ test("draft and archived workspace materials without a direct grant or entitleme
     const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
 
     assert.equal(result, null, publicationStatus);
-    assert.equal(requests.some((request) => request.table === "materials"), false, "child metadata is not fetched without an authorized product");
+  assert.equal(requests.some((request) => request.table === "learner_material_read_surface"), false, "child metadata is not fetched without an authorized product");
   }
 });
 

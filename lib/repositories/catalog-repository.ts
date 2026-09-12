@@ -62,12 +62,27 @@ export interface CatalogQuery extends PromiseLike<CatalogQueryResult> {
 
 export interface CatalogClient {
   products(columns: string, options?: { count?: "exact"; head?: boolean }): CatalogQuery;
+  searchPublishedProductIds(kind: ProductKind, term: string): Promise<{ data: unknown; error: unknown }>;
 }
 
 export type CatalogClientFactory = () => Promise<CatalogClient>;
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
-type SupabaseProductBuilder = ReturnType<ReturnType<SupabaseServerClient["from"]>["select"]>;
+// The generated PostgREST select type for a JSON-projection view is much
+// narrower than the dynamic, allowlisted selection strings used here. Values
+// are revalidated by the repository mappers before leaving this boundary.
+interface SupabaseProductBuilder extends PromiseLike<CatalogQueryResult> {
+  select(columns: string, options?: { count?: "exact"; head?: boolean }): SupabaseProductBuilder;
+  eq(column: string, value: unknown): SupabaseProductBuilder;
+  gte(column: string, value: number): SupabaseProductBuilder;
+  lte(column: string, value: number): SupabaseProductBuilder;
+  in(column: string, values: readonly string[]): SupabaseProductBuilder;
+  ilike(column: string, value: string): SupabaseProductBuilder;
+  or(value: string): SupabaseProductBuilder;
+  order(column: string, options: { ascending: boolean; nullsFirst?: boolean }): SupabaseProductBuilder;
+  range(from: number, to: number): PromiseLike<CatalogQueryResult>;
+  maybeSingle(): PromiseLike<CatalogQueryResult>;
+}
 
 function wrapSupabaseQuery(query: SupabaseProductBuilder): CatalogQuery {
   return {
@@ -281,17 +296,11 @@ export const mapRowToCourseItem = mapCourseRow;
 export const mapRowToTutorItem = mapTutorRow;
 
 const PRODUCT_COLUMNS = "id, slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, is_contact_for_price, rating, is_hot, color_theme, created_at";
-const PRODUCT_ROW_COLUMNS = `${PRODUCT_COLUMNS}, updated_at`;
-const SUBJECT_COLUMNS = "id, slug, name, category, faculty_group, color_theme";
-const MATERIAL_COLUMNS = "product_id, pages, tags, includes, suitable_for";
-const COURSE_COLUMNS = "product_id, format, sessions, duration, schedule, enrollment_status, mentor, tags, curriculum, suitable_for, preparation";
-const TUTOR_COLUMNS = "product_id, name, faculty, format, availability, short_bio, strengths, tags, suitable_for, support_methods";
-const TUTOR_SUBJECT_COLUMNS = "is_primary, subjects(id, slug, name, category, faculty_group, color_theme)";
 
 export const PUBLIC_CATALOG_SELECT = {
-  material: `${PRODUCT_COLUMNS}, materials!inner(${MATERIAL_COLUMNS}), subjects!inner(${SUBJECT_COLUMNS})`,
-  course: `${PRODUCT_COLUMNS}, courses!inner(${COURSE_COLUMNS}), subjects!inner(${SUBJECT_COLUMNS})`,
-  tutor: `${PRODUCT_COLUMNS}, tutors!inner(${TUTOR_COLUMNS}, tutor_subjects(${TUTOR_SUBJECT_COLUMNS})), subjects!inner(${SUBJECT_COLUMNS})`
+  material: `${PRODUCT_COLUMNS}, materials, subjects`,
+  course: `${PRODUCT_COLUMNS}, courses, subjects`,
+  tutor: `${PRODUCT_COLUMNS}, tutors, subjects`
 } as const;
 
 export const DEFAULT_CATALOG_LIMIT = 12;
@@ -384,18 +393,14 @@ function escapeIlike(value: string): string {
 function applyCatalogFilters(query: CatalogQuery, filters: NormalizedCatalogFilters): CatalogQuery {
   let next = query.eq("kind", filters.kind ?? null).eq("publication_status", "published");
   if (filters.category) next = next.eq("category", filters.category);
-  if (filters.subject) next = next.eq("subjects.slug", canonicalLookupSlug(filters.subject));
+  if (filters.subject) next = next.eq("subjects->>slug", canonicalLookupSlug(filters.subject));
   if (filters.minPrice !== undefined) next = next.gte("price_vnd", filters.minPrice);
   if (filters.maxPrice !== undefined) next = next.lte("price_vnd", filters.maxPrice);
-  if (filters.search) {
-    const normalized = escapeIlike(normalizeCatalogSearch(filters.search));
-    if (normalized) next = next.ilike("search_document", `%${normalized}%`);
-  }
-  if (filters.courseFormats?.length) next = next.in("courses.format", filters.courseFormats);
-  else if (filters.courseFormat) next = next.eq("courses.format", filters.courseFormat);
-  if (filters.enrollmentStatus) next = next.eq("courses.enrollment_status", filters.enrollmentStatus);
-  if (filters.tutorMode === "online") next = next.ilike("tutors.format", "%online%");
-  if (filters.tutorMode === "one-to-one") next = next.ilike("tutors.format", "%1:1%");
+  if (filters.courseFormats?.length) next = next.in("courses->>format", filters.courseFormats);
+  else if (filters.courseFormat) next = next.eq("courses->>format", filters.courseFormat);
+  if (filters.enrollmentStatus) next = next.eq("courses->>enrollment_status", filters.enrollmentStatus);
+  if (filters.tutorMode === "online") next = next.ilike("tutors->>format", "%online%");
+  if (filters.tutorMode === "one-to-one") next = next.ilike("tutors->>format", "%1:1%");
   return next;
 }
 
@@ -438,7 +443,13 @@ async function withCatalogBoundary<T>(message: string, operation: () => Promise<
 
 async function defaultCatalogClientFactory(): Promise<CatalogClient> {
   const supabase = await createClient();
-  return { products: (columns, options) => wrapSupabaseQuery(supabase.from("products").select(columns, options)) };
+  return {
+    products: (columns, options) => wrapSupabaseQuery(supabase.from("public_catalog_read_surface").select(columns, options) as unknown as SupabaseProductBuilder),
+    async searchPublishedProductIds(kind, term) {
+      const { data, error } = await supabase.rpc("search_public_catalog_product_ids", { p_kind: kind, p_search: term });
+      return { data, error };
+    }
+  };
 }
 
 async function resolveCatalogClient(client?: CatalogClient, factory: CatalogClientFactory = defaultCatalogClientFactory): Promise<CatalogClient> {
@@ -450,7 +461,30 @@ async function listCatalog<T>(kind: ProductKind, filters: CatalogFilters, mapper
   return withCatalogBoundary(message, async () => {
     const normalized = normalizeFilters(filters);
     const requestFilters: NormalizedCatalogFilters = { ...normalized, kind };
-    let query = applyCatalogFilters(selectPublicCatalog(await resolveCatalogClient(client, factory), kind), requestFilters);
+    const catalogClient = await resolveCatalogClient(client, factory);
+    let query = applyCatalogFilters(selectPublicCatalog(catalogClient, kind), requestFilters);
+    if (normalized.search) {
+      const term = escapeIlike(normalizeCatalogSearch(normalized.search));
+      if (term) {
+        const searchResult = await catalogClient.searchPublishedProductIds(kind, term);
+        if (searchResult.error || !Array.isArray(searchResult.data)) throw new CatalogRepositoryError(message);
+        const ids: string[] = [];
+        for (const value of searchResult.data) {
+          const row = asObject(value);
+          const id = row ? valueOf(row, "id") : undefined;
+          if (typeof id !== "string" || !isUuid(id)) throw new CatalogRepositoryError(message);
+          ids.push(id.toLowerCase());
+        }
+        if (new Set(ids).size !== ids.length) throw new CatalogRepositoryError(message);
+        if (ids.length === 0) return {
+          items: [], total: 0, limit: normalized.limit, offset: normalized.offset,
+          page: Math.floor(normalized.offset / normalized.limit) + 1,
+          hasNext: false,
+          hasPrevious: normalized.offset > 0
+        };
+        query = query.in("id", ids);
+      }
+    }
     query = orderCatalogQuery(query, normalized.sort, kind);
     const result = await query.range(normalized.offset, normalized.offset + normalized.limit - 1);
     if (result.error) throw new CatalogRepositoryError(message);
@@ -499,7 +533,7 @@ export async function getPublishedProductBySlug(slug: string, client?: CatalogCl
 
 export async function listPublishedProducts(client?: CatalogClient): Promise<ProductProjection[]> {
   return withCatalogBoundary("Failed to list published products.", async () => {
-    const result = await (await resolveCatalogClient(client)).products(PRODUCT_ROW_COLUMNS).eq("publication_status", "published").order("created_at", { ascending: false }).order("id", { ascending: true }).range(0, MAX_CATALOG_LIMIT - 1);
+    const result = await (await resolveCatalogClient(client)).products(PRODUCT_COLUMNS).eq("publication_status", "published").order("created_at", { ascending: false }).order("id", { ascending: true }).range(0, MAX_CATALOG_LIMIT - 1);
     if (result.error || !Array.isArray(result.data)) throw new CatalogRepositoryError("Failed to list published products.");
     return result.data.filter(isPublishedRow).map(readProductProjection);
   });

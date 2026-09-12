@@ -58,27 +58,27 @@ function createMockSupabase(
   const client = {
     _getInsertedPayload: () => insertedPayload,
     from: (table: string) => {
-      if (table === "products" || table === "subjects") {
+      if (table === "public_catalog_read_surface" || table === "subjects") {
         let selectedSlug: string | null = null;
         const query = {
           select: () => query,
           eq: (column: string, value: string) => {
             if (column === "slug") selectedSlug = value;
-            if (column === "subjects.slug") selectedSlug = value;
+            if (column === "subject_slug") selectedSlug = value;
             return query;
           },
           range: async () => {
             if (catalog.error) return { data: [], error: catalog.error };
-            if (table === "products" && configuredSubjectSlug === selectedSlug && catalog.productStatus !== "draft" && catalog.productStatus !== "archived") {
-              return { data: [{ slug: configuredProductSlug ?? "published-product", subjects: { slug: configuredSubjectSlug } }], error: null };
+            if (table === "public_catalog_read_surface" && configuredSubjectSlug === selectedSlug && catalog.productStatus !== "draft" && catalog.productStatus !== "archived") {
+              return { data: [{ slug: configuredProductSlug ?? "published-product", subject_slug: configuredSubjectSlug }], error: null };
             }
             return { data: [], error: null };
           },
           maybeSingle: async () => {
             if (catalog.error) return { data: null, error: catalog.error };
-            if (table === "products") {
+            if (table === "public_catalog_read_surface") {
               if (configuredProductSlug === selectedSlug && catalog.productStatus !== "draft" && catalog.productStatus !== "archived") {
-                return { data: { slug: configuredProductSlug, subjects: { slug: configuredSubjectSlug ?? "subj" } }, error: null };
+                return { data: { slug: configuredProductSlug, subject_slug: configuredSubjectSlug ?? "subj" }, error: null };
               }
               return { data: null, error: null };
             }

@@ -108,7 +108,7 @@ export const CONSULTATION_STATUS_HISTORY_SELECT_COLUMNS =
 
 export const MAX_CONSULTATION_HISTORY = 100;
 
-const CONSULTATION_CATALOG_SELECT_COLUMNS = "slug, subjects!inner(slug)";
+const CONSULTATION_CATALOG_SELECT_COLUMNS = "slug, subject_slug:subjects->>slug";
 
 export interface UpdatedConsultationStatus {
   id: string;
@@ -220,12 +220,6 @@ type ConsultationCatalogSelection = {
   selectedSubjectSlug: string | null;
 };
 
-function readJoinedSubjectSlug(value: unknown): string | null {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-  const slug = Object.getOwnPropertyDescriptor(value, "slug")?.value;
-  return typeof slug === "string" && slug.length > 0 ? slug : null;
-}
-
 /**
  * Resolves optional consultation catalog references against the public,
  * published catalog. Client-provided slugs are never returned directly.
@@ -244,7 +238,7 @@ export async function resolvePublishedConsultationSelection(
 
     if (selectedProductSlug !== null) {
       const result = await supabase
-        .from("products")
+        .from("public_catalog_read_surface")
         .select(CONSULTATION_CATALOG_SELECT_COLUMNS)
         .eq("slug", selectedProductSlug)
         .eq("publication_status", "published")
@@ -262,9 +256,7 @@ export async function resolvePublishedConsultationSelection(
       }
 
       const resolvedProductSlug = Object.getOwnPropertyDescriptor(row, "slug")?.value;
-      const resolvedSubjectSlug = readJoinedSubjectSlug(
-        Object.getOwnPropertyDescriptor(row, "subjects")?.value
-      );
+      const resolvedSubjectSlug = Object.getOwnPropertyDescriptor(row, "subject_slug")?.value;
       if (
         typeof resolvedProductSlug !== "string" ||
         resolvedSubjectSlug === null ||

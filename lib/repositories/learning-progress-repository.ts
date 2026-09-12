@@ -313,7 +313,7 @@ export async function hasLearningProgressAccessForProducts(
 
     for (const productIdChunk of chunks(canonicalProductIds, LEARNING_PROGRESS_PRODUCT_CHUNK_SIZE)) {
       const { data, error } = await supabase
-        .from("products")
+        .from("student_workspace_product_read_surface")
         .select("id, kind")
         .in("id", productIdChunk)
         .order("id", { ascending: true })
@@ -399,7 +399,7 @@ export async function isLearningProgressItemForProduct(
     if (itemType === "material") {
       if (canonicalItemId !== canonicalProductId) return false;
       const { data, error } = await supabase
-        .from("materials")
+        .from("learner_material_read_surface")
         .select("product_id")
         .eq("product_id", canonicalProductId)
         .maybeSingle();

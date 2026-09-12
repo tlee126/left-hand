@@ -115,7 +115,7 @@ export async function getStudentMaterialDiscovery(userId: string): Promise<Stude
     if (productIds.length === 0) return { subjects: [], directMaterials: [] };
 
     const { data: productData, error: productError } = await supabase
-      .from("products")
+      .from("student_workspace_product_read_surface")
       .select("id, subject_id, kind, title, description")
       .in("id", productIds)
       .in("kind", ["material", "course"])
@@ -165,7 +165,7 @@ export async function getStudentMaterialDiscovery(userId: string): Promise<Stude
     const materialById = new Map<string, DiscoveryMaterial>();
     if (materialIds.length > 0) {
       const { data: materialData, error: materialError } = await supabase
-        .from("materials")
+        .from("learner_material_read_surface")
         .select("product_id, allow_download")
         .in("product_id", materialIds)
         .order("product_id", { ascending: true })

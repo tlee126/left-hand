@@ -953,7 +953,74 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      admin_catalog_read_surface: {
+        Row: {
+          id: string
+          slug: string
+          kind: Database["public"]["Enums"]["product_kind_enum"]
+          title: string
+          description: string
+          subject_id: string
+          category: Database["public"]["Enums"]["category_enum"]
+          delivery_kind: Database["public"]["Enums"]["delivery_kind_enum"]
+          publication_status: Database["public"]["Enums"]["publication_status_enum"]
+          price_vnd: number | null
+          old_price_vnd: number | null
+          is_contact_for_price: boolean
+          rating: number
+          is_hot: boolean
+          color_theme: Database["public"]["Enums"]["color_theme_enum"]
+          created_at: string
+          updated_at: string
+          materials: Json | null
+          courses: Json | null
+          tutors: Json | null
+        }
+        Relationships: []
+      }
+      learner_course_read_surface: {
+        Row: { product_id: string; subject_id: string; title: string; description: string }
+        Relationships: []
+      }
+      learner_material_read_surface: {
+        Row: { product_id: string; subject_id: string; title: string; description: string; pages: number; allow_download: boolean }
+        Relationships: []
+      }
+      public_catalog_read_surface: {
+        Row: {
+          id: string
+          slug: string
+          kind: Database["public"]["Enums"]["product_kind_enum"]
+          title: string
+          description: string
+          subject_id: string
+          category: Database["public"]["Enums"]["category_enum"]
+          delivery_kind: Database["public"]["Enums"]["delivery_kind_enum"]
+          publication_status: Database["public"]["Enums"]["publication_status_enum"]
+          price_vnd: number | null
+          old_price_vnd: number | null
+          is_contact_for_price: boolean
+          rating: number
+          is_hot: boolean
+          color_theme: Database["public"]["Enums"]["color_theme_enum"]
+          created_at: string
+          subjects: Json
+          materials: Json | null
+          courses: Json | null
+          tutors: Json | null
+        }
+        Relationships: []
+      }
+      student_workspace_product_read_surface: {
+        Row: {
+          id: string
+          subject_id: string
+          kind: Database["public"]["Enums"]["product_kind_enum"]
+          title: string
+          description: string
+        }
+        Relationships: []
+      }
     }
     Functions: {
       admin_catalog_mutate: {
@@ -1050,6 +1117,10 @@ export type Database = {
       release_expired_material_asset_upload_cleanup: {
         Args: { p_claim_id: string; p_reservation_id: string }
         Returns: boolean
+      }
+      search_public_catalog_product_ids: {
+        Args: { p_kind: Database["public"]["Enums"]["product_kind_enum"]; p_search: string }
+        Returns: { id: string }[]
       }
     }
     Enums: {
