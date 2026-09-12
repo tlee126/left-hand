@@ -328,6 +328,49 @@ test("grant list renders student identity returned by GET after a fresh mount", 
   });
 });
 
+test("grant list keeps two student labels mapped correctly after a fresh mount", async () => {
+  const firstGrant = grant(STUDENT_A, {
+    student: { id: STUDENT_A, full_name: "Nguyễn Minh An", email: "minh.an@example.test", student_code: "LA-101" }
+  });
+  const secondGrant = grant(STUDENT_B, {
+    student: { id: STUDENT_B, full_name: "Trần Bảo Bình", email: "bao.binh@example.test", student_code: "LB-202" }
+  });
+  const listedGrants = [firstGrant, secondGrant];
+
+  await withMountedPanel((url, init) => responseFor(url, init?.method ?? "GET", listedGrants), async ({ container, calls, flush }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await flush();
+
+    const searchInput = container.querySelector('input[aria-label="Tìm học viên"]') as HTMLInputElement;
+    assert.equal(searchInput.value, "", "search state starts empty");
+    const expectedUrl = `/api/admin/materials/${MATERIAL_ID}/direct-grants`;
+    assert.deepEqual(calls, [{ url: expectedUrl, method: "GET", body: null }], "one material-bound GET completes without search or duplicate loads");
+    assert.equal(firstGrant.material_id, MATERIAL_ID);
+    assert.equal(secondGrant.material_id, MATERIAL_ID);
+    assert.equal(container.querySelector("[data-material-direct-access]")?.getAttribute("data-material-direct-access"), MATERIAL_ID);
+
+    const grantRows = [...container.querySelectorAll("li")].filter((row) =>
+      [...row.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Sửa quyền")
+    );
+    assert.equal(grantRows.length, 2, "both grants for this material render");
+
+    const firstRow = grantRows.find((row) => row.textContent?.includes("Nguyễn Minh An"));
+    const secondRow = grantRows.find((row) => row.textContent?.includes("Trần Bảo Bình"));
+    assert.ok(firstRow, "first student's exact name is rendered in a grant row");
+    assert.ok(secondRow, "second student's exact name is rendered in a grant row");
+
+    assert.match(firstRow.textContent ?? "", /LA-101/);
+    assert.doesNotMatch(firstRow.textContent ?? "", /Trần Bảo Bình|LB-202/);
+    assert.doesNotMatch(firstRow.textContent ?? "", new RegExp(STUDENT_A));
+    assert.doesNotMatch(firstRow.textContent ?? "", new RegExp(STUDENT_B));
+
+    assert.match(secondRow.textContent ?? "", /LB-202/);
+    assert.doesNotMatch(secondRow.textContent ?? "", /Nguyễn Minh An|LA-101/);
+    assert.doesNotMatch(secondRow.textContent ?? "", new RegExp(STUDENT_A));
+    assert.doesNotMatch(secondRow.textContent ?? "", new RegExp(STUDENT_B));
+  });
+});
+
 test("grant list falls back safely when the student profile is missing", async () => {
   await withMountedPanel((url, init) => responseFor(url, init?.method ?? "GET", [grant(STUDENT_A)]), async ({ container }) => {
     await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
