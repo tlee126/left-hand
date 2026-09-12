@@ -19,7 +19,7 @@ const STUDENT_C = "5f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64";
 
 type FetchHandler = (url: string, init: RequestInit | undefined) => Promise<Response> | Response;
 
-async function withMountedPanel(handler: FetchHandler, callback: (ctx: { container: HTMLElement; dom: any; calls: Array<{ url: string; method: string; body: unknown }>; flush: () => Promise<void> }) => Promise<void>, materialId = MATERIAL_ID): Promise<void> {
+async function withMountedPanel(handler: FetchHandler, callback: (ctx: { container: HTMLElement; dom: any; calls: Array<{ url: string; method: string; body: unknown }>; flush: () => Promise<void>; runtimeErrors: { console: unknown[][]; window: unknown[] } }) => Promise<void>, materialId = MATERIAL_ID, monitorRuntimeErrors = false): Promise<void> {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
   const originals = {
     window: globalThis.window, document: globalThis.document, navigator: globalThis.navigator,
@@ -30,6 +30,13 @@ async function withMountedPanel(handler: FetchHandler, callback: (ctx: { contain
   const install = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
   install("window", dom.window); install("document", dom.window.document); install("navigator", dom.window.navigator);
   install("HTMLElement", dom.window.HTMLElement); install("Node", dom.window.Node); install("IS_REACT_ACT_ENVIRONMENT", true);
+  const runtimeErrors: { console: unknown[][]; window: unknown[] } = { console: [], window: [] };
+  const originalConsoleError = console.error;
+  const windowErrorListener = (event: ErrorEvent) => { runtimeErrors.window.push(event.error ?? event.message); };
+  if (monitorRuntimeErrors) {
+    console.error = (...args: unknown[]) => { runtimeErrors.console.push(args); originalConsoleError.apply(console, args); };
+    dom.window.addEventListener("error", windowErrorListener);
+  }
   // ReactDOM is imported before JSDOM exists in this test process and falls back to
   // its legacy input-event path; provide the DOM methods that path expects.
   (dom.window.HTMLElement.prototype as any).attachEvent = () => {};
@@ -47,12 +54,20 @@ async function withMountedPanel(handler: FetchHandler, callback: (ctx: { contain
   const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
   try {
     await act(async () => { root.render(createElement(MaterialDirectAccessPanel, { materialId })); });
-    await callback({ container, dom, calls, flush });
+    await callback({ container, dom, calls, flush, runtimeErrors });
   } finally {
-    await act(async () => root.unmount()); container.remove();
-    install("window", originals.window); install("document", originals.document); install("navigator", originals.navigator);
-    install("HTMLElement", originals.HTMLElement); install("Node", originals.Node); install("IS_REACT_ACT_ENVIRONMENT", originals.IS_REACT_ACT_ENVIRONMENT);
-    globalThis.fetch = originals.fetch;
+    try {
+      await act(async () => root.unmount());
+    } finally {
+      container.remove();
+      if (monitorRuntimeErrors) {
+        dom.window.removeEventListener("error", windowErrorListener);
+        console.error = originalConsoleError;
+      }
+      install("window", originals.window); install("document", originals.document); install("navigator", originals.navigator);
+      install("HTMLElement", originals.HTMLElement); install("Node", originals.Node); install("IS_REACT_ACT_ENVIRONMENT", originals.IS_REACT_ACT_ENVIRONMENT);
+      globalThis.fetch = originals.fetch;
+    }
   }
 }
 
@@ -343,7 +358,7 @@ test("grant list keeps two student labels mapped correctly after a fresh mount",
   });
   const listedGrants = [firstGrant, secondGrant];
 
-  await withMountedPanel((url, init) => responseFor(url, init?.method ?? "GET", listedGrants), async ({ container, calls, flush }) => {
+  await withMountedPanel((url, init) => responseFor(url, init?.method ?? "GET", listedGrants), async ({ container, calls, flush, runtimeErrors }) => {
     await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
     await flush();
 
@@ -379,6 +394,7 @@ test("grant list keeps two student labels mapped correctly after a fresh mount",
     assert.match(firstRowText, /LA-101/);
     assert.match(firstRowText, /Được xem và tải/, "first card shows grant A's distinct permission");
     assert.doesNotMatch(firstRowText, /Trần Bảo Bình|LB-202/);
+    assert.ok(!firstRowText.includes(secondStudent.email), "first card excludes student B's email");
     assert.doesNotMatch(firstRowText, new RegExp(STUDENT_A), "student A UUID is not shown instead of its summary");
 
     const secondRowText = secondRow.textContent ?? "";
@@ -386,8 +402,11 @@ test("grant list keeps two student labels mapped correctly after a fresh mount",
     assert.match(secondRowText, /LB-202/);
     assert.match(secondRowText, /Chỉ được xem/, "second card shows grant B's distinct permission");
     assert.doesNotMatch(secondRowText, /Nguyễn Minh An|LA-101/);
+    assert.ok(!secondRowText.includes(firstStudent.email), "second card excludes student A's email");
     assert.doesNotMatch(secondRowText, new RegExp(STUDENT_B), "student B UUID is not shown instead of its summary");
-  });
+    assert.equal(runtimeErrors.console.length, 0, `console.error was called: ${runtimeErrors.console.map((args) => args.map(String).join(" ")).join("\n")}`);
+    assert.equal(runtimeErrors.window.length, 0, `uncaught window error: ${runtimeErrors.window.map(String).join("\n")}`);
+  }, MATERIAL_ID, true);
 });
 
 test("grant list falls back safely when the student profile is missing", async () => {
