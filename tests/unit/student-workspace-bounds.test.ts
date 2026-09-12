@@ -162,6 +162,41 @@ test("direct-granted materials are visible without entitlement and use direct do
   assert.deepEqual(result?.materials.map((row: any) => ({ productId: row.productId, allowDownload: row.allowDownload })), [{ productId: products[0].id, allowDownload: true }]);
 });
 
+test("direct-grant-only published, draft, and archived materials satisfy the workspace repository contract", async () => {
+  for (const publicationStatus of ["published", "draft", "archived"]) {
+    resetData();
+    configureProducts(1);
+    products[0].kind = "material";
+    products[0].publication_status = publicationStatus;
+    entitlements = [];
+    materials = [{ product_id: products[0].id, pages: 3, allow_download: true }];
+    directGrants = [{ user_id: USER_ID, material_id: products[0].id, can_view: true, can_download: false, revoked_at: null, expires_at: null }];
+
+    const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
+
+    assert.deepEqual(result?.materials.map((row: any) => row.productId), [products[0].id], publicationStatus);
+    assert.equal(result?.materials[0].allowDownload, false, "can_view does not inherit the material's download setting");
+    assert.deepEqual(requests.map((request) => request.table), ["products", "product_entitlements", "materials"]);
+    assert.deepEqual(directGrantBatchCalls, [[products[0].id]], "grant lookup remains one bounded batch, not one query per row");
+  }
+});
+
+test("draft and archived workspace materials without a direct grant or entitlement are hidden by repository authorization", async () => {
+  for (const publicationStatus of ["draft", "archived"]) {
+    resetData();
+    configureProducts(1);
+    products[0].kind = "material";
+    products[0].publication_status = publicationStatus;
+    entitlements = [];
+    directGrants = [];
+
+    const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
+
+    assert.equal(result, null, publicationStatus);
+    assert.equal(requests.some((request) => request.table === "materials"), false, "child metadata is not fetched without an authorized product");
+  }
+});
+
 test("entitled materials explicitly fall back to materials.allow_download when no direct grant exists", async () => {
   configureProducts(1);
   products[0].kind = "material";

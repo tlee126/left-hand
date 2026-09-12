@@ -48,6 +48,8 @@ import {
   assertMaterialDirectAccessMigrationContract,
   assertMaterialDirectAccessMigration0042Unchanged,
   assertMaterialAccessSelectGrantMigrationContract,
+  assertMaterialAccessSelectGrantMigration0043Unchanged,
+  assertDirectGrantedMaterialVisibilityMigrationContract,
   assertCatalogCompleteSearchMigrationContract,
   assertLearningProgressConcurrencyMigrationContract,
   assertLearningProgressMonotonicityMigrationContract,
@@ -293,6 +295,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ,"0043_grant_service_role_material_access_select.sql"
       ,"0044_learning_progress_material_direct_grant.sql"
       ,"0045_learning_progress_student_role_guard.sql"
+      ,"0046_direct_granted_material_visibility.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -2093,5 +2096,57 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       `${sql0045}\nGRANT EXECUTE ON FUNCTION public.save_learning_progress(uuid, text, uuid, text, numeric, timestamptz, timestamptz, integer) TO anon;`,
       `${sql0045}\nGRANT EXECUTE ON FUNCTION public.save_learning_progress(uuid, text, uuid, text, numeric, timestamptz, timestamptz, integer) TO PUBLIC;`
     ]) assert.throws(() => assertLearningProgressStudentRoleMigrationContract(sql0044, hostile), /./);
+  });
+
+  test("migration 0046 grants row visibility only for an approved learner's active can_view material grant", async () => {
+    const migrationsPath = path.resolve(process.cwd(), "supabase/migrations");
+    const [sql0002, sql0003, sql0042, sql0043, sql0046] = await Promise.all([
+      fs.readFile(path.join(migrationsPath, "0002_public_catalog_read_policies.sql"), "utf8"),
+      fs.readFile(path.join(migrationsPath, "0003_public_catalog_table_grants.sql"), "utf8"),
+      fs.readFile(path.join(migrationsPath, "0042_material_direct_access.sql"), "utf8"),
+      fs.readFile(path.join(migrationsPath, "0043_grant_service_role_material_access_select.sql"), "utf8"),
+      fs.readFile(path.join(migrationsPath, "0046_direct_granted_material_visibility.sql"), "utf8")
+    ]);
+
+    assert.doesNotThrow(() => assertDirectGrantedMaterialVisibilityMigrationContract(sql0046, sql0002, sql0003, sql0042, sql0043));
+    assert.doesNotThrow(() => assertMaterialDirectAccessMigration0042Unchanged(sql0042));
+    assert.doesNotThrow(() => assertMaterialAccessSelectGrantMigration0043Unchanged(sql0043));
+
+    const hostile = [
+      sql0046.replace("TO authenticated", "TO authenticated, anon"),
+      sql0046.replace(/FOR SELECT\s+TO authenticated/, "FOR SELECT\nTO authenticated, anon"),
+      sql0046.replace(/FOR SELECT\s+TO authenticated/, "FOR SELECT\nTO public"),
+      sql0046.replace("direct_grant.user_id = auth.uid()", "direct_grant.user_id IS NOT NULL"),
+      sql0046.replace("direct_grant.can_view IS TRUE", "direct_grant.can_download IS TRUE"),
+      sql0046.replace("direct_grant.revoked_at IS NULL", "direct_grant.revoked_at IS NOT NULL"),
+      sql0046.replace("direct_grant.expires_at > now()", "direct_grant.expires_at >= now()"),
+      sql0046.replace("products.publication_status IN ('draft', 'archived')", "products.publication_status IN ('draft', 'archived', 'published')"),
+      sql0046.replace("products.kind = 'material'", "products.kind <> 'tutor'"),
+      sql0046.replace("products.id = materials.product_id", "products.id <> materials.product_id"),
+      sql0046.replace("SET search_path = pg_catalog, public", "SET search_path = public"),
+      sql0046.replace("FROM PUBLIC, anon", "FROM anon"),
+      sql0046.replace("TO authenticated;", "TO public;"),
+      `${sql0046}\nGRANT SELECT ON TABLE public.products TO authenticated;`,
+      `${sql0046}\nCREATE POLICY open_draft_materials ON public.materials FOR SELECT TO authenticated USING (true);`,
+      sql0046.replace("$function$;", "EXECUTE 'SELECT 1';\n$function$;")
+    ];
+    for (const [index, fixture] of hostile.entries()) {
+      assert.throws(() => assertDirectGrantedMaterialVisibilityMigrationContract(fixture, sql0002, sql0003, sql0042, sql0043), /./, `hostile 0046 fixture ${index}`);
+    }
+
+    assert.throws(() => assertMaterialDirectAccessMigration0042Unchanged(`${sql0042}\n-- changed`), /unchanged/i);
+    assert.throws(() => assertMaterialAccessSelectGrantMigration0043Unchanged(`${sql0043}\n-- changed`), /unchanged/i);
+
+    const discoveryRepository = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/student-material-discovery-repository.ts"), "utf8");
+    const workspaceRepository = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/student-workspace-repository.ts"), "utf8");
+    assert.match(discoveryRepository, /\.from\("products"\)\s*\.select\("id, subject_id, kind, title, description"\)/);
+    assert.match(discoveryRepository, /\.from\("materials"\)\s*\.select\("product_id, allow_download"\)/);
+    assert.match(workspaceRepository, /\.from\("products"\)\s*\.select\("id, subject_id, kind, title, description"\)/);
+    assert.match(workspaceRepository, /\.from\("materials"\)\s*\.select\("product_id, pages, allow_download"\)/);
+    assert.doesNotMatch(discoveryRepository, /createServerAdminClient|SUPABASE_SERVICE_ROLE_KEY|material_assets|storage_path/i);
+    assert.doesNotMatch(workspaceRepository, /createServerAdminClient|SUPABASE_SERVICE_ROLE_KEY|material_assets|storage_path/i);
+
+    // This is static SQL/source evidence only. It does not run RLS against PostgreSQL.
+    assert.match(sql0046, /RLS filters rows, not columns/i);
   });
 });

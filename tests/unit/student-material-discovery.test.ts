@@ -142,6 +142,63 @@ test("discovery returns entitlement and direct-grant subjects with one bounded b
   assert.deepEqual(discovery.queryTables.sort(), ["materials", "product_entitlements", "products", "subjects"]);
 });
 
+test("direct-grant-only published, draft, and archived materials satisfy the discovery repository contract", async () => {
+  for (const publicationStatus of ["published", "draft", "archived"]) {
+    const scenario = {
+      userId: USER_ID,
+      products: [{ id: MATERIAL_A, subject_id: SUBJECT_A, kind: "material", title: `Grant ${publicationStatus}`, description: "Material description", publication_status: publicationStatus }],
+      subjects: [{ id: SUBJECT_A, slug: "ke-toan", name: "Kế toán", category: "Kế toán", color_theme: "accounting" }],
+      entitlements: [],
+      directGrants: [{ user_id: USER_ID, material_id: MATERIAL_A, can_view: true, can_download: false, expires_at: null, revoked_at: null }],
+      materials: [{ product_id: MATERIAL_A, allow_download: true }]
+    };
+
+    const discovery = await runDiscovery(scenario);
+
+    assert.deepEqual(discovery.result.directMaterials.map((material: Row) => material.productId), [MATERIAL_A], publicationStatus);
+    assert.equal(discovery.result.directMaterials[0].allowDownload, false, "a view grant must not inherit materials.allow_download");
+    assert.deepEqual(discovery.result.subjects.map((subject: Row) => subject.accessSource), ["direct_grant"]);
+    assert.deepEqual(discovery.queryTables.sort(), ["materials", "product_entitlements", "products", "subjects"]);
+  }
+});
+
+test("discovery excludes expired, revoked, view-disabled, foreign, and mismatched direct grants", async () => {
+  const invalidGrants = [
+    { user_id: USER_ID, material_id: MATERIAL_A, can_view: true, can_download: false, expires_at: "2020-01-01T00:00:00.000Z", revoked_at: null },
+    { user_id: USER_ID, material_id: MATERIAL_A, can_view: true, can_download: false, expires_at: null, revoked_at: "2026-09-01T00:00:00.000Z" },
+    { user_id: USER_ID, material_id: MATERIAL_A, can_view: false, can_download: false, expires_at: null, revoked_at: null },
+    { user_id: OTHER_USER_ID, material_id: MATERIAL_A, can_view: true, can_download: false, expires_at: null, revoked_at: null },
+    { user_id: USER_ID, material_id: MATERIAL_B, can_view: true, can_download: false, expires_at: null, revoked_at: null }
+  ];
+
+  for (const directGrant of invalidGrants) {
+    const discovery = await runDiscovery({
+      userId: USER_ID,
+      products: [{ id: MATERIAL_A, subject_id: SUBJECT_A, kind: "material", title: "Draft material", description: "Private draft", publication_status: "draft" }],
+      subjects: [{ id: SUBJECT_A, slug: "ke-toan", name: "Kế toán", category: "Kế toán", color_theme: "accounting" }],
+      entitlements: [],
+      directGrants: [directGrant],
+      materials: [{ product_id: MATERIAL_A, allow_download: false }]
+    });
+    assert.deepEqual(discovery.result, { subjects: [], directMaterials: [] });
+  }
+});
+
+test("draft and archived materials without a direct grant or entitlement are not discovered", async () => {
+  for (const publicationStatus of ["draft", "archived"]) {
+    const discovery = await runDiscovery({
+      userId: USER_ID,
+      products: [{ id: MATERIAL_A, subject_id: SUBJECT_A, kind: "material", title: "Hidden material", description: "Private", publication_status: publicationStatus }],
+      subjects: [{ id: SUBJECT_A, slug: "ke-toan", name: "Kế toán", category: "Kế toán", color_theme: "accounting" }],
+      entitlements: [],
+      directGrants: [],
+      materials: [{ product_id: MATERIAL_A, allow_download: true }]
+    });
+    assert.deepEqual(discovery.result, { subjects: [], directMaterials: [] }, publicationStatus);
+    assert.equal(discovery.queryTables.includes("products"), false, "unauthorized unpublished IDs are never queried");
+  }
+});
+
 test("discovery fails closed for inactive or foreign grants and never falls back to material policy", async () => {
   directGrants = [
     { user_id: USER_ID, material_id: MATERIAL_A, can_view: false, can_download: false, expires_at: null, revoked_at: null },

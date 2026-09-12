@@ -51,6 +51,7 @@ const immutableMigrationHashes = {
 } as const;
 
 const materialDirectAccessMigration0042Hash = "c4a60e3bb1d7b7db041499299efe173f3fa08a88f9949aee0fd09d6fb8174138";
+const materialAccessSelectGrantMigration0043Hash = "c59782a31de476a00ac15a6f06391d6fb68daa8b9a2e6da71d787b2c478e47cd";
 const learningProgressMigration0044Hash = "f6d9e8d0d88901b0a9176526f8eb01f4b98eae55f549459973a7f46a9508b8c3";
 
 export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
@@ -2336,6 +2337,126 @@ export function assertMaterialAccessSelectGrantMigrationContract(sql0043: string
   }
 }
 
+/** Locks the pre-existing service-role read grant migration before the additive visibility policy. */
+export function assertMaterialAccessSelectGrantMigration0043Unchanged(sql0043: string): void {
+  const actualHash = createHash("sha256").update(canonicalMigrationContent(sql0043), "utf8").digest("hex");
+  if (actualHash !== materialAccessSelectGrantMigration0043Hash) {
+    throw new Error("Migration 0043 must remain unchanged (canonical SHA-256 mismatch)");
+  }
+}
+
+/** Exact row-level visibility contract for directly granted unpublished materials. */
+export function assertDirectGrantedMaterialVisibilityMigrationContract(
+  sql0046: string,
+  sql0002: string,
+  sql0003: string,
+  sql0042: string,
+  sql0043: string
+): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const statements = stripSqlCommentsAndSplitStatements(sql0046);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const expectedFunction = normalizeMigrationStatement(`
+    CREATE OR REPLACE FUNCTION public.has_active_direct_granted_material_visibility(p_material_product_id uuid)
+    RETURNS boolean
+    LANGUAGE sql
+    STABLE
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT auth.uid() IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM public.materials AS material
+          JOIN public.material_direct_grants AS direct_grant
+            ON direct_grant.material_id = material.product_id
+          JOIN public.profiles AS learner
+            ON learner.id = direct_grant.user_id
+          WHERE material.product_id = p_material_product_id
+            AND direct_grant.material_id = p_material_product_id
+            AND direct_grant.user_id = auth.uid()
+            AND direct_grant.can_view IS TRUE
+            AND direct_grant.revoked_at IS NULL
+            AND (direct_grant.expires_at IS NULL OR direct_grant.expires_at > now())
+            AND learner.role = 'student'
+            AND learner.account_status = 'approved'
+        );
+    $function$
+  `);
+  const expectedProductsPolicy = normalizeMigrationStatement(`
+    CREATE POLICY direct_granted_unpublished_material_products
+    ON public.products
+    FOR SELECT
+    TO authenticated
+    USING (
+      products.kind = 'material'
+      AND products.publication_status IN ('draft', 'archived')
+      AND public.has_active_direct_granted_material_visibility(products.id)
+    )
+  `);
+  const expectedMaterialsPolicy = normalizeMigrationStatement(`
+    CREATE POLICY direct_granted_unpublished_material_rows
+    ON public.materials
+    FOR SELECT
+    TO authenticated
+    USING (
+      EXISTS (
+        SELECT 1
+        FROM public.products
+        WHERE products.id = materials.product_id
+          AND products.kind = 'material'
+          AND products.publication_status IN ('draft', 'archived')
+          AND public.has_active_direct_granted_material_visibility(materials.product_id)
+      )
+    )
+  `);
+  const publishedProductsPolicy = normalizeMigrationStatement(`
+    CREATE POLICY "Allow public read access on published products"
+    ON products FOR SELECT TO anon, authenticated
+    USING (publication_status = 'published')
+  `);
+  const publishedMaterialsPolicy = normalizeMigrationStatement(`
+    CREATE POLICY "Allow public read access on published materials"
+    ON materials FOR SELECT TO anon, authenticated
+    USING (
+      EXISTS (
+        SELECT 1 FROM products
+        WHERE products.id = materials.product_id
+          AND products.publication_status = 'published'
+      )
+    )
+  `);
+  const existingProductSelectGrant = normalizeMigrationStatement("GRANT SELECT ON TABLE products TO anon, authenticated");
+  const existingMaterialSelectGrant = normalizeMigrationStatement("GRANT SELECT ON TABLE materials TO anon, authenticated");
+  const executableSql = maskSqlStringLiterals(statements.join(" ; "));
+
+  fail(statements.length === 5, "Migration 0046 must contain only its helper, helper privileges, and two SELECT policies");
+  fail(normalized[0] === expectedFunction, "Migration 0046 helper must use auth.uid(), the exact active view-grant predicate, a fixed search_path, and return only boolean");
+  fail(normalized[1] === "revoke all on function public.has_active_direct_granted_material_visibility(uuid) from public, anon", "Migration 0046 helper execution must be revoked from PUBLIC and anon");
+  fail(normalized[2] === "grant execute on function public.has_active_direct_granted_material_visibility(uuid) to authenticated", "Migration 0046 helper execution may be granted only to authenticated");
+  fail(normalized[3] === expectedProductsPolicy, "Migration 0046 products policy must cover only directly granted draft/archived material products");
+  fail(normalized[4] === expectedMaterialsPolicy, "Migration 0046 materials policy must bind the row to its matching directly granted material product");
+  fail(!/\b(?:insert|update|delete|truncate|references|trigger|service_role|bypassrls|set\s+role|alter\s+role|execute\s+(?:immediate|format))\b/i.test(executableSql), "Migration 0046 must not mutate data, use dynamic SQL, reference service_role, or bypass RLS");
+  fail(!/\bor\s+true\b/i.test(executableSql), "Migration 0046 must not contain an open-ended policy predicate");
+  assertNestedFunctionSqlScope(statements, {
+    allowDmlTables: [],
+    allowSelectTables: ["materials", "material_direct_grants", "profiles"]
+  });
+
+  const existingPublicPolicies = stripSqlCommentsAndSplitStatements(sql0002).map(normalizeMigrationStatement);
+  fail(existingPublicPolicies.includes(publishedProductsPolicy), "Migration 0002 published products policy must remain unchanged");
+  fail(existingPublicPolicies.includes(publishedMaterialsPolicy), "Migration 0002 published materials policy must remain unchanged");
+  const existingCatalogGrants = stripSqlCommentsAndSplitStatements(sql0003).map(normalizeMigrationStatement);
+  fail(existingCatalogGrants.includes(existingProductSelectGrant), "Migration 0003 products SELECT privileges must remain unchanged");
+  fail(existingCatalogGrants.includes(existingMaterialSelectGrant), "Migration 0003 materials SELECT privileges must remain unchanged");
+
+  assertMaterialDirectAccessMigration0042Unchanged(sql0042);
+  assertMaterialAccessSelectGrantMigration0043Unchanged(sql0043);
+  assertMaterialAccessSelectGrantMigrationContract(sql0043);
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -2396,7 +2517,8 @@ export async function runAudit(): Promise<boolean> {
       "0042_material_direct_access.sql",
       "0043_grant_service_role_material_access_select.sql",
       "0044_learning_progress_material_direct_grant.sql",
-      "0045_learning_progress_student_role_guard.sql"
+      "0045_learning_progress_student_role_guard.sql",
+      "0046_direct_granted_material_visibility.sql"
     ];
 
     const migrationNumbers = sqlFiles.map((filename) => {
@@ -2409,7 +2531,7 @@ export async function runAudit(): Promise<boolean> {
       && expected.every((filename, index) => sqlFiles[index] === filename);
     results.push({
       category: "Migrations",
-      check: "All 45 migration files exist with complete strict numerical order",
+      check: "All 46 migration files exist with complete strict numerical order",
       passed: matchesCanonicalList && hasStrictSequentialNumbers,
       details: sqlFiles.join(", ")
     });
@@ -3055,6 +3177,20 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0045_learning_progress_student_role_guard", check: "Restricts the progress RPC to approved students without changing its authorization or privilege boundaries", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0045ContractValid) results.push({ category: "0045_learning_progress_student_role_guard", check: "Restricts the progress RPC to approved students without changing its authorization or privilege boundaries", passed: true, details: "0044 hash pinned; tutor/admin/unapproved actors rejected; direct-grant, entitlement, item-binding, CAS, monotonicity, and exact EXECUTE privileges preserved" });
+
+    const sql0046 = await fs.readFile(path.join(migrationsDir, "0046_direct_granted_material_visibility.sql"), "utf-8");
+    let migration0046ContractValid = true;
+    try {
+      const [sql0002, sql0003] = await Promise.all([
+        fs.readFile(path.join(migrationsDir, "0002_public_catalog_read_policies.sql"), "utf-8"),
+        fs.readFile(path.join(migrationsDir, "0003_public_catalog_table_grants.sql"), "utf-8")
+      ]);
+      assertDirectGrantedMaterialVisibilityMigrationContract(sql0046, sql0002, sql0003, sql0042, sql0043);
+    } catch (error) {
+      migration0046ContractValid = false;
+      results.push({ category: "0046_direct_granted_material_visibility", check: "Adds row-scoped direct-grant visibility for unpublished materials without broadening catalog privileges", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0046ContractValid) results.push({ category: "0046_direct_granted_material_visibility", check: "Adds row-scoped direct-grant visibility for unpublished materials without broadening catalog privileges", passed: true, details: "Exact approved-student active can_view predicate, material/product binding, unchanged published policies and SELECT grants, and immutable 0042/0043 verified. Static contract only; no live RLS behavior tested." });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
