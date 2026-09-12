@@ -197,9 +197,6 @@ export async function getAuthorizedStudentWorkspace(userId: string, slug: string
     const materialIds = materialProducts.map((product) => product.canonicalId);
     const courseIds = courseProducts.map((product) => product.canonicalId);
     const materialRows = await readMaterialRows(supabase, materialIds);
-    const lessonResult = await readLessonRows(supabase, courseIds);
-    hasHardOverflow ||= lessonResult.hasMore;
-    const lessonRows = lessonResult.rows;
     const materialByProductId = new Map<string, StudentWorkspaceMaterialRow>();
     for (const row of materialRows) {
       const materialId = canonicalUuid(row.product_id);
@@ -207,6 +204,9 @@ export async function getAuthorizedStudentWorkspace(userId: string, slug: string
       materialByProductId.set(materialId, row);
     }
     if (materialIds.some((materialId) => !materialByProductId.has(materialId))) throw new Error();
+    const lessonResult = await readLessonRows(supabase, courseIds);
+    hasHardOverflow ||= lessonResult.hasMore;
+    const lessonRows = lessonResult.rows;
     return {
       subject: { slug: subject.slug, name: subject.name, category: subject.category, facultyGroup: subject.faculty_group, colorTheme: subject.color_theme },
       materials: materialProducts.map((product) => { const material = materialByProductId.get(product.canonicalId)!; const directGrant = directGrantsByMaterialId.get(product.canonicalId); return { productId: product.canonicalId, title: product.title, description: product.description, pages: material.pages, allowDownload: directGrant ? directGrant.can_download : material.allow_download, mimeType: null, ...(directGrant ? { accessSource: "direct_grant" as const } : {}) }; }),

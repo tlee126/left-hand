@@ -163,8 +163,11 @@ test("workspace reports a missing authorized material surface row as a retryable
 });
 
 test("workspace rejects duplicate authorized learner material metadata without returning partial data", async () => {
-  configureProducts(1);
+  configureProducts(2);
   const materialId = products[0].id;
+  const courseId = products[1].id;
+  assert.equal(products[1].kind, "course");
+  assert.ok(lessons.some((lesson) => lesson.course_id === courseId), "the valid course has a lesson that would be queried");
   materials = [
     { product_id: materialId, pages: 3, allow_download: false },
     { product_id: materialId, pages: 99, allow_download: true }
@@ -186,7 +189,7 @@ test("workspace rejects duplicate authorized learner material metadata without r
     "learner_material_read_surface"
   ], "repository stops after the duplicated metadata read; no lesson query follows");
   assert.equal(requests.filter((request) => request.table === "learner_material_read_surface").length, 1);
-  assert.equal(requests.some((request) => request.table === "course_lessons"), false);
+  assert.equal(requests.filter((request) => request.table === "course_lessons").length, 0, "the existing authorized course lesson is never queried after duplicate detection");
 });
 
 test("direct-granted materials are visible without entitlement and use direct download permission", async () => {
