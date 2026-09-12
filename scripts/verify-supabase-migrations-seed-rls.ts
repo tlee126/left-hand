@@ -1650,6 +1650,64 @@ export function assertLearningProgressMonotonicityMigrationContract(sql0032: str
   fail(!/\b(?:execute\s+immediate|format\s*\(|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role|grant\s+all|revoke\s+all)\b/i.test(executableCode), "Migration 0032 must not weaken privileges or use unsafe execution");
 }
 
+/** Locks the additive direct-grant progress boundary without weakening the versioned RPC. */
+export function assertLearningProgressDirectAccessMigrationContract(sql0044: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const statements = stripSqlCommentsAndSplitStatements(sql0044);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const code = statements.join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  const functionStatement = statements.find((statement) => /^create or replace function public\.save_learning_progress\(/i.test(statement.trimStart())) ?? "";
+  const functionCode = maskSqlStringLiterals(functionStatement);
+  const lowerFunction = functionStatement.toLowerCase();
+  const materialBranchStart = lowerFunction.indexOf("if p_item_type = 'material' then");
+  const versionBoundary = lowerFunction.indexOf("if p_expected_version > 0");
+  const lessonBranchStart = versionBoundary > 0 ? lowerFunction.lastIndexOf("else", versionBoundary) : -1;
+  const materialBranch = materialBranchStart >= 0 && versionBoundary > materialBranchStart
+    ? lowerFunction.slice(materialBranchStart, versionBoundary)
+    : "";
+  const directRowCheck = materialBranch.indexOf("if exists (");
+  const activeGrantCheck = materialBranch.indexOf("if not exists (", directRowCheck + 1);
+  const entitlementFallback = materialBranch.indexOf("elsif not exists (", activeGrantCheck + 1);
+  const lessonBranch = lessonBranchStart >= materialBranchStart && versionBoundary > lessonBranchStart
+    ? lowerFunction.slice(lessonBranchStart, versionBoundary)
+    : "";
+
+  fail(statements.length === 4, "Migration 0044 must contain only the RPC replacement and its exact privilege statements");
+  fail(/^create or replace function public\.save_learning_progress\(/i.test(normalized[0] ?? ""), "Migration 0044 must replace save_learning_progress");
+  fail(/p_product_id uuid,\s*p_item_type text,\s*p_item_id uuid,\s*p_status text,\s*p_watched_percent numeric,\s*p_started_at timestamptz,\s*p_completed_at timestamptz,\s*p_expected_version integer/i.test(functionStatement), "Migration 0044 must preserve the exact eight-argument progress RPC signature");
+  fail(/returns public\.learning_progress\s+language plpgsql\s+security definer\s+set search_path = pg_catalog, public/i.test(functionStatement), "Migration 0044 must preserve the SECURITY DEFINER and fixed search_path boundary");
+  fail(/auth\.uid\(\)/i.test(functionCode) && /profiles\.id = v_user_id/i.test(functionStatement)
+    && /profiles\.account_status = 'approved'/i.test(functionStatement)
+    && /profiles\.role <> 'admin'/i.test(functionStatement), "Migration 0044 must preserve auth.uid() and the approved non-admin guard");
+  fail(/from public\.products\s+where products\.id = p_product_id/i.test(functionStatement), "Migration 0044 must reject missing products before access checks");
+  fail(/p_item_id <> p_product_id/i.test(materialBranch)
+    && /from public\.materials[\s\S]*materials\.product_id = p_product_id/i.test(materialBranch), "Material progress must remain bound to its material product");
+  fail(directRowCheck >= 0 && activeGrantCheck > directRowCheck && entitlementFallback > activeGrantCheck
+    && /raise exception 'progress write is not permitted'/i.test(materialBranch.slice(activeGrantCheck, entitlementFallback)),
+    "A material direct-grant row must be checked before entitlement fallback");
+  fail(/from public\.material_direct_grants[\s\S]*material_direct_grants\.user_id = v_user_id[\s\S]*material_direct_grants\.material_id = p_product_id/i.test(materialBranch), "Material grant checks must bind both auth.uid() and the requested material");
+  fail(/material_direct_grants\.can_view = true/i.test(materialBranch)
+    && /material_direct_grants\.revoked_at is null/i.test(materialBranch)
+    && /material_direct_grants\.expires_at is null or material_direct_grants\.expires_at > now\(\)/i.test(materialBranch), "Material progress requires a non-revoked, unexpired can_view grant");
+  fail(!/can_download/i.test(executableCode), "can_download must not participate in progress authorization");
+  fail(/elsif not exists \([\s\S]*from public\.product_entitlements[\s\S]*product_entitlements\.user_id = v_user_id[\s\S]*product_entitlements\.product_id = p_product_id[\s\S]*product_entitlements\.status = 'active'[\s\S]*product_entitlements\.revoked_at is null[\s\S]*product_entitlements\.expires_at is null or product_entitlements\.expires_at > now\(\)[\s\S]*\) then/i.test(materialBranch), "Only a missing material grant may fall back to active entitlement");
+  fail(/else[\s\S]*from public\.course_lessons[\s\S]*course_lessons\.id = p_item_id[\s\S]*course_lessons\.course_id = p_product_id[\s\S]*from public\.product_entitlements[\s\S]*product_entitlements\.user_id = v_user_id[\s\S]*product_entitlements\.product_id = p_product_id[\s\S]*product_entitlements\.status = 'active'[\s\S]*product_entitlements\.revoked_at is null[\s\S]*product_entitlements\.expires_at is null or product_entitlements\.expires_at > now\(\)/i.test(lessonBranch), "Course lessons must remain bound to their course and active product entitlement");
+  fail(/p_status = 'completed' and p_watched_percent <> 100/i.test(functionStatement)
+    && /p_expected_version/i.test(functionStatement)
+    && /on conflict\s*\(user_id, product_id, item_type, item_id\)/i.test(functionCode)
+    && /where public\.learning_progress\.version = p_expected_version/i.test(functionCode)
+    && /p_watched_percent >= public\.learning_progress\.watched_percent/i.test(functionCode)
+    && /case public\.learning_progress\.status[\s\S]*case p_status/i.test(functionStatement)
+    && /using errcode = 'p0002'/i.test(functionStatement), "Migration 0044 must preserve expected-version conflict and monotonicity behavior");
+  fail(normalized[1] === "revoke all on function public.save_learning_progress(uuid, text, uuid, text, numeric, timestamptz, timestamptz) from public, anon, authenticated"
+    && normalized[2] === "revoke all on function public.save_learning_progress(uuid, text, uuid, text, numeric, timestamptz, timestamptz, integer) from public, anon"
+    && normalized[3] === "grant execute on function public.save_learning_progress(uuid, text, uuid, text, numeric, timestamptz, timestamptz, integer) to authenticated",
+  "Migration 0044 must preserve the legacy-function revocation and grant execution only on the versioned RPC to authenticated");
+  fail(!/\b(?:grant|revoke)\b[^;]*\bon\s+table\s+public\.learning_progress/i.test(code), "Migration 0044 must not alter learning_progress table DML privileges");
+  fail(!/\b(?:execute\s+immediate|format\s*\(|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role|grant\s+all)\b/i.test(executableCode), "Migration 0044 must not add privilege escalation or dynamic SQL");
+}
+
 /** Pure contract used by the CLI audit and integration tests for migration 0016. */
 export function assertMigration0016Contract(sql0016: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -2308,7 +2366,8 @@ export async function runAudit(): Promise<boolean> {
       "0040_material_download_permission.sql",
       "0041_material_atomic_update.sql",
       "0042_material_direct_access.sql",
-      "0043_grant_service_role_material_access_select.sql"
+      "0043_grant_service_role_material_access_select.sql",
+      "0044_learning_progress_material_direct_grant.sql"
     ];
 
     const migrationNumbers = sqlFiles.map((filename) => {
@@ -2321,7 +2380,7 @@ export async function runAudit(): Promise<boolean> {
       && expected.every((filename, index) => sqlFiles[index] === filename);
     results.push({
       category: "Migrations",
-      check: "All 43 migration files exist with complete strict numerical order",
+      check: "All 44 migration files exist with complete strict numerical order",
       passed: matchesCanonicalList && hasStrictSequentialNumbers,
       details: sqlFiles.join(", ")
     });
@@ -2951,6 +3010,14 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0043_grant_service_role_material_access_select", check: "Preserves migration 0042 and grants only service_role SELECT on profiles, materials, and material_direct_grants", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0043ContractValid) results.push({ category: "0043_grant_service_role_material_access_select", check: "Preserves migration 0042 and grants only service_role SELECT on profiles, materials, and material_direct_grants", passed: true, details: "Exact three read grants verified; no write, public-role, or extra privilege grants" });
+
+    const sql0044 = await fs.readFile(path.join(migrationsDir, "0044_learning_progress_material_direct_grant.sql"), "utf-8");
+    let migration0044ContractValid = true;
+    try { assertLearningProgressDirectAccessMigrationContract(sql0044); } catch (error) {
+      migration0044ContractValid = false;
+      results.push({ category: "0044_learning_progress_material_direct_grant", check: "Allows current material view grants while preserving course entitlement and CAS boundaries", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0044ContractValid) results.push({ category: "0044_learning_progress_material_direct_grant", check: "Allows current material view grants while preserving course entitlement and CAS boundaries", passed: true, details: "Direct-grant precedence, can_view, auth.uid(), exact RPC privileges, item binding, and version/conflict/monotonicity rules verified" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

@@ -51,6 +51,7 @@ import {
   assertCatalogCompleteSearchMigrationContract,
   assertLearningProgressConcurrencyMigrationContract,
   assertLearningProgressMonotonicityMigrationContract,
+  assertLearningProgressDirectAccessMigrationContract,
   stripSqlCommentsAndSplitStatements,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
@@ -289,6 +290,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ,"0041_material_atomic_update.sql"
       ,"0042_material_direct_access.sql"
       ,"0043_grant_service_role_material_access_select.sql"
+      ,"0044_learning_progress_material_direct_grant.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -2048,5 +2050,19 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       "GRANT SELECT, UPDATE ON TABLE public.materials TO service_role;"
     ]) assert.throws(() => assertMaterialAccessSelectGrantMigrationContract(`${sql0043}\n${hostile}`), /./, hostile);
     assert.throws(() => assertMaterialDirectAccessMigration0042Unchanged(`${sql0042}\n-- changed`), /unchanged/i);
+  });
+
+  test("migration 0044 adds material view-grant progress without changing course or RPC boundaries", async () => {
+    const sql = await fs.readFile(path.resolve(process.cwd(), "supabase/migrations/0044_learning_progress_material_direct_grant.sql"), "utf8");
+    assert.doesNotThrow(() => assertLearningProgressDirectAccessMigrationContract(sql));
+    for (const hostile of [
+      sql.replace("material_direct_grants.can_view = true", "material_direct_grants.can_view = false"),
+      sql.replace("material_direct_grants.can_view = true", "material_direct_grants.can_download = true"),
+      sql.replace("ELSIF NOT EXISTS (", "IF NOT EXISTS ("),
+      sql.replace("auth.uid()", "p_user_id"),
+      sql.replace("WHERE public.learning_progress.version = p_expected_version", "WHERE public.learning_progress.version > p_expected_version"),
+      `${sql}\nGRANT INSERT, UPDATE ON TABLE public.learning_progress TO authenticated;`,
+      `${sql}\nGRANT EXECUTE ON FUNCTION public.save_learning_progress(uuid, text, uuid, text, numeric, timestamptz, timestamptz, integer) TO anon;`
+    ]) assert.throws(() => assertLearningProgressDirectAccessMigrationContract(hostile), /./);
   });
 });
