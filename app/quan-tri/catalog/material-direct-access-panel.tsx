@@ -16,6 +16,13 @@ type Student = {
   student_code: string | null;
 };
 
+type GrantStudent = {
+  id: string;
+  full_name: string | null;
+  email: string | null;
+  student_code: string | null;
+};
+
 type Grant = {
   id: string;
   user_id: string;
@@ -24,6 +31,7 @@ type Grant = {
   can_download: boolean;
   expires_at: string | null;
   revoked_at: string | null;
+  student: GrantStudent | null;
 };
 
 type Draft = { canView: boolean; canDownload: boolean; expiresAt: string };
@@ -59,14 +67,32 @@ function parseGrant(value: unknown, materialId: string): Grant | null {
     || (value.can_download && !value.can_view)
     || (value.expires_at !== null && !isTimestamp(value.expires_at))
     || (value.revoked_at !== null && !isTimestamp(value.revoked_at))) return null;
+  const userId = value.user_id.toLowerCase();
+  let student: GrantStudent | null;
+  if (value.student === null) {
+    student = null;
+  } else {
+    if (!isRecord(value.student) || typeof value.student.id !== "string" || !UUID_PATTERN.test(value.student.id)
+      || value.student.id.toLowerCase() !== userId
+      || (value.student.full_name !== null && typeof value.student.full_name !== "string")
+      || (value.student.email !== null && typeof value.student.email !== "string")
+      || (value.student.student_code !== null && typeof value.student.student_code !== "string")) return null;
+    student = {
+      id: userId,
+      full_name: value.student.full_name,
+      email: value.student.email,
+      student_code: value.student.student_code
+    };
+  }
   return {
     id: value.id.toLowerCase(),
-    user_id: value.user_id.toLowerCase(),
+    user_id: userId,
     material_id: materialId,
     can_view: value.can_view,
     can_download: value.can_download,
     expires_at: value.expires_at,
-    revoked_at: value.revoked_at
+    revoked_at: value.revoked_at,
+    student
   };
 }
 
@@ -123,7 +149,7 @@ function draftFor(grant: Grant): Draft {
   return { canView: grant.can_view, canDownload: grant.can_download, expiresAt: dateInputValue(grant.expires_at) };
 }
 
-function studentLabel(student: Student | undefined, userId: string): string {
+function studentLabel(student: Pick<Student, "full_name"> | Pick<GrantStudent, "full_name"> | undefined, userId: string): string {
   return student?.full_name || `Học viên · ${userId}`;
 }
 
@@ -306,7 +332,7 @@ export default function MaterialDirectAccessPanel({ materialId }: MaterialDirect
       <div className="pt-5">
         <div className="flex flex-wrap items-baseline justify-between gap-2"><h5 className="text-sm font-black text-ink">Danh sách quyền riêng của tài liệu</h5>{loading ? <span role="status" className="text-xs font-semibold text-ink/60">Đang tải danh sách…</span> : null}</div>
         {!loading && loaded && grants.length === 0 ? <p className="mt-3 rounded-xl border border-dashed border-ink/15 bg-white/70 p-4 text-sm text-ink/65">Chưa cấp quyền riêng cho tài liệu này.</p> : null}
-        <ul className="mt-3 space-y-3">{grants.map((grant) => { const editing = editingUserId === grant.user_id && editDraft !== null; return <li key={grant.user_id} className="min-w-0 rounded-xl border border-ink/10 bg-white p-4"><div className="flex min-w-0 flex-wrap items-start justify-between gap-3"><div className="min-w-0 max-w-full"><p className="min-w-0 break-words font-extrabold text-ink [overflow-wrap:anywhere]">{studentLabel(students[grant.user_id], grant.user_id)}</p>{students[grant.user_id]?.student_code || students[grant.user_id]?.email ? <p className="mt-1 min-w-0 break-words text-xs text-ink/60 [overflow-wrap:anywhere]">{students[grant.user_id].student_code ?? students[grant.user_id].email}</p> : null}<p className="mt-2 min-w-0 break-words text-sm font-bold text-ink/70 [overflow-wrap:anywhere]">{materialDirectPermissionLabel(grant)} · {formatExpiry(grant.expires_at)}</p><p className="mt-1 min-w-0 break-words text-xs text-ink/55 [overflow-wrap:anywhere]">Trạng thái: {statusLabel(grant)}</p></div><div className="flex min-w-0 max-w-full flex-wrap gap-2"><button type="button" onClick={() => startEdit(grant)} disabled={busy !== null} className="min-h-10 rounded-full border border-accent/30 px-4 py-2 text-xs font-extrabold text-accent disabled:cursor-not-allowed disabled:opacity-50">Sửa quyền</button><button type="button" onClick={() => void revokeGrant(grant)} disabled={busy !== null} className="min-h-10 rounded-full border border-rose-200 px-4 py-2 text-xs font-extrabold text-rose-700 disabled:cursor-not-allowed disabled:opacity-50">{busy === `revoke:${grant.user_id}` ? "Đang thu hồi…" : "Thu hồi"}</button></div></div>{editing ? <form onSubmit={(event) => void updateGrant(event, grant)} className="mt-4 min-w-0 border-t border-ink/10 pt-4"><div className="grid min-w-0 gap-3 sm:grid-cols-2"><label className="flex min-w-0 items-center gap-2 text-sm font-bold text-ink"><input type="checkbox" checked={editDraft.canView} onChange={(event) => updateDraft(setEditDraft, editDraft, "canView", event.target.checked)} disabled={busy !== null} />Được xem tài liệu</label><label className="flex min-w-0 items-center gap-2 text-sm font-bold text-ink"><input type="checkbox" checked={editDraft.canDownload} onChange={(event) => updateDraft(setEditDraft, editDraft, "canDownload", event.target.checked)} disabled={!editDraft.canView || busy !== null} />Được tải tài liệu</label><label className="min-w-0 text-sm font-bold text-ink/65 sm:col-span-2"><span>Ngày hết hạn (tùy chọn)</span><input type="date" value={editDraft.expiresAt} onChange={(event) => setEditDraft({ ...editDraft, expiresAt: event.target.value })} onInput={(event) => setEditDraft({ ...editDraft, expiresAt: event.currentTarget.value })} disabled={busy !== null} className="notebook-input mt-1 max-w-xs" /></label></div><div className="mt-4 flex flex-wrap gap-2"><button type="submit" disabled={busy !== null} className="notebook-submit-btn min-h-10 px-4 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50">{busy === `update:${grant.user_id}` ? "Đang lưu…" : "Lưu quyền"}</button><button type="button" onClick={() => { setEditingUserId(null); setEditDraft(null); }} disabled={busy !== null} className="min-h-10 rounded-full border border-ink/15 px-4 py-2 text-xs font-extrabold text-ink/70 disabled:opacity-50">Hủy</button></div></form> : null}</li>; })}</ul>
+        <ul className="mt-3 space-y-3">{grants.map((grant) => { const editing = editingUserId === grant.user_id && editDraft !== null; const student = grant.student ?? students[grant.user_id]; return <li key={grant.user_id} className="min-w-0 rounded-xl border border-ink/10 bg-white p-4"><div className="flex min-w-0 flex-wrap items-start justify-between gap-3"><div className="min-w-0 max-w-full"><p className="min-w-0 break-words font-extrabold text-ink [overflow-wrap:anywhere]">{studentLabel(student, grant.user_id)}</p>{student?.student_code || student?.email ? <p className="mt-1 min-w-0 break-words text-xs text-ink/60 [overflow-wrap:anywhere]">{student.student_code ?? student.email}</p> : null}<p className="mt-2 min-w-0 break-words text-sm font-bold text-ink/70 [overflow-wrap:anywhere]">{materialDirectPermissionLabel(grant)} · {formatExpiry(grant.expires_at)}</p><p className="mt-1 min-w-0 break-words text-xs text-ink/55 [overflow-wrap:anywhere]">Trạng thái: {statusLabel(grant)}</p></div><div className="flex min-w-0 max-w-full flex-wrap gap-2"><button type="button" onClick={() => startEdit(grant)} disabled={busy !== null} className="min-h-10 rounded-full border border-accent/30 px-4 py-2 text-xs font-extrabold text-accent disabled:cursor-not-allowed disabled:opacity-50">Sửa quyền</button><button type="button" onClick={() => void revokeGrant(grant)} disabled={busy !== null} className="min-h-10 rounded-full border border-rose-200 px-4 py-2 text-xs font-extrabold text-rose-700 disabled:cursor-not-allowed disabled:opacity-50">{busy === `revoke:${grant.user_id}` ? "Đang thu hồi…" : "Thu hồi"}</button></div></div>{editing ? <form onSubmit={(event) => void updateGrant(event, grant)} className="mt-4 min-w-0 border-t border-ink/10 pt-4"><div className="grid min-w-0 gap-3 sm:grid-cols-2"><label className="flex min-w-0 items-center gap-2 text-sm font-bold text-ink"><input type="checkbox" checked={editDraft.canView} onChange={(event) => updateDraft(setEditDraft, editDraft, "canView", event.target.checked)} disabled={busy !== null} />Được xem tài liệu</label><label className="flex min-w-0 items-center gap-2 text-sm font-bold text-ink"><input type="checkbox" checked={editDraft.canDownload} onChange={(event) => updateDraft(setEditDraft, editDraft, "canDownload", event.target.checked)} disabled={!editDraft.canView || busy !== null} />Được tải tài liệu</label><label className="min-w-0 text-sm font-bold text-ink/65 sm:col-span-2"><span>Ngày hết hạn (tùy chọn)</span><input type="date" value={editDraft.expiresAt} onChange={(event) => setEditDraft({ ...editDraft, expiresAt: event.target.value })} onInput={(event) => setEditDraft({ ...editDraft, expiresAt: event.currentTarget.value })} disabled={busy !== null} className="notebook-input mt-1 max-w-xs" /></label></div><div className="mt-4 flex flex-wrap gap-2"><button type="submit" disabled={busy !== null} className="notebook-submit-btn min-h-10 px-4 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50">{busy === `update:${grant.user_id}` ? "Đang lưu…" : "Lưu quyền"}</button><button type="button" onClick={() => { setEditingUserId(null); setEditDraft(null); }} disabled={busy !== null} className="min-h-10 rounded-full border border-ink/15 px-4 py-2 text-xs font-extrabold text-ink/70 disabled:opacity-50">Hủy</button></div></form> : null}</li>; })}</ul>
       </div>
     </div> : null}
   </section>;

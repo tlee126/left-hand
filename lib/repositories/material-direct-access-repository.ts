@@ -8,6 +8,17 @@ type MaterialDirectGrantRow = Database["public"]["Tables"]["material_direct_gran
 
 export type MaterialDirectGrant = MaterialDirectGrantRow;
 
+export interface MaterialDirectGrantStudentSummary {
+  id: string;
+  full_name: string | null;
+  email: string | null;
+  student_code: string | null;
+}
+
+export type MaterialDirectGrantWithStudent = MaterialDirectGrant & {
+  student: MaterialDirectGrantStudentSummary | null;
+};
+
 export interface GrantMaterialDirectAccessInput {
   userId: string;
   materialId: string;
@@ -255,7 +266,7 @@ export async function getMaterialDirectGrantsForUser(userId: string): Promise<Ma
 }
 
 /** Returns null when the material does not exist; an empty array means it exists without grants. */
-export async function getMaterialDirectGrants(materialId: string): Promise<MaterialDirectGrant[] | null> {
+export async function getMaterialDirectGrants(materialId: string): Promise<MaterialDirectGrantWithStudent[] | null> {
   const canonicalMaterialId = canonicalUuid(materialId);
   try {
     const supabase = createServerAdminClient();
@@ -273,7 +284,37 @@ export async function getMaterialDirectGrants(materialId: string): Promise<Mater
       .eq("material_id", canonicalMaterialId)
       .order("created_at", { ascending: false });
     if (error || !Array.isArray(data)) throw new Error();
-    return data.map(validateGrantRow);
+    const grants = data.map(validateGrantRow);
+    const userIds = [...new Set(grants.map((grant) => canonicalUuid(grant.user_id)))];
+    if (userIds.length === 0) return [];
+
+    const students = new Map<string, MaterialDirectGrantStudentSummary>();
+    const requestedUserIds = new Set(userIds);
+    for (const userIdChunk of chunks(userIds, 100)) {
+      const { data: profiles, error: profilesError } = await supabase
+        .from("profiles")
+        .select("id, full_name, email, student_code")
+        .in("id", userIdChunk);
+      if (profilesError || !Array.isArray(profiles)) throw new Error();
+      for (const profile of profiles) {
+        if (!isRecord(profile)
+          || typeof profile.id !== "string" || !UUID_PATTERN.test(profile.id)
+          || (profile.full_name !== null && typeof profile.full_name !== "string")
+          || (profile.email !== null && typeof profile.email !== "string")
+          || (profile.student_code !== null && typeof profile.student_code !== "string")) {
+          throw new MaterialDirectAccessRepositoryError();
+        }
+        const id = profile.id.toLowerCase();
+        if (!requestedUserIds.has(id)) throw new MaterialDirectAccessRepositoryError();
+        students.set(id, {
+          id,
+          full_name: profile.full_name,
+          email: profile.email,
+          student_code: profile.student_code
+        });
+      }
+    }
+    return grants.map((grant) => ({ ...grant, student: students.get(grant.user_id) ?? null }));
   } catch (error) {
     if (error instanceof MaterialDirectAccessInputError || error instanceof MaterialDirectAccessRepositoryError) throw error;
     throw new MaterialDirectAccessRepositoryError();

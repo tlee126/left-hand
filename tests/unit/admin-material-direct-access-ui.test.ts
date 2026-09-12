@@ -19,7 +19,7 @@ const STUDENT_C = "5f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64";
 
 type FetchHandler = (url: string, init: RequestInit | undefined) => Promise<Response> | Response;
 
-async function withMountedPanel(handler: FetchHandler, callback: (ctx: { container: HTMLElement; dom: any; calls: Array<{ url: string; method: string; body: unknown }>; flush: () => Promise<void> }) => Promise<void>, materialId = MATERIAL_ID): Promise<void> {
+async function withMountedPanel(handler: FetchHandler, callback: (ctx: { container: HTMLElement; dom: any; calls: Array<{ url: string; method: string; body: unknown }>; flush: () => Promise<void>; runtimeErrors: { console: unknown[][]; window: unknown[] } }) => Promise<void>, materialId = MATERIAL_ID, monitorRuntimeErrors = false): Promise<void> {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
   const originals = {
     window: globalThis.window, document: globalThis.document, navigator: globalThis.navigator,
@@ -30,6 +30,13 @@ async function withMountedPanel(handler: FetchHandler, callback: (ctx: { contain
   const install = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
   install("window", dom.window); install("document", dom.window.document); install("navigator", dom.window.navigator);
   install("HTMLElement", dom.window.HTMLElement); install("Node", dom.window.Node); install("IS_REACT_ACT_ENVIRONMENT", true);
+  const runtimeErrors: { console: unknown[][]; window: unknown[] } = { console: [], window: [] };
+  const originalConsoleError = console.error;
+  const windowErrorListener = (event: ErrorEvent) => { runtimeErrors.window.push(event.error ?? event.message); };
+  if (monitorRuntimeErrors) {
+    console.error = (...args: unknown[]) => { runtimeErrors.console.push(args); originalConsoleError.apply(console, args); };
+    dom.window.addEventListener("error", windowErrorListener);
+  }
   // ReactDOM is imported before JSDOM exists in this test process and falls back to
   // its legacy input-event path; provide the DOM methods that path expects.
   (dom.window.HTMLElement.prototype as any).attachEvent = () => {};
@@ -47,12 +54,20 @@ async function withMountedPanel(handler: FetchHandler, callback: (ctx: { contain
   const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
   try {
     await act(async () => { root.render(createElement(MaterialDirectAccessPanel, { materialId })); });
-    await callback({ container, dom, calls, flush });
+    await callback({ container, dom, calls, flush, runtimeErrors });
   } finally {
-    await act(async () => root.unmount()); container.remove();
-    install("window", originals.window); install("document", originals.document); install("navigator", originals.navigator);
-    install("HTMLElement", originals.HTMLElement); install("Node", originals.Node); install("IS_REACT_ACT_ENVIRONMENT", originals.IS_REACT_ACT_ENVIRONMENT);
-    globalThis.fetch = originals.fetch;
+    try {
+      await act(async () => root.unmount());
+    } finally {
+      container.remove();
+      if (monitorRuntimeErrors) {
+        dom.window.removeEventListener("error", windowErrorListener);
+        console.error = originalConsoleError;
+      }
+      install("window", originals.window); install("document", originals.document); install("navigator", originals.navigator);
+      install("HTMLElement", originals.HTMLElement); install("Node", originals.Node); install("IS_REACT_ACT_ENVIRONMENT", originals.IS_REACT_ACT_ENVIRONMENT);
+      globalThis.fetch = originals.fetch;
+    }
   }
 }
 
@@ -99,6 +114,7 @@ function grant(userId: string, values: Record<string, unknown> = {}): Record<str
     granted_by: "7f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64",
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
+    student: null,
     ...values
   };
 }
@@ -311,6 +327,94 @@ test("empty grant list renders a stable empty state", async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.match(container.textContent ?? "", /Chưa cấp quyền riêng cho tài liệu này/);
     assert.doesNotMatch(container.textContent ?? "", /Được xem|Đã thu hồi|Hết hạn/);
+  });
+});
+
+test("grant list renders student identity returned by GET after a fresh mount", async () => {
+  const listedGrant = grant(STUDENT_A, {
+    student: { id: STUDENT_A, full_name: "Nguyễn Văn A", email: "a@example.test", student_code: "A01" }
+  });
+  await withMountedPanel((url, init) => responseFor(url, init?.method ?? "GET", [listedGrant]), async ({ container }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(container.textContent ?? "", /Nguyễn Văn A/);
+    assert.match(container.textContent ?? "", /A01/);
+    assert.doesNotMatch(container.textContent ?? "", new RegExp(`Học viên · ${STUDENT_A}`));
+  });
+});
+
+test("grant list keeps two student labels mapped correctly after a fresh mount", async () => {
+  const firstStudent = { id: STUDENT_A, full_name: "Nguyễn Minh An", email: "minh.an@example.test", student_code: "LA-101" };
+  const secondStudent = { id: STUDENT_B, full_name: "Trần Bảo Bình", email: "bao.binh@example.test", student_code: "LB-202" };
+  const firstGrant = grant(STUDENT_A, {
+    id: "6f7c5d75-4c0c-4f6d-b6b4-000000000101",
+    can_download: true,
+    student: firstStudent
+  });
+  const secondGrant = grant(STUDENT_B, {
+    id: "6f7c5d75-4c0c-4f6d-b6b4-000000000202",
+    can_download: false,
+    student: secondStudent
+  });
+  const listedGrants = [firstGrant, secondGrant];
+
+  await withMountedPanel((url, init) => responseFor(url, init?.method ?? "GET", listedGrants), async ({ container, calls, flush, runtimeErrors }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await flush();
+
+    const searchInput = container.querySelector('input[aria-label="Tìm học viên"]') as HTMLInputElement;
+    assert.equal(searchInput.value, "", "search state starts empty");
+    const expectedUrl = `/api/admin/materials/${MATERIAL_ID}/direct-grants`;
+    assert.deepEqual(calls, [{ url: expectedUrl, method: "GET", body: null }], "one material-bound GET completes without search or duplicate loads");
+    assert.equal(firstGrant.material_id, MATERIAL_ID);
+    assert.equal(secondGrant.material_id, MATERIAL_ID);
+    assert.notEqual(firstGrant.id, secondGrant.id, "each grant has its own identity");
+    assert.notEqual(firstGrant.user_id, secondGrant.user_id, "each grant belongs to a different student");
+    assert.equal(firstStudent.id, firstGrant.user_id, "student A summary matches grant A user_id");
+    assert.equal(secondStudent.id, secondGrant.user_id, "student B summary matches grant B user_id");
+    assert.notEqual(firstStudent.full_name, secondStudent.full_name, "student names are distinct");
+    assert.notEqual(firstStudent.email, secondStudent.email, "student emails are distinct");
+    assert.notEqual(firstStudent.student_code, secondStudent.student_code, "student codes are distinct");
+    assert.equal(container.querySelector("[data-material-direct-access]")?.getAttribute("data-material-direct-access"), MATERIAL_ID);
+
+    const materialPanel = container.querySelector("[data-material-direct-access]");
+    assert.ok(materialPanel, "material panel is mounted");
+    const grantRows = [...materialPanel.querySelectorAll("li")].filter((row) =>
+      [...row.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Sửa quyền")
+    );
+    assert.equal(grantRows.length, 2, "both grants for this material render");
+
+    const firstRow = grantRows[0];
+    const secondRow = grantRows[1];
+    assert.ok(firstRow, "first response grant renders as the first grant card");
+    assert.ok(secondRow, "second response grant renders as the second grant card");
+
+    const firstRowText = firstRow.textContent ?? "";
+    assert.match(firstRowText, /Nguyễn Minh An/);
+    assert.match(firstRowText, /LA-101/);
+    assert.match(firstRowText, /Được xem và tải/, "first card shows grant A's distinct permission");
+    assert.doesNotMatch(firstRowText, /Trần Bảo Bình|LB-202/);
+    assert.ok(!firstRowText.includes(secondStudent.email), "first card excludes student B's email");
+    assert.doesNotMatch(firstRowText, new RegExp(STUDENT_A), "student A UUID is not shown instead of its summary");
+
+    const secondRowText = secondRow.textContent ?? "";
+    assert.match(secondRowText, /Trần Bảo Bình/);
+    assert.match(secondRowText, /LB-202/);
+    assert.match(secondRowText, /Chỉ được xem/, "second card shows grant B's distinct permission");
+    assert.doesNotMatch(secondRowText, /Nguyễn Minh An|LA-101/);
+    assert.ok(!secondRowText.includes(firstStudent.email), "second card excludes student A's email");
+    assert.doesNotMatch(secondRowText, new RegExp(STUDENT_B), "student B UUID is not shown instead of its summary");
+    assert.equal(runtimeErrors.console.length, 0, `console.error was called: ${runtimeErrors.console.map((args) => args.map(String).join(" ")).join("\n")}`);
+    assert.equal(runtimeErrors.window.length, 0, `uncaught window error: ${runtimeErrors.window.map(String).join("\n")}`);
+  }, MATERIAL_ID, true);
+});
+
+test("grant list falls back safely when the student profile is missing", async () => {
+  await withMountedPanel((url, init) => responseFor(url, init?.method ?? "GET", [grant(STUDENT_A)]), async ({ container }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(container.textContent ?? "", new RegExp(`Học viên · ${STUDENT_A}`));
+    assert.doesNotMatch(container.textContent ?? "", /a@example\.test|A01/);
   });
 });
 

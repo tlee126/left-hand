@@ -639,6 +639,86 @@ function activeDirectGrant(overrides: Record<string, unknown> = {}): Record<stri
   };
 }
 
+test("admin grant listing batch-loads only matching student summary fields", async () => {
+  const moduleLoader = require("node:module") as { _load: (...args: any[]) => unknown };
+  const originalLoad = moduleLoader._load;
+  const repositoryPath = require.resolve("../../lib/repositories/material-direct-access-repository");
+  const adminClientPath = require.resolve("../../lib/supabase/server-admin");
+  const serverClientPath = require.resolve("../../lib/supabase/server");
+  const originalRepository = require.cache[repositoryPath];
+  const originalAdminClient = require.cache[adminClientPath];
+  const originalServerClient = require.cache[serverClientPath];
+  const profileIds = Array.from({ length: 101 }, (_, index) => `a0000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`);
+  let grantRows: Record<string, unknown>[] = [
+    ...profileIds.map((userId, index) => activeDirectGrant({
+      id: `b0000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`,
+      user_id: userId
+    })),
+    activeDirectGrant({ id: "b0000000-0000-4000-8000-000000000101", user_id: profileIds[0].toUpperCase() })
+  ];
+  const profiles = profileIds.map((id) => ({ id, full_name: `Student ${id.slice(-3)}`, email: `${id.slice(-3)}@example.test`, student_code: id.slice(-3) }));
+  const queries: Array<{ table: string; selection: string | null; ids: string[] | null; filters: Array<[string, unknown]> }> = [];
+  let profileQueryError: unknown = null;
+  const from = (table: string) => {
+    const query = { table, selection: null as string | null, ids: null as string[] | null, filters: [] as Array<[string, unknown]> };
+    queries.push(query);
+    const builder: any = {
+      select(selection: string) { query.selection = selection; return builder; },
+      eq(column: string, value: unknown) { query.filters.push([column, value]); return builder; },
+      order() { return builder; },
+      in(_column: string, ids: string[]) { query.ids = [...ids]; return builder; },
+      maybeSingle() { return Promise.resolve({ data: { product_id: PRODUCT_ID }, error: null }); },
+      then(resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) {
+        const data = table === "material_direct_grants"
+          ? grantRows
+          : profiles.filter((profile) => query.ids?.includes(profile.id));
+        return Promise.resolve({ data, error: table === "profiles" ? profileQueryError : null }).then(resolve, reject);
+      }
+    };
+    return builder;
+  };
+
+  try {
+    moduleLoader._load = function(request: string, ...args: any[]) {
+      if (request === "server-only") return {};
+      return originalLoad.call(this, request, ...args);
+    };
+    delete require.cache[repositoryPath];
+    require.cache[adminClientPath] = { id: adminClientPath, filename: adminClientPath, loaded: true, exports: { createServerAdminClient: () => ({ from }) } } as any;
+    require.cache[serverClientPath] = { id: serverClientPath, filename: serverClientPath, loaded: true, exports: { createClient: async () => { throw new Error("unexpected RPC"); } } } as any;
+    const repository = require(repositoryPath) as typeof import("../../lib/repositories/material-direct-access-repository");
+
+    const result = await repository.getMaterialDirectGrants(PRODUCT_ID);
+    assert.equal(result?.length, 102);
+    assert.deepEqual(result?.[0].student, { id: profileIds[0], full_name: `Student ${profileIds[0].slice(-3)}`, email: `${profileIds[0].slice(-3)}@example.test`, student_code: profileIds[0].slice(-3) });
+    assert.deepEqual(result?.at(-1)?.student, result?.[0].student, "case-normalized duplicate user IDs map to one profile");
+    const profileQueries = queries.filter((query) => query.table === "profiles");
+    assert.equal(profileQueries.length, 2, "profile reads are batched rather than one query per grant");
+    assert.deepEqual(profileQueries.map((query) => query.ids?.length), [100, 1]);
+    assert.ok(profileQueries.every((query) => query.selection === "id, full_name, email, student_code"));
+    const grantQuery = queries.filter((query) => query.table === "material_direct_grants")[0];
+    assert.equal(grantQuery.selection, "id, user_id, material_id, can_view, can_download, expires_at, revoked_at, granted_by, created_at, updated_at");
+    assert.deepEqual(grantQuery.filters, [["material_id", PRODUCT_ID]]);
+
+    queries.length = 0;
+    grantRows = [];
+    assert.deepEqual(await repository.getMaterialDirectGrants(PRODUCT_ID), []);
+    assert.equal(queries.some((query) => query.table === "profiles"), false, "empty grant lists do not query profiles");
+
+    grantRows = [activeDirectGrant()];
+    profileQueryError = new Error("private profile database detail");
+    await assert.rejects(
+      repository.getMaterialDirectGrants(PRODUCT_ID),
+      (error: unknown) => error instanceof repository.MaterialDirectAccessRepositoryError && !(error as Error).message.includes("private profile database detail")
+    );
+  } finally {
+    moduleLoader._load = originalLoad;
+    if (originalRepository) require.cache[repositoryPath] = originalRepository; else delete require.cache[repositoryPath];
+    if (originalAdminClient) require.cache[adminClientPath] = originalAdminClient; else delete require.cache[adminClientPath];
+    if (originalServerClient) require.cache[serverClientPath] = originalServerClient; else delete require.cache[serverClientPath];
+  }
+});
+
 test("active direct view-only grant bypasses entitlement but cannot download", async () => {
   access = approvedStudent;
   entitlement = null;
@@ -699,7 +779,10 @@ test("expired, revoked, cross-user, cross-material, and contradictory direct gra
 
 test("admin direct-grant API lists, creates, updates, revokes, and searches without touching entitlement policy", async () => {
   access = { status: "approved", user: { id: USER_ID }, profile: { role: "admin" } };
-  directGrants = [activeDirectGrant()];
+  directGrants = [{
+    ...activeDirectGrant(),
+    student: { id: USER_ID, full_name: "Student A", email: "a@example.test", student_code: "A01" }
+  }];
   studentSearchResults = [{ id: OTHER_USER_ID, full_name: "Student B", email: "b@example.test", student_code: "B01", faculty: null, major: null }];
 
   const params = { params: Promise.resolve({ id: PRODUCT_ID }) };
@@ -707,7 +790,8 @@ test("admin direct-grant API lists, creates, updates, revokes, and searches with
   assert.equal(listed.status, 200);
   const listedBody = await listed.json();
   assert.equal(listedBody.grants.length, 1);
-  assert.deepEqual(Object.keys(listedBody.grants[0]).sort(), ["can_download", "can_view", "created_at", "expires_at", "granted_by", "id", "material_id", "revoked_at", "updated_at", "user_id"]);
+  assert.deepEqual(Object.keys(listedBody.grants[0]).sort(), ["can_download", "can_view", "created_at", "expires_at", "granted_by", "id", "material_id", "revoked_at", "student", "updated_at", "user_id"]);
+  assert.deepEqual(listedBody.grants[0].student, { id: USER_ID, full_name: "Student A", email: "a@example.test", student_code: "A01" });
 
   const created = await DIRECT_CREATE_POST(new Request("https://example.test", {
     method: "POST",
