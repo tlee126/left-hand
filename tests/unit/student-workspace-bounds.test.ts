@@ -155,6 +155,13 @@ test("workspace skips child and entitlement queries when their ID lists are empt
   assert.equal(requests.some((request) => request.table === "learner_material_read_surface"), false);
 });
 
+test("workspace reports a missing authorized material surface row as a retryable repository error", async () => {
+  configureProducts(1);
+  materials = [];
+  await assert.rejects(repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan"), (error: any) => error.name === "StudentWorkspaceRepositoryError");
+  assert.ok(requests.some((request) => request.table === "learner_material_read_surface"));
+});
+
 test("direct-granted materials are visible without entitlement and use direct download permission", async () => {
   configureProducts(1);
   entitlements = [];

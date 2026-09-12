@@ -238,8 +238,8 @@ function flattenText(value: unknown): string {
   return "";
 }
 
-async function renderPage(slug = requestedSlug): Promise<any> {
-  return Page({ params: Promise.resolve({ slug }), searchParams: Promise.resolve({}) });
+async function renderPage(slug = requestedSlug, searchParams: Record<string, string | string[] | undefined> = {}): Promise<any> {
+  return Page({ params: Promise.resolve({ slug }), searchParams: Promise.resolve(searchParams) });
 }
 
 async function renderPageMarkup(slug = requestedSlug): Promise<string> {
@@ -434,7 +434,7 @@ test("cross-subject entitlement does not unlock the requested subject workspace"
 test("repository errors stop before workspace data and render", async () => {
   for (const scenario of ["subject", "product", "entitlement"] as const) {
     queryErrors[scenario] = true;
-    await expectNotFound(() => renderPage());
+    await assert.rejects(renderPage(), (error: any) => error.name === "StudentWorkspaceRepositoryError");
     assert.equal(timeline.includes("authorized workspace data"), false);
     assert.equal(timeline.includes("client render"), false);
     if (scenario === "subject") assert.deepEqual(timeline, ["session guard", "subject lookup"]);
@@ -442,6 +442,52 @@ test("repository errors stop before workspace data and render", async () => {
     if (scenario === "entitlement") assert.deepEqual(timeline, ["session guard", "subject lookup", "product lookup", "entitlement lookup"]);
     reset();
   }
+});
+
+test("workspace page waits for pending data before deciding whether a deep-linked material is unavailable", async () => {
+  const originalRepository = realWorkspaceRepository;
+  let releaseWorkspace: ((workspace: typeof workspaceData) => void) | null = null;
+  realWorkspaceRepository = () => new Promise<typeof workspaceData>((resolve) => { releaseWorkspace = resolve; });
+  try {
+    let settled = false;
+    const completion = renderPage("ke-toan", { material: PRODUCT_ID });
+    completion.then(() => { settled = true; }, () => { settled = true; });
+    for (let index = 0; index < 10 && !releaseWorkspace; index += 1) await Promise.resolve();
+    assert.equal(settled, false, "the route remains pending while authorized workspace data is unresolved");
+    assert.ok(releaseWorkspace);
+    (releaseWorkspace as (workspace: typeof workspaceData) => void)(workspaceData);
+    const element = await completion;
+    const markup = renderToStaticMarkup(element);
+    assert.match(markup, /Tài liệu được cấp quyền/);
+    assert.doesNotMatch(markup, /Tài liệu không còn khả dụng/);
+  } finally {
+    realWorkspaceRepository = originalRepository;
+  }
+});
+
+test("a deep-link to a material outside the loaded workspace remains safely unavailable", async () => {
+  const element = await renderPage("ke-toan", { material: OTHER_PRODUCT_ID });
+  const markup = renderToStaticMarkup(element);
+  assert.match(markup, /Tài liệu không còn khả dụng hoặc bạn không có quyền truy cập/);
+  assert.match(markup, /Tài liệu được cấp quyền/, "the rest of the authorized workspace remains visible");
+});
+
+test("workspace retry boundary displays a generic error and invokes reset without leaking details", async () => {
+  const { default: WorkspaceError } = await import("../../app/ca-nhan/mon/[slug]/error");
+  let retries = 0;
+  const element = WorkspaceError({ error: new Error(RAW_ERROR), reset: () => { retries += 1; } });
+  const markup = renderToStaticMarkup(element);
+  assert.match(markup, /Dữ liệu học tập hiện chưa thể tải/);
+  assert.match(markup, /Thử lại/);
+  assert.doesNotMatch(markup, new RegExp(RAW_ERROR));
+  const findButton = (node: any): any => {
+    if (!node || typeof node !== "object") return null;
+    if (Array.isArray(node)) return node.map(findButton).find(Boolean) ?? null;
+    if (node.type === "button") return node;
+    return findButton(node.props?.children);
+  };
+  findButton(element).props.onClick();
+  assert.equal(retries, 1);
 });
 
 test("malformed, missing, revoked, expired, wrong-user, and wrong-product entitlements deny access", async () => {
@@ -466,7 +512,7 @@ test("malformed, missing, revoked, expired, wrong-user, and wrong-product entitl
 
 test("multiple matching entitlement rows fail closed, while one valid row among unrelated rows succeeds", async () => {
   entitlementRows = [activeEntitlement(), activeEntitlement()];
-  await expectNotFound(() => renderPage());
+  await assert.rejects(renderPage(), (error: any) => error.name === "StudentWorkspaceRepositoryError");
   assert.deepEqual(timeline, ["session guard", "subject lookup", "product lookup", "entitlement lookup"]);
 
   reset();
@@ -498,7 +544,7 @@ test("multiple entitlement rows with zero valid matches fail closed before works
     return new Response(JSON.stringify({ url: "https://example.test/should-not-be-called" }), { status: 200 });
   };
   try {
-    await expectNotFound(() => renderPage());
+    await assert.rejects(renderPage(), (error: any) => error.name === "StudentWorkspaceRepositoryError");
   } finally {
     globalThis.fetch = originalFetch;
   }
