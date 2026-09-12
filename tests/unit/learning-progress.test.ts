@@ -565,6 +565,24 @@ test("material progress allows a current view grant regardless of download permi
   }
 });
 
+test("approved tutor with a valid direct grant is rejected before progress authorization or RPC access", async () => {
+  reset();
+  access.profile = { role: "tutor" };
+  products = [{ id: PRODUCT_ID, kind: "material" }];
+  directGrants = [activeDirectGrant({ can_view: true, can_download: true })];
+
+  const response = await Route.POST(request({
+    ...VALID_INPUT,
+    itemType: "material",
+    itemId: PRODUCT_ID
+  }));
+
+  assert.equal(response.status, 403);
+  assert.equal(calls.some((call: Call) => call.table === "products"), false);
+  assert.equal(calls.some((call: Call) => call.method === "directGrantBatch"), false);
+  assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
+});
+
 test("inactive or mismatched direct grants deny material progress without entitlement fallback", async () => {
   for (const grant of [
     activeDirectGrant({ expires_at: "2020-01-01T00:00:00.000Z" }),

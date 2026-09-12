@@ -52,6 +52,7 @@ import {
   assertLearningProgressConcurrencyMigrationContract,
   assertLearningProgressMonotonicityMigrationContract,
   assertLearningProgressDirectAccessMigrationContract,
+  assertLearningProgressStudentRoleMigrationContract,
   stripSqlCommentsAndSplitStatements,
   assertMigrationHistoryUnchanged,
   IMMUTABLE_MIGRATION_FILENAMES
@@ -291,6 +292,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ,"0042_material_direct_access.sql"
       ,"0043_grant_service_role_material_access_select.sql"
       ,"0044_learning_progress_material_direct_grant.sql"
+      ,"0045_learning_progress_student_role_guard.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -2064,5 +2066,32 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       `${sql}\nGRANT INSERT, UPDATE ON TABLE public.learning_progress TO authenticated;`,
       `${sql}\nGRANT EXECUTE ON FUNCTION public.save_learning_progress(uuid, text, uuid, text, numeric, timestamptz, timestamptz, integer) TO anon;`
     ]) assert.throws(() => assertLearningProgressDirectAccessMigrationContract(hostile), /./);
+  });
+
+  test("migration 0045 permits only approved students at the RPC and preserves migration 0044", async () => {
+    const migrationsPath = path.resolve(process.cwd(), "supabase/migrations");
+    const [rolesSql, sql0044, sql0045] = await Promise.all([
+      fs.readFile(path.join(migrationsPath, "0004_profiles_schema_and_policies.sql"), "utf8"),
+      fs.readFile(path.join(migrationsPath, "0044_learning_progress_material_direct_grant.sql"), "utf8"),
+      fs.readFile(path.join(migrationsPath, "0045_learning_progress_student_role_guard.sql"), "utf8")
+    ]);
+
+    assert.match(rolesSql, /role\s+text\s+not null\s+default\s+'student'\s+check\s*\(role\s+in\s*\('student',\s*'tutor',\s*'admin'\)\)/i);
+    assert.doesNotThrow(() => assertLearningProgressStudentRoleMigrationContract(sql0044, sql0045));
+    assert.throws(() => assertLearningProgressStudentRoleMigrationContract(`${sql0044}\n-- changed`, sql0045), /0044.*unchanged/i);
+
+    for (const hostile of [
+      sql0045.replace("profiles.role = 'student'", "profiles.role = 'tutor'"),
+      sql0045.replace("profiles.role = 'student'", "profiles.role <> 'admin'"),
+      sql0045.replace("profiles.account_status = 'approved'", "profiles.account_status = 'pending'"),
+      sql0045.replace("v_user_id IS NULL", "false"),
+      sql0045.replace("material_direct_grants.can_view = true", "material_direct_grants.can_view = false"),
+      sql0045.replace("ELSIF NOT EXISTS (", "IF NOT EXISTS ("),
+      sql0045.replace("auth.uid()", "p_user_id"),
+      sql0045.replace("WHERE public.learning_progress.version = p_expected_version", "WHERE public.learning_progress.version > p_expected_version"),
+      `${sql0045}\nGRANT INSERT, UPDATE ON TABLE public.learning_progress TO authenticated;`,
+      `${sql0045}\nGRANT EXECUTE ON FUNCTION public.save_learning_progress(uuid, text, uuid, text, numeric, timestamptz, timestamptz, integer) TO anon;`,
+      `${sql0045}\nGRANT EXECUTE ON FUNCTION public.save_learning_progress(uuid, text, uuid, text, numeric, timestamptz, timestamptz, integer) TO PUBLIC;`
+    ]) assert.throws(() => assertLearningProgressStudentRoleMigrationContract(sql0044, hostile), /./);
   });
 });

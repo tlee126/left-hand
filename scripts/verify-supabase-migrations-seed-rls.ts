@@ -51,6 +51,7 @@ const immutableMigrationHashes = {
 } as const;
 
 const materialDirectAccessMigration0042Hash = "c4a60e3bb1d7b7db041499299efe173f3fa08a88f9949aee0fd09d6fb8174138";
+const learningProgressMigration0044Hash = "f6d9e8d0d88901b0a9176526f8eb01f4b98eae55f549459973a7f46a9508b8c3";
 
 export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
 
@@ -1708,6 +1709,33 @@ export function assertLearningProgressDirectAccessMigrationContract(sql0044: str
   fail(!/\b(?:execute\s+immediate|format\s*\(|set\s+role|alter\s+role|bypassrls|dynamic\s+sql|service_role|grant\s+all)\b/i.test(executableCode), "Migration 0044 must not add privilege escalation or dynamic SQL");
 }
 
+/** Pins 0044 and verifies that 0045 changes only the RPC actor role to approved students. */
+export function assertLearningProgressStudentRoleMigrationContract(sql0044: string, sql0045: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const hash0044 = createHash("sha256").update(canonicalMigrationContent(sql0044), "utf8").digest("hex");
+  fail(hash0044 === learningProgressMigration0044Hash, "Migration 0044 must remain byte-for-byte unchanged (canonical SHA-256 mismatch)");
+  assertLearningProgressDirectAccessMigrationContract(sql0044);
+
+  const statements0044 = stripSqlCommentsAndSplitStatements(sql0044);
+  const statements0045 = stripSqlCommentsAndSplitStatements(sql0045);
+  const function0044 = statements0044.find((statement) => /^create or replace function public\.save_learning_progress\(/i.test(statement.trimStart())) ?? "";
+  const function0045 = statements0045.find((statement) => /^create or replace function public\.save_learning_progress\(/i.test(statement.trimStart())) ?? "";
+  const normalized0044 = statements0044.map(normalizeMigrationStatement);
+  const normalized0045 = statements0045.map(normalizeMigrationStatement);
+
+  fail(statements0045.length === 4 && /^create or replace function public\.save_learning_progress\(/i.test(normalized0045[0] ?? ""), "Migration 0045 must replace only the current progress RPC and preserve its privilege statements");
+  fail((function0045.match(/profiles\.role\s*=\s*'student'/gi) ?? []).length === 1, "Migration 0045 must require profiles.role = 'student' exactly once");
+  fail(!/profiles\.role\s*(?:<>|!=)\s*'admin'|profiles\.role\s+is\s+distinct\s+from\s+'admin'|not\s+profiles\.role\s*=\s*'admin'/i.test(function0045), "Migration 0045 must not retain an admin-only role guard");
+  fail(/v_user_id\s+is\s+null\s+or\s+not\s+exists\s*\([\s\S]*profiles\.id\s*=\s*v_user_id[\s\S]*profiles\.account_status\s*=\s*'approved'[\s\S]*profiles\.role\s*=\s*'student'[\s\S]*\)/i.test(function0045), "Migration 0045 must reject anonymous, missing-profile, unapproved, admin, and non-student actors at the RPC");
+
+  const rebasedFunction0045 = function0045.replace(/profiles\.role\s*=\s*'student'/i, "profiles.role <> 'admin'");
+  fail(normalizeMigrationStatement(rebasedFunction0045) === normalizeMigrationStatement(function0044), "Migration 0045 must preserve the full 0044 RPC body except for the student-only role predicate");
+  const rebasedStatements0045 = statements0045.slice();
+  rebasedStatements0045[0] = rebasedFunction0045;
+  assertLearningProgressDirectAccessMigrationContract(rebasedStatements0045.join(";\n"));
+  fail(normalized0045[1] === normalized0044[1] && normalized0045[2] === normalized0044[2] && normalized0045[3] === normalized0044[3], "Migration 0045 must preserve exact EXECUTE privileges and must not add direct DML grants");
+}
+
 /** Pure contract used by the CLI audit and integration tests for migration 0016. */
 export function assertMigration0016Contract(sql0016: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -2367,7 +2395,8 @@ export async function runAudit(): Promise<boolean> {
       "0041_material_atomic_update.sql",
       "0042_material_direct_access.sql",
       "0043_grant_service_role_material_access_select.sql",
-      "0044_learning_progress_material_direct_grant.sql"
+      "0044_learning_progress_material_direct_grant.sql",
+      "0045_learning_progress_student_role_guard.sql"
     ];
 
     const migrationNumbers = sqlFiles.map((filename) => {
@@ -2380,7 +2409,7 @@ export async function runAudit(): Promise<boolean> {
       && expected.every((filename, index) => sqlFiles[index] === filename);
     results.push({
       category: "Migrations",
-      check: "All 44 migration files exist with complete strict numerical order",
+      check: "All 45 migration files exist with complete strict numerical order",
       passed: matchesCanonicalList && hasStrictSequentialNumbers,
       details: sqlFiles.join(", ")
     });
@@ -3018,6 +3047,14 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0044_learning_progress_material_direct_grant", check: "Allows current material view grants while preserving course entitlement and CAS boundaries", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0044ContractValid) results.push({ category: "0044_learning_progress_material_direct_grant", check: "Allows current material view grants while preserving course entitlement and CAS boundaries", passed: true, details: "Direct-grant precedence, can_view, auth.uid(), exact RPC privileges, item binding, and version/conflict/monotonicity rules verified" });
+
+    const sql0045 = await fs.readFile(path.join(migrationsDir, "0045_learning_progress_student_role_guard.sql"), "utf-8");
+    let migration0045ContractValid = true;
+    try { assertLearningProgressStudentRoleMigrationContract(sql0044, sql0045); } catch (error) {
+      migration0045ContractValid = false;
+      results.push({ category: "0045_learning_progress_student_role_guard", check: "Restricts the progress RPC to approved students without changing its authorization or privilege boundaries", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0045ContractValid) results.push({ category: "0045_learning_progress_student_role_guard", check: "Restricts the progress RPC to approved students without changing its authorization or privilege boundaries", passed: true, details: "0044 hash pinned; tutor/admin/unapproved actors rejected; direct-grant, entitlement, item-binding, CAS, monotonicity, and exact EXECUTE privileges preserved" });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");
