@@ -197,13 +197,19 @@ export async function getAuthorizedStudentWorkspace(userId: string, slug: string
     const materialIds = materialProducts.map((product) => product.canonicalId);
     const courseIds = courseProducts.map((product) => product.canonicalId);
     const materialRows = await readMaterialRows(supabase, materialIds);
+    const materialByProductId = new Map<string, StudentWorkspaceMaterialRow>();
+    for (const row of materialRows) {
+      const materialId = canonicalUuid(row.product_id);
+      if (!materialId || !materialIds.includes(materialId) || materialByProductId.has(materialId)) throw new Error();
+      materialByProductId.set(materialId, row);
+    }
+    if (materialIds.some((materialId) => !materialByProductId.has(materialId))) throw new Error();
     const lessonResult = await readLessonRows(supabase, courseIds);
     hasHardOverflow ||= lessonResult.hasMore;
     const lessonRows = lessonResult.rows;
-    const materialByProductId = new Map(materialRows.map((row) => [canonicalUuid(row.product_id), row]));
     return {
       subject: { slug: subject.slug, name: subject.name, category: subject.category, facultyGroup: subject.faculty_group, colorTheme: subject.color_theme },
-      materials: materialProducts.flatMap((product) => { const material = materialByProductId.get(product.canonicalId); const directGrant = directGrantsByMaterialId.get(product.canonicalId); return material ? [{ productId: product.canonicalId, title: product.title, description: product.description, pages: material.pages, allowDownload: directGrant ? directGrant.can_download : material.allow_download, mimeType: null, ...(directGrant ? { accessSource: "direct_grant" as const } : {}) }] : []; }),
+      materials: materialProducts.map((product) => { const material = materialByProductId.get(product.canonicalId)!; const directGrant = directGrantsByMaterialId.get(product.canonicalId); return { productId: product.canonicalId, title: product.title, description: product.description, pages: material.pages, allowDownload: directGrant ? directGrant.can_download : material.allow_download, mimeType: null, ...(directGrant ? { accessSource: "direct_grant" as const } : {}) }; }),
       courses: courseProducts.map((product) => ({ productId: product.canonicalId, title: product.title, lessons: lessonRows.filter((lesson) => canonicalUuid(lesson.course_id) === product.canonicalId).map((lesson) => ({ id: lesson.id, title: lesson.title, description: lesson.description, durationMinutes: lesson.duration_minutes, orderIndex: lesson.order_index })) })),
       page,
       hasPreviousPage: page > 1,

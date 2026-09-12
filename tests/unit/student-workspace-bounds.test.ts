@@ -155,6 +155,66 @@ test("workspace skips child and entitlement queries when their ID lists are empt
   assert.equal(requests.some((request) => request.table === "learner_material_read_surface"), false);
 });
 
+test("workspace rejects missing material metadata before querying lessons or returning partial data", async () => {
+  configureProducts(2);
+  const materialId = products[0].id;
+  const courseId = products[1].id;
+  assert.equal(products[0].kind, "material");
+  assert.equal(products[1].kind, "course");
+  assert.ok(entitlements.some((entitlement) => entitlement.user_id === USER_ID && entitlement.product_id === materialId), "the material is authorized for this user");
+  assert.ok(entitlements.some((entitlement) => entitlement.user_id === USER_ID && entitlement.product_id === courseId), "the course is authorized for this user");
+  assert.ok(lessons.some((lesson) => lesson.course_id === courseId), "the valid course has a lesson that would be queried");
+  materials = [];
+  assert.equal(new Set(materials.map((row) => row.product_id)).size, materials.length, "the missing-metadata fixture contains no duplicate rows");
+
+  let returnedWorkspace: unknown;
+  await assert.rejects(
+    async () => { returnedWorkspace = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan"); },
+    (error: any) => error instanceof repository.StudentWorkspaceRepositoryError
+      && error.message === "Student workspace data is unavailable."
+      && !error.message.includes(materialId)
+  );
+
+  assert.equal(returnedWorkspace, undefined, "missing material metadata must not return a partial workspace");
+  assert.deepEqual(requests.map((request) => request.table), [
+    "student_workspace_product_read_surface",
+    "product_entitlements",
+    "learner_material_read_surface"
+  ], "repository stops after the missing metadata read; no lesson query follows");
+  assert.equal(requests.filter((request) => request.table === "learner_material_read_surface").length, 1);
+  assert.equal(requests.filter((request) => request.table === "course_lessons").length, 0, "the existing authorized course lesson is never queried after missing metadata is detected");
+});
+
+test("workspace rejects duplicate authorized learner material metadata without returning partial data", async () => {
+  configureProducts(2);
+  const materialId = products[0].id;
+  const courseId = products[1].id;
+  assert.equal(products[1].kind, "course");
+  assert.ok(lessons.some((lesson) => lesson.course_id === courseId), "the valid course has a lesson that would be queried");
+  materials = [
+    { product_id: materialId, pages: 3, allow_download: false },
+    { product_id: materialId, pages: 99, allow_download: true }
+  ];
+
+  let returnedWorkspace: unknown = null;
+  await assert.rejects(
+    async () => { returnedWorkspace = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan"); },
+    (error: any) => error.name === "StudentWorkspaceRepositoryError"
+      && error.message === "Student workspace data is unavailable."
+      && !error.message.includes(materialId)
+      && !error.message.includes("99")
+  );
+
+  assert.equal(returnedWorkspace, null, "the duplicate metadata must not produce a partial workspace using either row");
+  assert.deepEqual(requests.map((request) => request.table), [
+    "student_workspace_product_read_surface",
+    "product_entitlements",
+    "learner_material_read_surface"
+  ], "repository stops after the duplicated metadata read; no lesson query follows");
+  assert.equal(requests.filter((request) => request.table === "learner_material_read_surface").length, 1);
+  assert.equal(requests.filter((request) => request.table === "course_lessons").length, 0, "the existing authorized course lesson is never queried after duplicate detection");
+});
+
 test("direct-granted materials are visible without entitlement and use direct download permission", async () => {
   configureProducts(1);
   entitlements = [];

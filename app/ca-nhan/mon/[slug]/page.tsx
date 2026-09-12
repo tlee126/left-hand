@@ -99,12 +99,7 @@ export default async function SubjectWorkspacePage({
     ? requestedMaterialValue.toLowerCase()
     : null;
 
-  let workspace;
-  try {
-    workspace = await getAuthorizedStudentWorkspace(access.user!.id, slug, page);
-  } catch {
-    notFound();
-  }
+  const workspace = await getAuthorizedStudentWorkspace(access.user!.id, slug, page);
 
   if (!workspace && requestedMaterialId) {
     return <StudentMaterialUnavailable />;

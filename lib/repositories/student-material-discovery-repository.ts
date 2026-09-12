@@ -124,14 +124,17 @@ export async function getStudentMaterialDiscovery(userId: string): Promise<Stude
     if (productError || !Array.isArray(productData) || productData.length > productIds.length) throw new Error();
 
     const products: DiscoveryProduct[] = [];
+    const returnedProductIds = new Set<string>();
     for (const value of productData) {
       if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error();
       const row = value as Record<string, unknown>;
       const id = canonicalUuid(row.id);
       const subjectId = canonicalUuid(row.subject_id);
-      if (!id || !subjectId || !productIds.includes(id) || (row.kind !== "material" && row.kind !== "course") || typeof row.title !== "string" || typeof row.description !== "string") throw new Error();
+      if (!id || !subjectId || !productIds.includes(id) || returnedProductIds.has(id) || (row.kind !== "material" && row.kind !== "course") || typeof row.title !== "string" || typeof row.description !== "string") throw new Error();
+      returnedProductIds.add(id);
       products.push({ id: row.id as ProductRow["id"], subject_id: row.subject_id as ProductRow["subject_id"], kind: row.kind as ProductRow["kind"], title: row.title as ProductRow["title"], description: row.description as ProductRow["description"], canonicalId: id });
     }
+    if (productIds.some((productId) => !returnedProductIds.has(productId))) throw new Error();
 
     const authorizedProducts = products.filter((product) => {
       const directGrant = product.kind === "material" ? directGrantsByMaterialId.get(product.canonicalId) : undefined;
@@ -141,7 +144,9 @@ export async function getStudentMaterialDiscovery(userId: string): Promise<Stude
     });
     if (authorizedProducts.length === 0) return { subjects: [], directMaterials: [] };
 
-    const subjectIds = [...new Set(authorizedProducts.map((product) => canonicalUuid(product.subject_id)).filter((id): id is string => id !== null))];
+    const subjectIdValues = authorizedProducts.map((product) => canonicalUuid(product.subject_id));
+    if (subjectIdValues.some((id) => id === null)) throw new Error();
+    const subjectIds = [...new Set(subjectIdValues as string[])];
     const { data: subjectData, error: subjectError } = await supabase
       .from("subjects")
       .select("id, slug, name, category, color_theme")
@@ -157,8 +162,10 @@ export async function getStudentMaterialDiscovery(userId: string): Promise<Stude
       const id = canonicalUuid(row.id);
       const slug = typeof row.slug === "string" ? row.slug : null;
       if (!id || !subjectIds.includes(id) || !slug || typeof row.name !== "string" || typeof row.category !== "string" || typeof row.color_theme !== "string") throw new Error();
+      if (subjectsById.has(id)) throw new Error();
       subjectsById.set(id, { id: row.id as SubjectRow["id"], slug, name: row.name, category: row.category as SubjectRow["category"], color_theme: row.color_theme as SubjectRow["color_theme"], canonicalId: id });
     }
+    if (subjectIds.some((subjectId) => !subjectsById.has(subjectId))) throw new Error();
 
     const materialProducts = authorizedProducts.filter((product) => product.kind === "material");
     const materialIds = materialProducts.map((product) => product.canonicalId);
@@ -175,10 +182,11 @@ export async function getStudentMaterialDiscovery(userId: string): Promise<Stude
         if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error();
         const row = value as Record<string, unknown>;
         const id = canonicalUuid(row.product_id);
-        if (!id || !materialIds.includes(id) || typeof row.allow_download !== "boolean") throw new Error();
+        if (!id || !materialIds.includes(id) || materialById.has(id) || typeof row.allow_download !== "boolean") throw new Error();
         materialById.set(id, { product_id: row.product_id as MaterialRow["product_id"], allow_download: row.allow_download });
       }
     }
+    if (materialIds.some((materialId) => !materialById.has(materialId))) throw new Error();
 
     const productsBySubject = new Map<string, DiscoveryProduct[]>();
     for (const product of authorizedProducts) {

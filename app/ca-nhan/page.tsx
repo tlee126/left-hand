@@ -91,25 +91,29 @@ export default async function StudentDashboardPage({
   let studyPlanLoadError = false;
   let materialDiscovery: StudentMaterialDiscoveryData = { subjects: [], directMaterials: [] };
   let materialDiscoveryLoadError = false;
-  try {
-    const [{ listStudyPlanSubjects, listStudyPlans }, { getStudentMaterialDiscovery }] = await Promise.all([
-      import("@/lib/repositories/study-plan-repository"),
-      import("@/lib/repositories/student-material-discovery-repository")
-    ]);
-    const [plansResult, subjectsResult, discoveryResult] = await Promise.allSettled([
-      listStudyPlans(access.user.id, { startDate: historyStartDate, endDate: futureEndDate }),
-      listStudyPlanSubjects(),
-      getStudentMaterialDiscovery(access.user.id)
-    ]);
-    if (plansResult.status === "fulfilled") initialStudyPlans = plansResult.value;
-    else studyPlanLoadError = true;
-    if (subjectsResult.status === "fulfilled") studyPlanSubjects = subjectsResult.value;
-    if (discoveryResult.status === "fulfilled") materialDiscovery = discoveryResult.value;
-    else materialDiscoveryLoadError = true;
-  } catch {
-    studyPlanLoadError = true;
-    materialDiscoveryLoadError = true;
-  }
+  const loadStudyPlans = async () => {
+    try {
+      const { listStudyPlanSubjects, listStudyPlans } = await import("@/lib/repositories/study-plan-repository");
+      const [plansResult, subjectsResult] = await Promise.allSettled([
+        listStudyPlans(access.user!.id, { startDate: historyStartDate, endDate: futureEndDate }),
+        listStudyPlanSubjects()
+      ]);
+      if (plansResult.status === "fulfilled") initialStudyPlans = plansResult.value;
+      else studyPlanLoadError = true;
+      if (subjectsResult.status === "fulfilled") studyPlanSubjects = subjectsResult.value;
+    } catch {
+      studyPlanLoadError = true;
+    }
+  };
+  const loadMaterialDiscovery = async () => {
+    try {
+      const { getStudentMaterialDiscovery } = await import("@/lib/repositories/student-material-discovery-repository");
+      materialDiscovery = await getStudentMaterialDiscovery(access.user!.id);
+    } catch {
+      materialDiscoveryLoadError = true;
+    }
+  };
+  await Promise.all([loadStudyPlans(), loadMaterialDiscovery()]);
   return (
     <StudentDashboardClient
       initialProfile={access.profile}

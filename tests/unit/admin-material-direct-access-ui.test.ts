@@ -19,7 +19,7 @@ const STUDENT_C = "5f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64";
 
 type FetchHandler = (url: string, init: RequestInit | undefined) => Promise<Response> | Response;
 
-async function withMountedPanel(handler: FetchHandler, callback: (ctx: { container: HTMLElement; dom: any; calls: Array<{ url: string; method: string; body: unknown }>; flush: () => Promise<void>; runtimeErrors: { console: unknown[][]; window: unknown[] } }) => Promise<void>, materialId = MATERIAL_ID, monitorRuntimeErrors = false): Promise<void> {
+async function withMountedPanel(handler: FetchHandler, callback: (ctx: { container: HTMLElement; dom: any; calls: Array<{ url: string; method: string; body: unknown }>; flush: () => Promise<void>; rerender: (nextMaterialId: string) => Promise<void>; runtimeErrors: { console: unknown[][]; window: unknown[] } }) => Promise<void>, materialId = MATERIAL_ID, monitorRuntimeErrors = false): Promise<void> {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
   const originals = {
     window: globalThis.window, document: globalThis.document, navigator: globalThis.navigator,
@@ -52,9 +52,10 @@ async function withMountedPanel(handler: FetchHandler, callback: (ctx: { contain
   const container = document.createElement("div"); document.body.append(container);
   const root = createRoot(container);
   const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+  const rerender = async (nextMaterialId: string) => act(async () => { root.render(createElement(MaterialDirectAccessPanel, { materialId: nextMaterialId })); });
   try {
     await act(async () => { root.render(createElement(MaterialDirectAccessPanel, { materialId })); });
-    await callback({ container, dom, calls, flush, runtimeErrors });
+    await callback({ container, dom, calls, flush, rerender, runtimeErrors });
   } finally {
     try {
       await act(async () => root.unmount());
@@ -439,6 +440,30 @@ test("initial grant-list API errors render only the generic error state", async 
   });
 });
 
+test("repeated panel activation while the grant GET is pending reuses one request", async () => {
+  let releaseList: ((response: Response) => void) | null = null;
+  let getCalls = 0;
+  await withMountedPanel((url, init) => {
+    if (url.includes("/direct-grants") && (init?.method ?? "GET") === "GET") {
+      getCalls += 1;
+      return new Promise<Response>((resolve) => { releaseList = resolve; });
+    }
+    return responseFor(url, init?.method ?? "GET", []);
+  }, async ({ container, flush }) => {
+    await act(async () => {
+      const open = clickButton(container, "Quản lý quyền truy cập riêng");
+      open.click();
+      open.click();
+      await Promise.resolve();
+    });
+    assert.equal(getCalls, 1);
+    assert.ok(releaseList);
+    releaseList!(Response.json({ grants: [] }));
+    await flush();
+    assert.match(container.textContent ?? "", /Chưa cấp quyền riêng cho tài liệu này/);
+  });
+});
+
 test("Enter submits student search exactly once", async () => {
   let searchCalls = 0;
   await withMountedPanel((url, init) => { if (url.includes("/students/search")) { searchCalls += 1; return Response.json({ students: [] }); } return responseFor(url, init?.method ?? "GET", []); }, async ({ container, dom }) => {
@@ -513,6 +538,145 @@ test("search retry after failure creates exactly one new request and renders its
     assert.deepEqual(calls[1], { url: "/api/admin/students/search?q=retry-query", method: "GET", body: null });
     assert.match(container.textContent ?? "", /Retry Result/);
     assert.doesNotMatch(container.textContent ?? "", /Không thể tìm học viên/);
+  });
+});
+
+test("changing the search input immediately hides results from the previous query", async () => {
+  const studentA = { id: STUDENT_A, full_name: "Query A Result", email: null, student_code: "A01" };
+  await withMountedPanel((url, init) => {
+    if (url.includes("/students/search")) return Response.json({ students: [studentA] });
+    return responseFor(url, init?.method ?? "GET", []);
+  }, async ({ container, dom, flush }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await flush();
+    const input = container.querySelector('input[aria-label="Tìm học viên"]') as HTMLInputElement;
+    await setInput(dom, input, "query-a");
+    await submitForm(input.form!, dom);
+    await flush();
+    assert.match(container.textContent ?? "", /Query A Result/);
+
+    await setInput(dom, input, "query-b");
+    assert.doesNotMatch(container.textContent ?? "", /Query A Result/);
+    assert.doesNotMatch(container.textContent ?? "", /Không tìm thấy học viên phù hợp/);
+  });
+});
+
+test("a late search response cannot replace the latest query result or loading state", async () => {
+  const pending = new Map<string, (response: Response) => void>();
+  const calls: string[] = [];
+  await withMountedPanel((url, init) => {
+    if (url.includes("/students/search")) {
+      calls.push(url);
+      const query = new URL(url, "http://localhost").searchParams.get("q") ?? "";
+      return new Promise<Response>((resolve) => { pending.set(query, resolve); });
+    }
+    return responseFor(url, init?.method ?? "GET", []);
+  }, async ({ container, dom, flush }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await flush();
+    const input = container.querySelector('input[aria-label="Tìm học viên"]') as HTMLInputElement;
+    await setInput(dom, input, "query-a");
+    await submitForm(input.form!, dom);
+    assert.equal(calls.length, 1);
+    assert.equal((container.querySelector('form button[type="submit"]') as HTMLButtonElement).disabled, true);
+
+    await setInput(dom, input, "query-b");
+    assert.equal(clickButton(container, "Tìm học viên").disabled, false, "changing the input releases only the stale search state");
+    await submitForm(input.form!, dom);
+    assert.equal(calls.length, 2, "query B starts while query A is unresolved");
+
+    pending.get("query-b")!(Response.json({ students: [{ id: STUDENT_B, full_name: "Latest B", email: null, student_code: "B02" }] }));
+    await flush();
+    assert.match(container.textContent ?? "", /Latest B/);
+    assert.equal(clickButton(container, "Tìm học viên").disabled, false);
+
+    pending.get("query-a")!(Response.json({ students: [{ id: STUDENT_A, full_name: "Stale A", email: null, student_code: "A01" }] }));
+    await flush();
+    assert.match(container.textContent ?? "", /Latest B/);
+    assert.doesNotMatch(container.textContent ?? "", /Stale A|Không thể tìm học viên/);
+    assert.equal(clickButton(container, "Tìm học viên").disabled, false);
+  });
+});
+
+test("changing material while grants are pending isolates the new panel from the stale response", async () => {
+  const otherMaterial = "8f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64";
+  let releaseA: ((response: Response) => void) | null = null;
+  const getCalls: string[] = [];
+  await withMountedPanel((url, init) => {
+    if (url.includes("/direct-grants") && (init?.method ?? "GET") === "GET") {
+      getCalls.push(url);
+      if (url.includes(MATERIAL_ID)) return new Promise<Response>((resolve) => { releaseA = resolve; });
+      return Response.json({ grants: [{ ...grant(STUDENT_B), material_id: otherMaterial, student: null }] });
+    }
+    return responseFor(url, init?.method ?? "GET", []);
+  }, async ({ container, flush, rerender }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    assert.equal(getCalls.length, 1);
+    await rerender(otherMaterial);
+    assert.equal(container.querySelector("[data-material-direct-access]")?.getAttribute("data-material-direct-access"), otherMaterial);
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await flush();
+    assert.equal(getCalls.length, 2);
+    assert.match(container.textContent ?? "", new RegExp(STUDENT_B));
+
+    releaseA!(Response.json({ grants: [grant(STUDENT_A)] }));
+    await flush();
+    assert.match(container.textContent ?? "", new RegExp(STUDENT_B));
+    assert.doesNotMatch(container.textContent ?? "", new RegExp(STUDENT_A));
+    assert.equal(container.querySelector("[data-material-direct-access]")?.getAttribute("data-material-direct-access"), otherMaterial);
+  });
+});
+
+test("grant-list failure can be retried by closing and reopening the panel", async () => {
+  const listedGrant = grant(STUDENT_B, { student: { id: STUDENT_B, full_name: "Grant Retry Student", email: null, student_code: "B02" } });
+  let getCalls = 0;
+  await withMountedPanel((url, init) => {
+    if (url.includes("/direct-grants") && (init?.method ?? "GET") === "GET") {
+      getCalls += 1;
+      return getCalls === 1 ? Response.json({ error: "private provider detail" }, { status: 500 }) : Response.json({ grants: [listedGrant] });
+    }
+    return responseFor(url, init?.method ?? "GET", []);
+  }, async ({ container, flush }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await flush();
+    assert.match(container.textContent ?? "", /Không thể tải quyền truy cập riêng/);
+    assert.equal(getCalls, 1);
+    await act(async () => { clickButton(container, "Đóng quản lý quyền truy cập riêng").click(); });
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await flush();
+    assert.equal(getCalls, 2);
+    assert.match(container.textContent ?? "", /Grant Retry Student/);
+    assert.doesNotMatch(container.textContent ?? "", /Không thể tải quyền truy cập riêng|private provider detail/);
+  });
+});
+
+test("successful mutation with failed grant refresh shows a generic load error without stale success", async () => {
+  const student = { id: STUDENT_A, full_name: "Mutation Student", email: null, student_code: "A01" };
+  let getCalls = 0;
+  await withMountedPanel((url, init) => {
+    const method = init?.method ?? "GET";
+    if (url.includes("/students/search")) return Response.json({ students: [student] });
+    if (url.endsWith("/direct-grants") && method === "GET") {
+      getCalls += 1;
+      return getCalls === 1 ? Response.json({ grants: [] }) : Response.json({ error: "refresh detail" }, { status: 500 });
+    }
+    if (url.endsWith("/direct-grants") && method === "POST") return Response.json({ grant: grant(STUDENT_A) }, { status: 201 });
+    return responseFor(url, method, []);
+  }, async ({ container, dom, flush }) => {
+    await act(async () => { clickButton(container, "Quản lý quyền truy cập riêng").click(); });
+    await flush();
+    const input = container.querySelector('input[aria-label="Tìm học viên"]') as HTMLInputElement;
+    await setInput(dom, input, "A01");
+    await submitForm(input.form!, dom);
+    await flush();
+    await act(async () => { clickButton(container, "Mutation Student").click(); });
+    const createForm = [...container.querySelectorAll("form")].find((form) => form.textContent?.includes("Cấp quyền riêng")) as HTMLFormElement;
+    await submitForm(createForm, dom);
+    await flush();
+
+    assert.equal(getCalls, 2, "POST is followed by one GET refresh");
+    assert.match(container.textContent ?? "", /Không thể tải quyền truy cập riêng/);
+    assert.doesNotMatch(container.textContent ?? "", /Chưa cấp quyền riêng cho tài liệu này|refresh detail/);
   });
 });
 
