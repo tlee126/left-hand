@@ -266,9 +266,9 @@ export const TUTOR_COLUMNS = [
 
 export const SUBJECT_SELECT_COLUMNS = SUBJECT_COLUMNS.join(", ");
 export const PRODUCT_SELECT_COLUMNS = PRODUCT_COLUMNS.join(", ");
-export const MATERIAL_SELECT_COLUMNS = `${PRODUCT_SELECT_COLUMNS}, materials (${MATERIAL_COLUMNS.join(", ")})`;
-export const COURSE_SELECT_COLUMNS = `${PRODUCT_SELECT_COLUMNS}, courses (${COURSE_COLUMNS.join(", ")})`;
-export const TUTOR_SELECT_COLUMNS = `${PRODUCT_SELECT_COLUMNS}, tutors (${TUTOR_COLUMNS.join(", ")})`;
+export const MATERIAL_SELECT_COLUMNS = `${PRODUCT_SELECT_COLUMNS}, materials`;
+export const COURSE_SELECT_COLUMNS = `${PRODUCT_SELECT_COLUMNS}, courses`;
+export const TUTOR_SELECT_COLUMNS = `${PRODUCT_SELECT_COLUMNS}, tutors`;
 
 export class AdminCatalogInputError extends Error {
   constructor(message: string) {
@@ -819,7 +819,7 @@ async function listProducts<T>(
   const validated = validateListOptions(options);
   try {
     const client = await adminClient();
-    let query = client.from("products").select(selectColumns).eq("kind", kind);
+    let query = client.from("admin_catalog_read_surface").select(selectColumns).eq("kind", kind);
     if (validated.status !== undefined) query = query.eq("publication_status", validated.status);
     if (validated.search !== undefined) query = query.or(`slug.ilike.%${validated.search}%,title.ilike.%${validated.search}%`);
     const result = await query.order("created_at", { ascending: false }).order("id", { ascending: false }).range(validated.offset, validated.offset + validated.limit - 1);
@@ -843,7 +843,7 @@ async function getProduct<T>(id: string, kind: ProductRow["kind"], selectColumns
 }
 
 async function getProductWithClient<T>(client: AdminCatalogClient, id: string, kind: ProductRow["kind"], selectColumns: string, guard: (value: unknown) => value is T, message: string): Promise<T | null> {
-  const result = await client.from("products").select(selectColumns).eq("id", id).eq("kind", kind).maybeSingle();
+  const result = await client.from("admin_catalog_read_surface").select(selectColumns).eq("id", id).eq("kind", kind).maybeSingle();
   if (result.error) repositoryFailure(message);
   return result.data === null || result.data === undefined ? null : guard(result.data) ? result.data : repositoryFailure(message);
 }

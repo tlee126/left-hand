@@ -192,7 +192,7 @@ describe("Task 5.1-A: admin catalog repository", () => {
       ] as const) {
       mockClient = new MockClient([{ data: [], error: null }]);
       await list({ publication_status: "published" as never, limit: 5 });
-      assert.equal(mockClient.calls.find((call) => call.method === "from")?.args[0], "products");
+      assert.equal(mockClient.calls.find((call) => call.method === "from")?.args[0], "admin_catalog_read_surface");
       assert.deepEqual(mockClient.calls.filter((call) => call.method === "eq").map((call) => call.args), [
         ["kind", kind],
         ["publication_status", "published"]

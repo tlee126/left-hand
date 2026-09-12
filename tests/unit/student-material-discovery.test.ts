@@ -31,12 +31,14 @@ import { transform } from "esbuild";
 const scenario = JSON.parse(process.argv[1]);
 const queryData = scenario;
 globalThis.__seenTables = [];
+globalThis.__seenSelections = [];
 function client() {
   return {
     from(table) {
         globalThis.__seenTables.push(table);
       return {
-        select() {
+        select(columns) {
+          globalThis.__seenSelections.push([table, columns]);
           const filters = [];
           const inByField = new Map();
           const query = {
@@ -48,9 +50,9 @@ function client() {
               const eq = (field, value) => filters.find(([name]) => name === field)?.[1] === value;
               let rows = [];
               if (table === "product_entitlements") rows = queryData.entitlements.filter((row) => eq("user_id", row.user_id) && eq("status", row.status));
-              if (table === "products") rows = queryData.products.filter((row) => inByField.get("id")?.includes(row.id) && inByField.get("kind")?.includes(row.kind));
+              if (table === "student_workspace_product_read_surface") rows = queryData.products.filter((row) => inByField.get("id")?.includes(row.id) && inByField.get("kind")?.includes(row.kind));
               if (table === "subjects") rows = queryData.subjects.filter((row) => inByField.get("id")?.includes(row.id));
-              if (table === "materials") rows = queryData.materials.filter((row) => inByField.get("product_id")?.includes(row.product_id));
+              if (table === "learner_material_read_surface") rows = queryData.materials.filter((row) => inByField.get("product_id")?.includes(row.product_id));
               return Promise.resolve({ data: rows, error: null }).then(resolve, reject);
             }
           };
@@ -67,7 +69,7 @@ const source = (await readFile("lib/repositories/student-material-discovery-repo
   .replace(/import \{[\s\S]*?\} from "@\/lib\/repositories\/material-direct-access-repository";/, "const getMaterialDirectGrantsForUser = async (userId) => " + directRows + ".filter((grant) => grant.user_id === userId); const isActiveMaterialDirectGrant = (grant, userId, materialId) => grant.user_id === userId && grant.material_id === materialId && grant.can_view && grant.revoked_at === null && (grant.expires_at === null || Date.parse(grant.expires_at) > Date.now());");
 const compiled = await transform(source, { loader: "ts", format: "esm", sourcefile: "student-material-discovery-repository.ts" });
 const loaded = await import("data:text/javascript," + encodeURIComponent(compiled.code));
-console.log(JSON.stringify({ result: await loaded.getStudentMaterialDiscovery(scenario.userId), queryTables: globalThis.__seenTables }));
+console.log(JSON.stringify({ result: await loaded.getStudentMaterialDiscovery(scenario.userId), queryTables: globalThis.__seenTables, selections: globalThis.__seenSelections }));
 `;
 
 async function runDiscovery(data: Record<string, unknown>): Promise<any> {
@@ -95,7 +97,7 @@ function createClientMock() {
   return {
     from(table: string) {
       return {
-        select() {
+        select(_columns: string) {
           const filters: Array<[string, unknown]> = [];
           const inValuesByField = new Map<string, unknown[]>();
           const query: any = {
@@ -108,9 +110,9 @@ function createClientMock() {
               const eq = (field: string, value: unknown) => filters.find(([name]) => name === field)?.[1] === value;
               let rows: Row[] = [];
               if (table === "product_entitlements") rows = entitlements.filter((row) => eq("user_id", row.user_id) && eq("status", row.status));
-              if (table === "products") rows = products.filter((row) => inValuesByField.get("id")?.includes(row.id) && inValuesByField.get("kind")?.includes(row.kind));
+              if (table === "student_workspace_product_read_surface") rows = products.filter((row) => inValuesByField.get("id")?.includes(row.id) && inValuesByField.get("kind")?.includes(row.kind));
               if (table === "subjects") rows = subjects.filter((row) => inValuesByField.get("id")?.includes(row.id));
-              if (table === "materials") rows = materials.filter((row) => inValuesByField.get("product_id")?.includes(row.product_id));
+              if (table === "learner_material_read_surface") rows = materials.filter((row) => inValuesByField.get("product_id")?.includes(row.product_id));
               return Promise.resolve({ data: rows, error: null }).then(resolve, reject);
             }
           };
@@ -139,7 +141,69 @@ test("discovery returns entitlement and direct-grant subjects with one bounded b
     expiresAt: "2099-01-01T00:00:00.000Z",
     workspacePage: 1
   }]);
-  assert.deepEqual(discovery.queryTables.sort(), ["materials", "product_entitlements", "products", "subjects"]);
+  assert.deepEqual(discovery.queryTables.sort(), ["learner_material_read_surface", "product_entitlements", "student_workspace_product_read_surface", "subjects"]);
+  assert.deepEqual(discovery.selections.filter(([table]: [string, string]) => table === "student_workspace_product_read_surface" || table === "learner_material_read_surface").sort(), [
+    ["learner_material_read_surface", "product_id, allow_download"],
+    ["student_workspace_product_read_surface", "id, subject_id, kind, title, description"]
+  ]);
+  assert.ok(discovery.selections.every(([, columns]: [string, string]) => columns !== "*"));
+});
+
+test("direct-grant-only published, draft, and archived materials satisfy the discovery repository contract", async () => {
+  for (const publicationStatus of ["published", "draft", "archived"]) {
+    const scenario = {
+      userId: USER_ID,
+      products: [{ id: MATERIAL_A, subject_id: SUBJECT_A, kind: "material", title: `Grant ${publicationStatus}`, description: "Material description", publication_status: publicationStatus }],
+      subjects: [{ id: SUBJECT_A, slug: "ke-toan", name: "Kế toán", category: "Kế toán", color_theme: "accounting" }],
+      entitlements: [],
+      directGrants: [{ user_id: USER_ID, material_id: MATERIAL_A, can_view: true, can_download: false, expires_at: null, revoked_at: null }],
+      materials: [{ product_id: MATERIAL_A, allow_download: true }]
+    };
+
+    const discovery = await runDiscovery(scenario);
+
+    assert.deepEqual(discovery.result.directMaterials.map((material: Row) => material.productId), [MATERIAL_A], publicationStatus);
+    assert.equal(discovery.result.directMaterials[0].allowDownload, false, "a view grant must not inherit materials.allow_download");
+    assert.deepEqual(discovery.result.subjects.map((subject: Row) => subject.accessSource), ["direct_grant"]);
+    assert.deepEqual(discovery.queryTables.sort(), ["learner_material_read_surface", "product_entitlements", "student_workspace_product_read_surface", "subjects"]);
+  }
+});
+
+test("discovery excludes expired, revoked, view-disabled, foreign, and mismatched direct grants", async () => {
+  const invalidGrants = [
+    { user_id: USER_ID, material_id: MATERIAL_A, can_view: true, can_download: false, expires_at: "2020-01-01T00:00:00.000Z", revoked_at: null },
+    { user_id: USER_ID, material_id: MATERIAL_A, can_view: true, can_download: false, expires_at: null, revoked_at: "2026-09-01T00:00:00.000Z" },
+    { user_id: USER_ID, material_id: MATERIAL_A, can_view: false, can_download: false, expires_at: null, revoked_at: null },
+    { user_id: OTHER_USER_ID, material_id: MATERIAL_A, can_view: true, can_download: false, expires_at: null, revoked_at: null },
+    { user_id: USER_ID, material_id: MATERIAL_B, can_view: true, can_download: false, expires_at: null, revoked_at: null }
+  ];
+
+  for (const directGrant of invalidGrants) {
+    const discovery = await runDiscovery({
+      userId: USER_ID,
+      products: [{ id: MATERIAL_A, subject_id: SUBJECT_A, kind: "material", title: "Draft material", description: "Private draft", publication_status: "draft" }],
+      subjects: [{ id: SUBJECT_A, slug: "ke-toan", name: "Kế toán", category: "Kế toán", color_theme: "accounting" }],
+      entitlements: [],
+      directGrants: [directGrant],
+      materials: [{ product_id: MATERIAL_A, allow_download: false }]
+    });
+    assert.deepEqual(discovery.result, { subjects: [], directMaterials: [] });
+  }
+});
+
+test("draft and archived materials without a direct grant or entitlement are not discovered", async () => {
+  for (const publicationStatus of ["draft", "archived"]) {
+    const discovery = await runDiscovery({
+      userId: USER_ID,
+      products: [{ id: MATERIAL_A, subject_id: SUBJECT_A, kind: "material", title: "Hidden material", description: "Private", publication_status: publicationStatus }],
+      subjects: [{ id: SUBJECT_A, slug: "ke-toan", name: "Kế toán", category: "Kế toán", color_theme: "accounting" }],
+      entitlements: [],
+      directGrants: [],
+      materials: [{ product_id: MATERIAL_A, allow_download: true }]
+    });
+    assert.deepEqual(discovery.result, { subjects: [], directMaterials: [] }, publicationStatus);
+    assert.equal(discovery.queryTables.includes("student_workspace_product_read_surface"), false, "no published/draft product candidates are returned without an entitlement or direct grant");
+  }
 });
 
 test("discovery fails closed for inactive or foreign grants and never falls back to material policy", async () => {

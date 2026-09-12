@@ -46,7 +46,7 @@ async function readProductPage(
   offset: number
 ): Promise<{ rows: StudentWorkspaceProduct[]; hasMore: boolean }> {
   const { data, error } = await supabase
-    .from("products")
+    .from("student_workspace_product_read_surface")
     .select("id, subject_id, kind, title, description")
     .eq("subject_id", subjectId)
     .in("kind", ["material", "course"])
@@ -88,7 +88,7 @@ async function readMaterialRows(
   for (const productIdChunk of chunks(productIds, STUDENT_WORKSPACE_ID_CHUNK_SIZE)) {
     if (productIdChunk.length === 0) continue;
     const { data, error } = await supabase
-      .from("materials")
+      .from("learner_material_read_surface")
       .select("product_id, pages, allow_download")
       .in("product_id", productIdChunk)
       .order("product_id", { ascending: true })

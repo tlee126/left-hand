@@ -139,7 +139,7 @@ export async function isMaterialProduct(productId: string, client?: UserScopedSu
   const canonicalProductId = productId.toLowerCase();
   try {
     const supabase = client ?? (await createClient());
-    const { data, error } = await supabase.from("materials").select("product_id").eq("product_id", canonicalProductId).maybeSingle();
+    const { data, error } = await supabase.from("admin_catalog_read_surface").select("id").eq("id", canonicalProductId).eq("kind", "material").maybeSingle();
     if (error) throw new Error();
     return data !== null;
   } catch {

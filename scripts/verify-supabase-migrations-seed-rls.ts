@@ -51,7 +51,10 @@ const immutableMigrationHashes = {
 } as const;
 
 const materialDirectAccessMigration0042Hash = "c4a60e3bb1d7b7db041499299efe173f3fa08a88f9949aee0fd09d6fb8174138";
+const materialAccessSelectGrantMigration0043Hash = "c59782a31de476a00ac15a6f06391d6fb68daa8b9a2e6da71d787b2c478e47cd";
 const learningProgressMigration0044Hash = "f6d9e8d0d88901b0a9176526f8eb01f4b98eae55f549459973a7f46a9508b8c3";
+const directGrantedMaterialVisibilityMigration0046Hash = "0002517e5f99c2a4cf3b2a7d3f03c65e2d865cd4e6d950e72b2a53f56fd38fda";
+const catalogColumnSelectBoundaryMigration0047Hash = "cc52a0d9eb7c95e12e545a653317dc7e3fdb651853651bfa16bd2e544e6056a8";
 
 export const IMMUTABLE_MIGRATION_FILENAMES = Object.keys(immutableMigrationHashes) as Array<keyof typeof immutableMigrationHashes>;
 
@@ -2336,6 +2339,365 @@ export function assertMaterialAccessSelectGrantMigrationContract(sql0043: string
   }
 }
 
+/** Locks the pre-existing service-role read grant migration before the additive visibility policy. */
+export function assertMaterialAccessSelectGrantMigration0043Unchanged(sql0043: string): void {
+  const actualHash = createHash("sha256").update(canonicalMigrationContent(sql0043), "utf8").digest("hex");
+  if (actualHash !== materialAccessSelectGrantMigration0043Hash) {
+    throw new Error("Migration 0043 must remain unchanged (canonical SHA-256 mismatch)");
+  }
+}
+
+/** Exact row-level visibility contract for directly granted unpublished materials. */
+export function assertDirectGrantedMaterialVisibilityMigrationContract(
+  sql0046: string,
+  sql0002: string,
+  sql0003: string,
+  sql0042: string,
+  sql0043: string
+): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const statements = stripSqlCommentsAndSplitStatements(sql0046);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const expectedFunction = normalizeMigrationStatement(`
+    CREATE OR REPLACE FUNCTION public.has_active_direct_granted_material_visibility(p_material_product_id uuid)
+    RETURNS boolean
+    LANGUAGE sql
+    STABLE
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT auth.uid() IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM public.materials AS material
+          JOIN public.material_direct_grants AS direct_grant
+            ON direct_grant.material_id = material.product_id
+          JOIN public.profiles AS learner
+            ON learner.id = direct_grant.user_id
+          WHERE material.product_id = p_material_product_id
+            AND direct_grant.material_id = p_material_product_id
+            AND direct_grant.user_id = auth.uid()
+            AND direct_grant.can_view IS TRUE
+            AND direct_grant.revoked_at IS NULL
+            AND (direct_grant.expires_at IS NULL OR direct_grant.expires_at > now())
+            AND learner.role = 'student'
+            AND learner.account_status = 'approved'
+        );
+    $function$
+  `);
+  const expectedProductsPolicy = normalizeMigrationStatement(`
+    CREATE POLICY direct_granted_unpublished_material_products
+    ON public.products
+    FOR SELECT
+    TO authenticated
+    USING (
+      products.kind = 'material'
+      AND products.publication_status IN ('draft', 'archived')
+      AND public.has_active_direct_granted_material_visibility(products.id)
+    )
+  `);
+  const expectedMaterialsPolicy = normalizeMigrationStatement(`
+    CREATE POLICY direct_granted_unpublished_material_rows
+    ON public.materials
+    FOR SELECT
+    TO authenticated
+    USING (
+      EXISTS (
+        SELECT 1
+        FROM public.products
+        WHERE products.id = materials.product_id
+          AND products.kind = 'material'
+          AND products.publication_status IN ('draft', 'archived')
+          AND public.has_active_direct_granted_material_visibility(materials.product_id)
+      )
+    )
+  `);
+  const publishedProductsPolicy = normalizeMigrationStatement(`
+    CREATE POLICY "Allow public read access on published products"
+    ON products FOR SELECT TO anon, authenticated
+    USING (publication_status = 'published')
+  `);
+  const publishedMaterialsPolicy = normalizeMigrationStatement(`
+    CREATE POLICY "Allow public read access on published materials"
+    ON materials FOR SELECT TO anon, authenticated
+    USING (
+      EXISTS (
+        SELECT 1 FROM products
+        WHERE products.id = materials.product_id
+          AND products.publication_status = 'published'
+      )
+    )
+  `);
+  const existingProductSelectGrant = normalizeMigrationStatement("GRANT SELECT ON TABLE products TO anon, authenticated");
+  const existingMaterialSelectGrant = normalizeMigrationStatement("GRANT SELECT ON TABLE materials TO anon, authenticated");
+  const executableSql = maskSqlStringLiterals(statements.join(" ; "));
+
+  fail(statements.length === 5, "Migration 0046 must contain only its helper, helper privileges, and two SELECT policies");
+  fail(normalized[0] === expectedFunction, "Migration 0046 helper must use auth.uid(), the exact active view-grant predicate, a fixed search_path, and return only boolean");
+  fail(normalized[1] === "revoke all on function public.has_active_direct_granted_material_visibility(uuid) from public, anon", "Migration 0046 helper execution must be revoked from PUBLIC and anon");
+  fail(normalized[2] === "grant execute on function public.has_active_direct_granted_material_visibility(uuid) to authenticated", "Migration 0046 helper execution may be granted only to authenticated");
+  fail(normalized[3] === expectedProductsPolicy, "Migration 0046 products policy must cover only directly granted draft/archived material products");
+  fail(normalized[4] === expectedMaterialsPolicy, "Migration 0046 materials policy must bind the row to its matching directly granted material product");
+  fail(!/\b(?:insert|update|delete|truncate|references|trigger|service_role|bypassrls|set\s+role|alter\s+role|execute\s+(?:immediate|format))\b/i.test(executableSql), "Migration 0046 must not mutate data, use dynamic SQL, reference service_role, or bypass RLS");
+  fail(!/\bor\s+true\b/i.test(executableSql), "Migration 0046 must not contain an open-ended policy predicate");
+  assertNestedFunctionSqlScope(statements, {
+    allowDmlTables: [],
+    allowSelectTables: ["materials", "material_direct_grants", "profiles"]
+  });
+
+  const existingPublicPolicies = stripSqlCommentsAndSplitStatements(sql0002).map(normalizeMigrationStatement);
+  fail(existingPublicPolicies.includes(publishedProductsPolicy), "Migration 0002 published products policy must remain unchanged");
+  fail(existingPublicPolicies.includes(publishedMaterialsPolicy), "Migration 0002 published materials policy must remain unchanged");
+  const existingCatalogGrants = stripSqlCommentsAndSplitStatements(sql0003).map(normalizeMigrationStatement);
+  fail(existingCatalogGrants.includes(existingProductSelectGrant), "Migration 0003 products SELECT privileges must remain unchanged");
+  fail(existingCatalogGrants.includes(existingMaterialSelectGrant), "Migration 0003 materials SELECT privileges must remain unchanged");
+
+  assertMaterialDirectAccessMigration0042Unchanged(sql0042);
+  assertMaterialAccessSelectGrantMigration0043Unchanged(sql0043);
+  assertMaterialAccessSelectGrantMigrationContract(sql0043);
+}
+
+/** Pins the F-01 row policy migration before the additive column-privilege boundary. */
+export function assertDirectGrantedMaterialVisibilityMigration0046Unchanged(sql0046: string): void {
+  const actualHash = createHash("sha256").update(canonicalMigrationContent(sql0046), "utf8").digest("hex");
+  if (actualHash !== directGrantedMaterialVisibilityMigration0046Hash) {
+    throw new Error("Migration 0046 must remain unchanged (canonical SHA-256 mismatch)");
+  }
+}
+
+/** Pins the previous column-grant migration so new read surfaces cannot rewrite history. */
+export function assertCatalogColumnSelectBoundaryMigration0047Unchanged(sql0047: string): void {
+  const actualHash = createHash("sha256").update(canonicalMigrationContent(sql0047), "utf8").digest("hex");
+  if (actualHash !== catalogColumnSelectBoundaryMigration0047Hash) {
+    throw new Error("Migration 0047 must remain unchanged (canonical SHA-256 mismatch)");
+  }
+}
+
+function splitTopLevelSqlList(value: string): string[] {
+  const values: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let inSingleQuote = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (inSingleQuote) {
+      if (character === "'" && value[index + 1] === "'") index += 1;
+      else if (character === "'") inSingleQuote = false;
+      continue;
+    }
+    if (character === "'") { inSingleQuote = true; continue; }
+    if (character === "(") depth += 1;
+    else if (character === ")") depth -= 1;
+    else if (character === "," && depth === 0) {
+      values.push(value.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  values.push(value.slice(start).trim());
+  return values;
+}
+
+function viewProjectionColumns(statement: string, viewName: string): string[] {
+  const normalized = normalizeMigrationStatement(statement);
+  const start = new RegExp(`^create view public\\.${viewName}\\s+with\\s*\\(security_barrier\\s*=\\s*true\\)\\s+as\\s+select\\s+`, "i").exec(normalized);
+  if (!start) throw new Error(`View ${viewName} must use a security-barrier SELECT projection`);
+  let depth = 0;
+  let inSingleQuote = false;
+  let fromIndex = -1;
+  for (let index = start[0].length; index < normalized.length - 5; index += 1) {
+    const character = normalized[index];
+    if (inSingleQuote) {
+      if (character === "'" && normalized[index + 1] === "'") index += 1;
+      else if (character === "'") inSingleQuote = false;
+      continue;
+    }
+    if (character === "'") { inSingleQuote = true; continue; }
+    if (character === "(") depth += 1;
+    else if (character === ")") depth -= 1;
+    else if (depth === 0 && /^from\s/i.test(normalized.slice(index))) { fromIndex = index; break; }
+  }
+  if (fromIndex < 0) throw new Error(`View ${viewName} must have a fixed FROM clause`);
+  return splitTopLevelSqlList(normalized.slice(start[0].length, fromIndex)).map((expression) => {
+    const alias = /\bas\s+([a-z_][a-z0-9_]*)\s*$/i.exec(expression);
+    if (alias) return alias[1].toLowerCase();
+    const directColumn = /(?:^|\.)\s*([a-z_][a-z0-9_]*)\s*$/i.exec(expression);
+    if (!directColumn) throw new Error(`View ${viewName} has a projection without an explicit output name`);
+    return directColumn[1].toLowerCase();
+  });
+}
+
+/** Exact read-surface/privilege contract for migration 0048. */
+export function assertSafeCatalogReadSurfaceMigrationContract(
+  sql0048: string,
+  sql0047: string,
+  sql0002: string,
+  sql0046: string
+): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  assertCatalogColumnSelectBoundaryMigration0047Unchanged(sql0047);
+  assertDirectGrantedMaterialVisibilityMigration0046Unchanged(sql0046);
+  const statements = stripSqlCommentsAndSplitStatements(sql0048);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const code = normalized.join(" ; ");
+  fail(statements.length === 22, "Migration 0048 must contain only the four base privilege revokes, one read-only search function, and five exact read surfaces");
+  const expectedRevokes = [
+    "revoke select on table public.products from anon, authenticated",
+    "revoke select (id, slug, kind, title, description, subject_id, category, delivery_kind, publication_status, price_vnd, old_price_vnd, is_contact_for_price, rating, is_hot, color_theme, created_at, updated_at, search_document) on table public.products from anon, authenticated",
+    "revoke select on table public.materials from anon, authenticated",
+    "revoke select (product_id, pages, tags, includes, suitable_for, allow_download, created_at, updated_at) on table public.materials from anon, authenticated"
+  ].map(normalizeMigrationStatement);
+  for (const revoke of expectedRevokes) fail(normalized.includes(revoke), `Migration 0048 must revoke previous base-table privilege: ${revoke}`);
+  const expectedGrants = [
+    "grant select on table public.public_catalog_read_surface to anon, authenticated",
+    "grant execute on function public.search_public_catalog_product_ids(public.product_kind_enum, text) to anon, authenticated",
+    "grant select on table public.admin_catalog_read_surface to authenticated",
+    "grant select on table public.learner_material_read_surface to authenticated",
+    "grant select on table public.learner_course_read_surface to authenticated",
+    "grant select on table public.student_workspace_product_read_surface to authenticated"
+  ].map(normalizeMigrationStatement);
+  const actualGrants = normalized.filter((statement) => /^grant\s/i.test(statement));
+  fail(actualGrants.length === expectedGrants.length && actualGrants.every((grant, index) => grant === expectedGrants[index]), "Migration 0048 must grant only SELECT on the five exact read surfaces and EXECUTE on the public search reader");
+  fail(normalized.filter((statement) => /^revoke\s/i.test(statement)).length === 10, "Migration 0048 must contain only the exact base, view, and search-function revokes");
+  fail(normalized.filter((statement) => /^create view public\./i.test(statement)).length === 5
+    && normalized.filter((statement) => /^create function public\./i.test(statement)).length === 1,
+  "Migration 0048 must create exactly five views and one search reader");
+  fail(normalized.every((statement) => /^(?:create view public\.|create function public\.|revoke\s|grant\s)/i.test(statement)), "Migration 0048 contains an unexpected SQL statement");
+  fail(!/\bgrant\s+(?:select\s*(?:\([^)]*\)\s*)?|all|insert|update|delete|truncate|references|trigger)[^;]*\bon\s+(?:table\s+)?public\.(?:products|materials)\b/i.test(code), "Migration 0048 must not re-grant any privilege on base products/materials");
+  fail(!/\bgrant\s+(?:all|insert|update|delete|truncate|references|trigger)\b/i.test(code), "Migration 0048 must not grant DML or structural privileges");
+  fail(!/\b(?:material_direct_grants|grant\s+usage\s+on\s+schema|create\s+policy|drop\s+policy|alter\s+table|service_role|execute\s+(?:immediate|format))\b/i.test(code), "Migration 0048 must not touch grants, schema usage, row policies, service_role, direct-grant table, or dynamic SQL");
+  fail(/revoke all on function public\.search_public_catalog_product_ids\(public\.product_kind_enum, text\) from public, anon, authenticated/i.test(code)
+    && /grant execute on function public\.search_public_catalog_product_ids\(public\.product_kind_enum, text\) to anon, authenticated/i.test(code), "Public search RPC must have only the intended read execution grant");
+  fail(/create function public\.search_public_catalog_product_ids\(\s*p_kind public\.product_kind_enum, p_search text\s*\) returns table \(id uuid\) language sql stable security definer set search_path = pg_catalog, public as \$function\$/i.test(code), "Search RPC must be stable, fixed-path SECURITY DEFINER and return IDs only");
+  fail(/product\.publication_status = 'published'[\s\S]*?product\.search_document ilike/i.test(code), "Search RPC must search only published rows using the internal search index");
+  fail(!/search_document/i.test(normalized.find((statement) => statement.startsWith("create view public.public_catalog_read_surface")) ?? ""), "Public read surface must not expose the internal search index");
+
+  const viewStatements = new Map<string, string>();
+  for (const statement of normalized) {
+    const match = /^create view public\.([a-z_]+)\b/.exec(statement);
+    if (match) viewStatements.set(match[1], statement);
+  }
+  const expectedColumns: Record<string, string[]> = {
+    public_catalog_read_surface: ["id", "slug", "kind", "title", "description", "subject_id", "category", "delivery_kind", "publication_status", "price_vnd", "old_price_vnd", "is_contact_for_price", "rating", "is_hot", "color_theme", "created_at", "subjects", "materials", "courses", "tutors"],
+    admin_catalog_read_surface: ["id", "slug", "kind", "title", "description", "subject_id", "category", "delivery_kind", "publication_status", "price_vnd", "old_price_vnd", "is_contact_for_price", "rating", "is_hot", "color_theme", "created_at", "updated_at", "materials", "courses", "tutors"],
+    learner_material_read_surface: ["product_id", "subject_id", "title", "description", "pages", "allow_download"],
+    learner_course_read_surface: ["product_id", "subject_id", "title", "description"],
+    student_workspace_product_read_surface: ["id", "subject_id", "kind", "title", "description"]
+  };
+  for (const [viewName, columns] of Object.entries(expectedColumns)) {
+    const statement = viewStatements.get(viewName);
+    fail(statement !== undefined, `Migration 0048 must create ${viewName}`);
+    fail(JSON.stringify(viewProjectionColumns(statement!, viewName)) === JSON.stringify(columns), `${viewName} must return only its exact allowlisted columns`);
+    fail(normalized.includes(normalizeMigrationStatement(`REVOKE ALL ON TABLE public.${viewName} FROM PUBLIC, anon, authenticated`)), `${viewName} must begin with no inherited client grants`);
+    const role = viewName === "public_catalog_read_surface" ? "anon, authenticated" : viewName === "admin_catalog_read_surface" || viewName === "learner_material_read_surface" || viewName === "learner_course_read_surface" || viewName === "student_workspace_product_read_surface" ? "authenticated" : "";
+    fail(normalized.includes(normalizeMigrationStatement(`GRANT SELECT ON TABLE public.${viewName} TO ${role}`)), `${viewName} must have its exact read-only role grant`);
+    fail(!/storage_path|provider_url|signed_url|access_token|refresh_token|material_direct_grants|search_document/i.test(statement!), `${viewName} must not expose internal or grant data`);
+  }
+  const publicView = viewStatements.get("public_catalog_read_surface") ?? "";
+  fail(/where product\.publication_status = 'published'/i.test(publicView), "Public catalog surface must contain published rows only");
+  fail(!/\bdraft\b|\barchived\b|\bor\s+true\b/i.test(publicView), "Public catalog surface must not include unpublished rows or an always-true predicate");
+  for (const binding of [
+    "product.kind = 'material' and material.product_id = product.id",
+    "product.kind = 'course' and course.product_id = product.id",
+    "product.kind = 'tutor' and tutor.product_id = product.id"
+  ]) fail(publicView.includes(binding), `Public catalog surface must bind ${binding}`);
+  const learnerMaterial = viewStatements.get("learner_material_read_surface") ?? "";
+  const learnerCourse = viewStatements.get("learner_course_read_surface") ?? "";
+  const adminView = viewStatements.get("admin_catalog_read_surface") ?? "";
+  for (const surface of [learnerMaterial, learnerCourse]) {
+    fail(/learner\.id = auth\.uid\(\)/i.test(surface) && /learner\.role = 'student'/i.test(surface) && /learner\.account_status = 'approved'/i.test(surface), "Learner surfaces must require auth.uid() to be an approved student");
+  }
+  fail(/product\.kind = 'material'/i.test(learnerMaterial) && /material\.product_id = product\.id/i.test(learnerMaterial), "Learner material surface must bind material to material product");
+  fail(/product\.publication_status = 'published'[\s\S]*product\.publication_status in \('draft', 'archived'\)[\s\S]*has_active_direct_granted_material_visibility\(material\.product_id\)/i.test(learnerMaterial), "Learner material surface must permit only published or active direct-granted material rows");
+  fail(!/\bor\s+true\b/i.test(learnerMaterial), "Learner material surface must not contain an always-true predicate");
+  fail((learnerMaterial.match(/\bor\b/gi) ?? []).length === 1, "Learner material visibility may contain only the published-or-active-grant branch");
+  fail(/product\.kind = 'course'/i.test(learnerCourse) && /course\.product_id = product\.id/i.test(learnerCourse) && /product\.publication_status = 'published'/i.test(learnerCourse), "Separate course surface must be published-only and correctly bound");
+  fail(/administrator\.id = auth\.uid\(\)/i.test(adminView) && /administrator\.role = 'admin'/i.test(adminView) && /administrator\.account_status = 'approved'/i.test(adminView), "Admin catalog surface must require the current approved administrator");
+  const workspaceView = viewStatements.get("student_workspace_product_read_surface") ?? "";
+  fail(/from public\.learner_material_read_surface as material union all select course\.product_id as id/i.test(workspaceView), "Workspace index must combine only the material and course surfaces");
+  fail((workspaceView.match(/\bunion all\b/gi) ?? []).length === 1, "Workspace index may contain exactly the material and course branches");
+  fail(!/tutor|publication_status\s+in\s*\('draft',\s*'archived'\)/i.test(workspaceView), "Workspace index must not add tutor rows or an independent unpublished fallback");
+  fail(!/p_user_id|user_id\s*=>|p_user/i.test(code), "Read surfaces must derive learner identity from auth.uid(), never a client user ID");
+  fail(!/dynamic sql|execute\s+(?:immediate|format)/i.test(maskSqlStringLiterals(code)), "Migration 0048 must not use dynamic SQL");
+  fail(stripSqlCommentsAndSplitStatements(sql0002).map(normalizeMigrationStatement).includes(normalizeMigrationStatement(`CREATE POLICY "Allow public read access on published products" ON products FOR SELECT TO anon, authenticated USING (publication_status = 'published')`)), "Published products policy from 0002 must remain unchanged");
+  fail(stripSqlCommentsAndSplitStatements(sql0002).map(normalizeMigrationStatement).includes(normalizeMigrationStatement(`
+    CREATE POLICY "Allow public read access on published materials"
+    ON materials
+    FOR SELECT TO anon, authenticated
+    USING (
+      EXISTS (
+        SELECT 1 FROM products
+        WHERE products.id = materials.product_id
+          AND products.publication_status = 'published'
+      )
+    )
+  `)), "Published materials policy from 0002 must remain unchanged");
+  assertDirectGrantedMaterialVisibilityMigration0046Unchanged(sql0046);
+}
+
+/** Exact least-privilege column grant boundary, derived from current public, learner, and admin queries. */
+export function assertCatalogColumnSelectBoundaryMigrationContract(
+  sql0047: string,
+  sql0002: string,
+  sql0003: string,
+  sql0046: string
+): void {
+  const fail = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message);
+  };
+  const statements = stripSqlCommentsAndSplitStatements(sql0047);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const expected = [
+    "REVOKE SELECT ON TABLE public.products FROM anon, authenticated",
+    "REVOKE SELECT ON TABLE public.materials FROM anon, authenticated",
+    `GRANT SELECT (
+      id, slug, kind, title, description, subject_id, category, delivery_kind,
+      publication_status, price_vnd, old_price_vnd, is_contact_for_price,
+      rating, is_hot, color_theme, created_at, updated_at, search_document
+    ) ON TABLE public.products TO anon, authenticated`,
+    `GRANT SELECT (
+      product_id, pages, tags, includes, suitable_for
+    ) ON TABLE public.materials TO anon, authenticated`,
+    `GRANT SELECT (
+      allow_download, created_at, updated_at
+    ) ON TABLE public.materials TO authenticated`
+  ].map(normalizeMigrationStatement);
+
+  fail(statements.length === expected.length && normalized.every((statement, index) => statement === expected[index]),
+    "Migration 0047 must contain only the exact table SELECT revokes and inventoried column grants");
+  fail(!/\bgrant\s+select\s+on\s+table\s+public\.(?:products|materials)\b/i.test(normalized.join(" ; ")),
+    "Migration 0047 must not restore table-wide SELECT");
+  fail(!/\b(?:insert|update|delete|truncate|references|trigger|service_role|material_direct_grants|alter\s+table|create\s+policy|drop\s+policy)\b/i.test(normalized.join(" ; ")),
+    "Migration 0047 must not change DML, service_role, direct-grant table, schema, or RLS policy privileges");
+
+  const publishedProductsPolicy = normalizeMigrationStatement(`
+    CREATE POLICY "Allow public read access on published products"
+    ON products FOR SELECT TO anon, authenticated
+    USING (publication_status = 'published')
+  `);
+  const publishedMaterialsPolicy = normalizeMigrationStatement(`
+    CREATE POLICY "Allow public read access on published materials"
+    ON materials FOR SELECT TO anon, authenticated
+    USING (
+      EXISTS (
+        SELECT 1 FROM products
+        WHERE products.id = materials.product_id
+          AND products.publication_status = 'published'
+      )
+    )
+  `);
+  const priorTableGrants = stripSqlCommentsAndSplitStatements(sql0003).map(normalizeMigrationStatement);
+  fail(stripSqlCommentsAndSplitStatements(sql0002).map(normalizeMigrationStatement).includes(publishedProductsPolicy),
+    "Migration 0002 published products policy must remain unchanged");
+  fail(stripSqlCommentsAndSplitStatements(sql0002).map(normalizeMigrationStatement).includes(publishedMaterialsPolicy),
+    "Migration 0002 published materials policy must remain unchanged");
+  fail(priorTableGrants.includes(normalizeMigrationStatement("GRANT SELECT ON TABLE products TO anon, authenticated"))
+    && priorTableGrants.includes(normalizeMigrationStatement("GRANT SELECT ON TABLE materials TO anon, authenticated")),
+  "Migration 0047 must revoke the original 0003 table-wide catalog grants");
+  assertDirectGrantedMaterialVisibilityMigration0046Unchanged(sql0046);
+}
+
 export async function runAudit(): Promise<boolean> {
   const results: AuditResult[] = [];
   const rootDir = process.cwd();
@@ -2396,7 +2758,10 @@ export async function runAudit(): Promise<boolean> {
       "0042_material_direct_access.sql",
       "0043_grant_service_role_material_access_select.sql",
       "0044_learning_progress_material_direct_grant.sql",
-      "0045_learning_progress_student_role_guard.sql"
+      "0045_learning_progress_student_role_guard.sql",
+      "0046_direct_granted_material_visibility.sql",
+      "0047_catalog_column_select_boundary.sql",
+      "0048_safe_catalog_read_surface.sql"
     ];
 
     const migrationNumbers = sqlFiles.map((filename) => {
@@ -2409,7 +2774,7 @@ export async function runAudit(): Promise<boolean> {
       && expected.every((filename, index) => sqlFiles[index] === filename);
     results.push({
       category: "Migrations",
-      check: "All 45 migration files exist with complete strict numerical order",
+      check: "All 48 migration files exist with complete strict numerical order",
       passed: matchesCanonicalList && hasStrictSequentialNumbers,
       details: sqlFiles.join(", ")
     });
@@ -3055,6 +3420,78 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0045_learning_progress_student_role_guard", check: "Restricts the progress RPC to approved students without changing its authorization or privilege boundaries", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0045ContractValid) results.push({ category: "0045_learning_progress_student_role_guard", check: "Restricts the progress RPC to approved students without changing its authorization or privilege boundaries", passed: true, details: "0044 hash pinned; tutor/admin/unapproved actors rejected; direct-grant, entitlement, item-binding, CAS, monotonicity, and exact EXECUTE privileges preserved" });
+
+    const sql0046 = await fs.readFile(path.join(migrationsDir, "0046_direct_granted_material_visibility.sql"), "utf-8");
+    let migration0046ContractValid = true;
+    try {
+      const [sql0002, sql0003] = await Promise.all([
+        fs.readFile(path.join(migrationsDir, "0002_public_catalog_read_policies.sql"), "utf-8"),
+        fs.readFile(path.join(migrationsDir, "0003_public_catalog_table_grants.sql"), "utf-8")
+      ]);
+      assertDirectGrantedMaterialVisibilityMigrationContract(sql0046, sql0002, sql0003, sql0042, sql0043);
+    } catch (error) {
+      migration0046ContractValid = false;
+      results.push({ category: "0046_direct_granted_material_visibility", check: "Adds row-scoped direct-grant visibility for unpublished materials without broadening catalog privileges", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0046ContractValid) results.push({ category: "0046_direct_granted_material_visibility", check: "Adds row-scoped direct-grant visibility for unpublished materials without broadening catalog privileges", passed: true, details: "Exact approved-student active can_view predicate, material/product binding, unchanged published policies and SELECT grants, and immutable 0042/0043 verified. Static contract only; no live RLS behavior tested." });
+
+    const sql0047 = await fs.readFile(path.join(migrationsDir, "0047_catalog_column_select_boundary.sql"), "utf-8");
+    let migration0047ContractValid = true;
+    try {
+      const [sql0002, sql0003] = await Promise.all([
+        fs.readFile(path.join(migrationsDir, "0002_public_catalog_read_policies.sql"), "utf-8"),
+        fs.readFile(path.join(migrationsDir, "0003_public_catalog_table_grants.sql"), "utf-8")
+      ]);
+      assertCatalogColumnSelectBoundaryMigrationContract(sql0047, sql0002, sql0003, sql0046);
+    } catch (error) {
+      migration0047ContractValid = false;
+      results.push({ category: "0047_catalog_column_select_boundary", check: "Replaces table-wide catalog SELECT with exact query-required column grants", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0047ContractValid) results.push({ category: "0047_catalog_column_select_boundary", check: "Replaces table-wide catalog SELECT with exact query-required column grants", passed: true, details: "Migration 0047's historical product/material column grants match their pinned contract; migration 0048 revokes all of those anon/authenticated base-table privileges. Static contract only; no live privilege/RLS behavior tested." });
+
+    const [sql0047Pinned, sql0048] = await Promise.all([
+      fs.readFile(path.join(migrationsDir, "0047_catalog_column_select_boundary.sql"), "utf-8"),
+      fs.readFile(path.join(migrationsDir, "0048_safe_catalog_read_surface.sql"), "utf-8")
+    ]);
+    let migration0048ContractValid = true;
+    try {
+      const [sql0002, sql0046] = await Promise.all([
+        fs.readFile(path.join(migrationsDir, "0002_public_catalog_read_policies.sql"), "utf-8"),
+        fs.readFile(path.join(migrationsDir, "0046_direct_granted_material_visibility.sql"), "utf-8")
+      ]);
+      assertSafeCatalogReadSurfaceMigrationContract(sql0048, sql0047Pinned, sql0002, sql0046);
+    } catch (error) {
+      migration0048ContractValid = false;
+      results.push({ category: "0048_safe_catalog_read_surface", check: "Revokes direct base-table SELECT and exposes exact role-scoped read surfaces", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0048ContractValid) results.push({ category: "0048_safe_catalog_read_surface", check: "Revokes direct base-table SELECT and exposes exact role-scoped read surfaces", passed: true, details: "0047 hash pinned; base table and column SELECT revoked for anon/authenticated; published catalog projection, approved-admin projection, exact approved-student material/course/workspace projections, and ID-only published search RPC verified. Static/unit evidence only; no live grants or RLS executed." });
+
+    let catalogRepositorySurfaceValid = true;
+    try {
+      const repositoryPaths = [
+        ["catalog-repository.ts", "public_catalog_read_surface"],
+        ["student-material-discovery-repository.ts", "student_workspace_product_read_surface"],
+        ["student-workspace-repository.ts", "learner_material_read_surface"],
+        ["learning-progress-repository.ts", "student_workspace_product_read_surface"],
+        ["admin-catalog-repository.ts", "admin_catalog_read_surface"],
+        ["consultation-repository.ts", "public_catalog_read_surface"]
+      ] as const;
+      for (const [filename, surface] of repositoryPaths) {
+        const source = await fs.readFile(path.join(rootDir, "lib/repositories", filename), "utf-8");
+        if (/\.from\(\s*["'](?:products|materials)["']\s*\)/i.test(source) || !source.includes(surface)) {
+          throw new Error(`${filename} must use ${surface} and avoid direct products/materials reads`);
+        }
+      }
+      const materialAssetSource = await fs.readFile(path.join(rootDir, "lib/repositories/material-asset-repository.ts"), "utf-8");
+      const materialExistenceReader = /export async function isMaterialProduct[\s\S]*?export async function reserveMaterialAssetUpload/.exec(materialAssetSource)?.[0] ?? "";
+      if (!materialExistenceReader.includes("admin_catalog_read_surface") || /\.from\(\s*["']materials["']\s*\)/i.test(materialExistenceReader)) {
+        throw new Error("Material existence validation must use the approved-admin read surface");
+      }
+    } catch (error) {
+      catalogRepositorySurfaceValid = false;
+      results.push({ category: "0048_repository_read_surfaces", check: "Catalog, learner, admin, and consultation repositories avoid direct products/materials reads", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (catalogRepositorySurfaceValid) results.push({ category: "0048_repository_read_surfaces", check: "Catalog, learner, admin, and consultation repositories avoid direct products/materials reads", passed: true, details: "Static source scan confirms public catalog, discovery/workspace/progress, approved-admin catalog, consultation, and upload existence reads use their scoped surfaces; privileged service-role direct reads remain unchanged. No live database access performed." });
 
     // 19. Audit supabase/seed.sql
     const sqlSeed = await fs.readFile(seedPath, "utf-8");

@@ -205,7 +205,7 @@ function resultFor(table: string, filters: Array<[string, unknown]>, operation: 
         : String((row as StoredRow).product_id).toLowerCase() === String(productId).toLowerCase()));
     return { data: operation === "many" ? matching : matching[0] ?? null, error: null };
   }
-  if (table === "products") {
+  if (table === "student_workspace_product_read_surface") {
     const ids = filters.find(([field]) => field === "id[]")?.[1];
     const id = filters.find(([field]) => field === "id")?.[1];
     const matching = products.filter((row) => Array.isArray(ids)
@@ -213,7 +213,7 @@ function resultFor(table: string, filters: Array<[string, unknown]>, operation: 
       : String(row.id).toLowerCase() === String(id).toLowerCase());
     return { data: matching, error: null };
   }
-  if (table === "materials") {
+  if (table === "learner_material_read_surface") {
     const id = filters.find(([field]) => field === "product_id")?.[1];
     return { data: materials.find((row) => row.product_id === id) ?? null, error: null };
   }
@@ -250,9 +250,9 @@ function createMockClient() {
     },
     from(table: string) {
       calls.push({ method: "from", table, args: [] });
-      if (table === "materials" || table === "course_lessons") {
+      if (table === "learner_material_read_surface" || table === "course_lessons") {
         timeline.push("subject", "product");
-      } else if (table === "products") {
+      } else if (table === "student_workspace_product_read_surface") {
         timeline.push("access products");
       } else if (table === "product_entitlements") {
         timeline.push("entitlement");
@@ -544,7 +544,7 @@ test("API authenticates and validates before current-access checks and progress 
   response = await responseModule.POST(request(VALID_INPUT));
   assert.equal(response.status, 403);
   assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
-  assert.equal(calls.some((call: Call) => call.table === "products"), false);
+  assert.equal(calls.some((call: Call) => call.table === "student_workspace_product_read_surface"), false);
 });
 
 test("material progress allows a current view grant regardless of download permission", async () => {
@@ -578,7 +578,7 @@ test("approved tutor with a valid direct grant is rejected before progress autho
   }));
 
   assert.equal(response.status, 403);
-  assert.equal(calls.some((call: Call) => call.table === "products"), false);
+  assert.equal(calls.some((call: Call) => call.table === "student_workspace_product_read_surface"), false);
   assert.equal(calls.some((call: Call) => call.method === "directGrantBatch"), false);
   assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
 });
@@ -713,7 +713,7 @@ test("API progress POST applies bounded JSON parsing before repository or RPC ac
     assert.equal(response.status, testCase.status, testCase.name);
     assert.equal(calls.some((call) => call.method === "rpc"), false, testCase.name);
     assert.equal(calls.some((call) => call.table === "product_entitlements"), false, testCase.name);
-    assert.equal(calls.some((call) => call.table === "materials" || call.table === "course_lessons"), false, testCase.name);
+    assert.equal(calls.some((call) => call.table === "learner_material_read_surface" || call.table === "course_lessons"), false, testCase.name);
   }
 
   reset();
@@ -782,7 +782,7 @@ test("API GET uses bounded batch authorization and rejects admin access", async 
   products.forEach((product) => params.append("productId", String(product.id)));
   const response = await Route.GET(new Request(`http://localhost/api/progress?${params.toString()}`));
   assert.equal(response.status, 200);
-  const productFilters = calls.filter((call) => call.method === "in" && call.table === "products");
+  const productFilters = calls.filter((call) => call.method === "in" && call.table === "student_workspace_product_read_surface");
   const entitlementFilters = calls.filter((call) => call.method === "in" && call.table === "product_entitlements");
   assert.equal(productFilters.length, 1);
   assert.equal(entitlementFilters.length, 1);

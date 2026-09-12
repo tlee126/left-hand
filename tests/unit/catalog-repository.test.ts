@@ -83,11 +83,19 @@ function field(value: unknown, key: string): unknown {
 }
 
 function fieldPath(value: unknown, path: string): unknown {
-  return path.split(".").reduce<unknown>((current, key) => field(current, key), value);
+  const jsonParts = path.split("->>");
+  const pathParts = (jsonParts[0] ?? path).split(".");
+  const nested = pathParts.reduce<unknown>((current, key) => field(current, key), value);
+  return jsonParts.length > 1 ? field(nested, jsonParts[1] ?? "") : nested;
 }
 
 function mockClient(rows: MockRows = {}, error: unknown = null, calls: string[] = [], countOverride?: number | null): CatalogClient {
   return {
+    async searchPublishedProductIds(kind: string, term: string) {
+      calls.push(`search:${kind}:${term}`);
+      const values = rows.products === null ? [] : Array.isArray(rows.products) ? rows.products : rows.products ? [rows.products] : [];
+      return { data: values.filter((row) => field(row, "kind") === kind && String(field(row, "search_document") ?? "").includes(term)).map((row) => ({ id: field(row, "id") })), error };
+    },
     products() {
       let data = rows.products ?? [];
       const allRows = Array.isArray(data) ? data : data === null ? [] : [data];
@@ -204,11 +212,11 @@ describe("Catalog repository runtime data flow", () => {
     assert.strictEqual(normalizeCatalogSearch(""), "");
   });
 
-  test("uses the same normalized database search document for materials, courses, and tutors", async () => {
-    for (const list of [listMaterials, listCourses, listTutors]) {
+  test("uses the ID-only search RPC with one normalized term for each public catalog kind", async () => {
+    for (const [list, kind] of [[listMaterials, "material"], [listCourses, "course"], [listTutors, "tutor"]] as const) {
       const calls: string[] = [];
       await list({ search: "  ĐẶNG   KẾ toán  " }, mockClient({ products: [] }, null, calls));
-      assert.ok(calls.includes("ilike:search_document=%dang ke toan%"));
+      assert.ok(calls.includes(`search:${kind}:dang ke toan`));
     }
   });
 
@@ -234,15 +242,15 @@ describe("Catalog repository runtime data flow", () => {
       limit: 100,
       page: 2
     };
-    const result = await listMaterials(filters, mockClient({ products: [materialRow()] }, null, calls));
+    const result = await listMaterials(filters, mockClient({ products: [materialRow({ search_document: "ke toan" })] }, null, calls));
     assert.strictEqual(result.limit, 48);
     assert.strictEqual(result.offset, 48);
     assert.ok(calls.includes("eq:publication_status=published"));
     assert.ok(calls.includes("eq:category=Kế toán"));
-    assert.ok(calls.includes("eq:subjects.slug=ke-toan-tai-chinh-1"));
+    assert.ok(calls.includes("eq:subjects->>slug=ke-toan-tai-chinh-1"));
     assert.ok(calls.includes("gte:price_vnd=0"));
     assert.ok(calls.includes("lte:price_vnd=100000"));
-    assert.ok(calls.some((call) => call.startsWith("ilike:search_document=%ke toan%")));
+    assert.ok(calls.includes("search:material:ke toan"));
     assert.deepStrictEqual(calls.slice(-4), ["order:price_vnd:asc", "order:created_at:desc", "order:id:asc", "range:48-95"]);
     assert.deepStrictEqual(result.items, []);
   });
@@ -294,7 +302,10 @@ describe("Catalog repository runtime data flow", () => {
 
   test("rejects an invalid kind before client creation or query", async () => {
     let factoryOrQueryCalled = false;
-    const client: CatalogClient = { products() { factoryOrQueryCalled = true; throw new Error("must not query"); } };
+    const client: CatalogClient = {
+      products() { factoryOrQueryCalled = true; throw new Error("must not query"); },
+      async searchPublishedProductIds() { factoryOrQueryCalled = true; throw new Error("must not query"); }
+    };
     await assert.rejects(() => getProductBySlug("invalid" as never, "ke-toan-tai-chinh-1", client), CatalogDataError);
     assert.equal(factoryOrQueryCalled, false);
   });
@@ -317,8 +328,8 @@ describe("Catalog repository runtime data flow", () => {
 test("repository implementation keeps canonical mapping and no formatted-price logic", async () => {
   const source = await fs.readFile(path.resolve(process.cwd(), "lib/repositories/catalog-repository.ts"), "utf8");
   assert.match(source, /PublishedMaterial|PublishedCourse|PublishedTutor/);
-  assert.match(source, /const MATERIAL_COLUMNS = "product_id, pages, tags, includes, suitable_for/);
-  assert.match(source, /const TUTOR_COLUMNS = "product_id, name, faculty, format, availability/);
+  assert.match(source, /material: `\$\{PRODUCT_COLUMNS\}, materials, subjects`/);
+  assert.match(source, /tutor: `\$\{PRODUCT_COLUMNS\}, tutors, subjects`/);
   assert.doesNotMatch(source, /select\(\s*["'`]\*|!inner\(\*/);
   assert.doesNotMatch(source, /formatVND|parseFloat|price:\s*string/);
 });

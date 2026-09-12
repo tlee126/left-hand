@@ -160,7 +160,7 @@ function createSupabaseMock() {
             eq(field: string, value: unknown) {
               filters.push([field, value]);
               if (table === "subjects") subjectCalls.push(`${field}:${String(value)}`);
-              if (table === "products" && field === "subject_id") productCalls.push(`${field}:${String(value)}`);
+              if (table === "student_workspace_product_read_surface" && field === "subject_id") productCalls.push(`${field}:${String(value)}`);
               if (table === "product_entitlements" && field === "user_id") entitlementCalls.push([String(value), ""]);
               if (table === "product_entitlements" && field === "product_id") {
                 const lastCall = entitlementCalls[entitlementCalls.length - 1];
@@ -192,17 +192,17 @@ function createSupabaseMock() {
             },
             then(resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) {
               if (table === "product_entitlements") timeline.push("entitlement lookup");
-              if (table === "products") timeline.push("product lookup");
-              if (table === "materials") materialCalls.push(inValues.map(String));
+              if (table === "student_workspace_product_read_surface") timeline.push("product lookup");
+              if (table === "learner_material_read_surface") materialCalls.push(inValues.map(String));
               if (table === "course_lessons") lessonCalls.push(inValues.map(String));
               let result: { data: unknown; error: Error | null };
               if (table === "product_entitlements") {
                 if (queryErrors.entitlement) result = { data: null, error: queryError() };
                 else if (entitlementOverride !== UNSET) result = { data: Array.isArray(entitlementOverride) ? entitlementOverride : entitlementOverride ? [entitlementOverride] : [], error: null };
                 else result = { data: entitlementRows.filter((row) => uuidEquals(row.user_id, filters.find(([name]) => name === "user_id")?.[1]) && inValues.some((value) => uuidEquals(row.product_id, value))), error: null };
-              } else if (table === "products") {
+              } else if (table === "student_workspace_product_read_surface") {
                 result = queryErrors.product ? { data: null, error: queryError() } : { data: products, error: null };
-              } else if (table === "materials") {
+              } else if (table === "learner_material_read_surface") {
                 result = { data: materialRows, error: null };
               } else if (table === "course_lessons") {
                 result = { data: lessonRows, error: null };
