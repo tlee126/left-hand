@@ -329,11 +329,17 @@ test("grant list renders student identity returned by GET after a fresh mount", 
 });
 
 test("grant list keeps two student labels mapped correctly after a fresh mount", async () => {
+  const firstStudent = { id: STUDENT_A, full_name: "Nguyễn Minh An", email: "minh.an@example.test", student_code: "LA-101" };
+  const secondStudent = { id: STUDENT_B, full_name: "Trần Bảo Bình", email: "bao.binh@example.test", student_code: "LB-202" };
   const firstGrant = grant(STUDENT_A, {
-    student: { id: STUDENT_A, full_name: "Nguyễn Minh An", email: "minh.an@example.test", student_code: "LA-101" }
+    id: "6f7c5d75-4c0c-4f6d-b6b4-000000000101",
+    can_download: true,
+    student: firstStudent
   });
   const secondGrant = grant(STUDENT_B, {
-    student: { id: STUDENT_B, full_name: "Trần Bảo Bình", email: "bao.binh@example.test", student_code: "LB-202" }
+    id: "6f7c5d75-4c0c-4f6d-b6b4-000000000202",
+    can_download: false,
+    student: secondStudent
   });
   const listedGrants = [firstGrant, secondGrant];
 
@@ -347,27 +353,40 @@ test("grant list keeps two student labels mapped correctly after a fresh mount",
     assert.deepEqual(calls, [{ url: expectedUrl, method: "GET", body: null }], "one material-bound GET completes without search or duplicate loads");
     assert.equal(firstGrant.material_id, MATERIAL_ID);
     assert.equal(secondGrant.material_id, MATERIAL_ID);
+    assert.notEqual(firstGrant.id, secondGrant.id, "each grant has its own identity");
+    assert.notEqual(firstGrant.user_id, secondGrant.user_id, "each grant belongs to a different student");
+    assert.equal(firstStudent.id, firstGrant.user_id, "student A summary matches grant A user_id");
+    assert.equal(secondStudent.id, secondGrant.user_id, "student B summary matches grant B user_id");
+    assert.notEqual(firstStudent.full_name, secondStudent.full_name, "student names are distinct");
+    assert.notEqual(firstStudent.email, secondStudent.email, "student emails are distinct");
+    assert.notEqual(firstStudent.student_code, secondStudent.student_code, "student codes are distinct");
     assert.equal(container.querySelector("[data-material-direct-access]")?.getAttribute("data-material-direct-access"), MATERIAL_ID);
 
-    const grantRows = [...container.querySelectorAll("li")].filter((row) =>
+    const materialPanel = container.querySelector("[data-material-direct-access]");
+    assert.ok(materialPanel, "material panel is mounted");
+    const grantRows = [...materialPanel.querySelectorAll("li")].filter((row) =>
       [...row.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Sửa quyền")
     );
     assert.equal(grantRows.length, 2, "both grants for this material render");
 
-    const firstRow = grantRows.find((row) => row.textContent?.includes("Nguyễn Minh An"));
-    const secondRow = grantRows.find((row) => row.textContent?.includes("Trần Bảo Bình"));
-    assert.ok(firstRow, "first student's exact name is rendered in a grant row");
-    assert.ok(secondRow, "second student's exact name is rendered in a grant row");
+    const firstRow = grantRows[0];
+    const secondRow = grantRows[1];
+    assert.ok(firstRow, "first response grant renders as the first grant card");
+    assert.ok(secondRow, "second response grant renders as the second grant card");
 
-    assert.match(firstRow.textContent ?? "", /LA-101/);
-    assert.doesNotMatch(firstRow.textContent ?? "", /Trần Bảo Bình|LB-202/);
-    assert.doesNotMatch(firstRow.textContent ?? "", new RegExp(STUDENT_A));
-    assert.doesNotMatch(firstRow.textContent ?? "", new RegExp(STUDENT_B));
+    const firstRowText = firstRow.textContent ?? "";
+    assert.match(firstRowText, /Nguyễn Minh An/);
+    assert.match(firstRowText, /LA-101/);
+    assert.match(firstRowText, /Được xem và tải/, "first card shows grant A's distinct permission");
+    assert.doesNotMatch(firstRowText, /Trần Bảo Bình|LB-202/);
+    assert.doesNotMatch(firstRowText, new RegExp(STUDENT_A), "student A UUID is not shown instead of its summary");
 
-    assert.match(secondRow.textContent ?? "", /LB-202/);
-    assert.doesNotMatch(secondRow.textContent ?? "", /Nguyễn Minh An|LA-101/);
-    assert.doesNotMatch(secondRow.textContent ?? "", new RegExp(STUDENT_A));
-    assert.doesNotMatch(secondRow.textContent ?? "", new RegExp(STUDENT_B));
+    const secondRowText = secondRow.textContent ?? "";
+    assert.match(secondRowText, /Trần Bảo Bình/);
+    assert.match(secondRowText, /LB-202/);
+    assert.match(secondRowText, /Chỉ được xem/, "second card shows grant B's distinct permission");
+    assert.doesNotMatch(secondRowText, /Nguyễn Minh An|LA-101/);
+    assert.doesNotMatch(secondRowText, new RegExp(STUDENT_B), "student B UUID is not shown instead of its summary");
   });
 });
 
