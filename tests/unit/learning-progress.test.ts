@@ -525,11 +525,51 @@ test("repository maps nullable and material resume positions through the additiv
   assert.equal(secondsSaved.resume_page, null);
   assert.equal(secondsSaved.resume_seconds, 12.5);
 
+  reset();
+  products = [{ id: PRODUCT_ID, kind: "material" }];
+  const zeroSecondsInput = { ...VALID_INPUT, itemType: "material", itemId: PRODUCT_ID, resumeSeconds: 0 };
+  const zeroSecondsSaved = await repository.upsertLearningProgress(USER_ID, zeroSecondsInput);
+  assert.equal(zeroSecondsSaved.resume_page, null);
+  assert.strictEqual(zeroSecondsSaved.resume_seconds, 0);
+  assert.strictEqual((calls.find((call: Call) => call.method === "rpc")?.args[1] as Record<string, unknown>).p_resume_seconds, 0);
+
   for (const invalid of [
     { ...pageInput, resumePage: 0 }, { ...pageInput, resumePage: 1.5 }, { ...pageInput, resumeSeconds: -1 },
     { ...pageInput, resumeSeconds: Number.NaN }, { ...pageInput, resumeSeconds: Number.POSITIVE_INFINITY }, { ...pageInput, resumeSeconds: Number.NEGATIVE_INFINITY }, { ...pageInput, resumeSeconds: 1 },
     { ...VALID_INPUT, resumePage: 1 }
   ]) await assert.rejects(() => repository.upsertLearningProgress(USER_ID, invalid), repository.LearningProgressInputError);
+});
+
+test("API and repository preserve resumeSeconds zero for material and reject it for lesson or mixed positions", async () => {
+  reset();
+  products = [{ id: PRODUCT_ID, kind: "material" }];
+  const materialResponse = await Route.POST(request({
+    ...VALID_INPUT,
+    itemType: "material",
+    itemId: PRODUCT_ID,
+    resumeSeconds: 0
+  }));
+  assert.equal(materialResponse.status, 200);
+  assert.strictEqual(rows[0].resume_seconds, 0);
+  const materialRpc = calls.find((call: Call) => call.method === "rpc");
+  assert.strictEqual((materialRpc?.args[1] as Record<string, unknown>).p_resume_seconds, 0);
+
+  reset();
+  const lessonResponse = await Route.POST(request({ ...VALID_INPUT, resumeSeconds: 0 }));
+  assert.equal(lessonResponse.status, 400);
+  assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
+
+  reset();
+  products = [{ id: PRODUCT_ID, kind: "material" }];
+  const mixedPositionResponse = await Route.POST(request({
+    ...VALID_INPUT,
+    itemType: "material",
+    itemId: PRODUCT_ID,
+    resumePage: 2,
+    resumeSeconds: 0
+  }));
+  assert.equal(mixedPositionResponse.status, 400);
+  assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
 });
 
 test("repository item identity and errors fail closed without raw details", async () => {

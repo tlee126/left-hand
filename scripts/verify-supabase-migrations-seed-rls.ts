@@ -1770,24 +1770,74 @@ export function assertLearningProgressFiniteSecondsMigrationContract(sql0044: st
   assertLearningProgressStudentRoleMigrationContract(sql0044, sql0045);
   assertLearningProgressResumePositionMigrationContract(sql0049);
 
+  const statements0049 = stripSqlCommentsAndSplitStatements(sql0049);
   const statements = stripSqlCommentsAndSplitStatements(sql0050);
   const normalized = statements.map(normalizeMigrationStatement);
   const code = statements.join(" ; ");
   const executableCode = maskSqlStringLiterals(code);
-  const functionStatement = statements.find((statement) => /^create or replace function public\.save_learning_progress\(/i.test(statement.trimStart())) ?? "";
+  const functionStatements0049 = statements0049.filter((statement) => /^create function public\.save_learning_progress\(/i.test(statement.trimStart()));
+  const functionStatements0050 = statements.filter((statement) => /^create or replace function public\.save_learning_progress\(/i.test(statement.trimStart()));
+  const functionStatement0049 = functionStatements0049[0] ?? "";
+  const functionStatement0050 = functionStatements0050[0] ?? "";
   const finiteConstraint = "resume_seconds is null or ( resume_seconds >= 0 and resume_seconds <> 'nan'::numeric and resume_seconds <> 'infinity'::numeric and resume_seconds <> '-infinity'::numeric )";
+  const legacyResumeGuard = /p_resume_seconds\s+is\s+not\s+null\s+and\s+p_resume_seconds\s*<\s*0/gi;
+  const finiteResumeGuard = /p_resume_seconds\s+is\s+not\s+null\s+and\s*\(\s*p_resume_seconds\s*<\s*0\s+or\s+p_resume_seconds\s*=\s*'nan'::numeric\s+or\s+p_resume_seconds\s*=\s*'infinity'::numeric\s+or\s+p_resume_seconds\s*=\s*'-infinity'::numeric\s*\)/gi;
 
   fail(statements.length === 2, "Migration 0050 must only replace the seconds constraint and ten-argument RPC");
+  fail(functionStatements0049.length === 1 && functionStatements0050.length === 1, "Migrations 0049 and 0050 must each define exactly one ten-argument progress RPC");
   fail(normalized[0] === `alter table public.learning_progress drop constraint learning_progress_resume_seconds_check, add constraint learning_progress_resume_seconds_check check ( ${finiteConstraint} )`, "Migration 0050 must replace the seconds constraint with an explicit nullable finite non-negative numeric check");
   fail(/create or replace function public\.save_learning_progress\(\s*p_product_id uuid,\s*p_item_type text,\s*p_item_id uuid,\s*p_status text,\s*p_watched_percent numeric,\s*p_started_at timestamptz,\s*p_completed_at timestamptz,\s*p_expected_version integer/i.test(sql0045), "Migration 0045 must retain the exact legacy eight-argument RPC signature");
   fail(!/create or replace function public\.save_learning_progress/i.test(sql0049), "Migration 0049 must not replace the legacy eight-argument RPC");
-  fail(/p_product_id uuid,\s*p_item_type text,\s*p_item_id uuid,\s*p_status text,\s*p_watched_percent numeric,\s*p_started_at timestamptz,\s*p_completed_at timestamptz,\s*p_expected_version integer,\s*p_resume_page integer,\s*p_resume_seconds numeric/i.test(functionStatement), "Migration 0050 must replace only the exact ten-argument RPC signature");
-  fail(/returns public\.learning_progress\s+language plpgsql\s+security definer\s+set search_path = pg_catalog, public/i.test(functionStatement), "Migration 0050 must preserve SECURITY DEFINER and the fixed search_path");
-  fail(/p_resume_seconds is not null and \(\s*p_resume_seconds < 0\s+or p_resume_seconds = 'nan'::numeric\s+or p_resume_seconds = 'infinity'::numeric\s+or p_resume_seconds = '-infinity'::numeric\s*\)/i.test(functionStatement), "Migration 0050 must reject negative, NaN, Infinity, and -Infinity RPC seconds before writes");
-  fail(/v_user_id uuid := auth\.uid\(\)/i.test(functionStatement) && /profiles\.account_status = 'approved'/i.test(functionStatement) && /profiles\.role = 'student'/i.test(functionStatement), "Migration 0050 must preserve auth.uid and the approved-student guard");
-  fail(/material_direct_grants\.can_view = true/i.test(functionStatement) && /elsif not exists \([\s\S]*product_entitlements/i.test(functionStatement) && /course_lessons\.course_id = p_product_id/i.test(functionStatement), "Migration 0050 must preserve direct-grant, entitlement, and lesson binding");
-  fail(/where public\.learning_progress\.version = p_expected_version/i.test(functionStatement) && /p_watched_percent >= public\.learning_progress\.watched_percent/i.test(functionStatement) && /using errcode = 'p0002'/i.test(functionStatement), "Migration 0050 must preserve CAS, conflict, and monotonicity");
-  fail(/resume_page = case when p_resume_page is null and p_resume_seconds is null then public\.learning_progress\.resume_page else p_resume_page end/i.test(functionStatement) && /resume_seconds = case when p_resume_page is null and p_resume_seconds is null then public\.learning_progress\.resume_seconds else p_resume_seconds end/i.test(functionStatement), "Migration 0050 must preserve resume fields when no new position is supplied");
+  fail(/p_product_id uuid,\s*p_item_type text,\s*p_item_id uuid,\s*p_status text,\s*p_watched_percent numeric,\s*p_started_at timestamptz,\s*p_completed_at timestamptz,\s*p_expected_version integer,\s*p_resume_page integer,\s*p_resume_seconds numeric/i.test(functionStatement0050), "Migration 0050 must replace only the exact ten-argument RPC signature");
+  fail(/returns public\.learning_progress\s+language plpgsql\s+security definer\s+set search_path = pg_catalog, public/i.test(functionStatement0050), "Migration 0050 must preserve SECURITY DEFINER and the fixed search_path");
+  fail((functionStatement0049.match(legacyResumeGuard) ?? []).length === 1, "Migration 0049 must contain exactly one legacy negative-seconds guard to be hardened");
+  fail((functionStatement0050.match(finiteResumeGuard) ?? []).length === 1, "Migration 0050 must reject negative, NaN, Infinity, and -Infinity RPC seconds");
+
+  const canonicalizeRpcGuard = (statement: string, guard: RegExp): string => normalizeMigrationStatement(
+    statement
+      .replace(/^\s*create\s+or\s+replace\s+function/i, "CREATE FUNCTION")
+      .replace(guard, "p_resume_seconds IS NOT NULL AND __FINITE_RESUME_SECONDS_GUARD__")
+  );
+  fail(
+    canonicalizeRpcGuard(functionStatement0049, legacyResumeGuard) === canonicalizeRpcGuard(functionStatement0050, finiteResumeGuard),
+    "Migration 0050 ten-argument RPC must match all of 0049 except the finite-seconds guard"
+  );
+
+  const assertGuardsPrecedeWrites = (functionStatement: string, guardPattern: RegExp, migration: string): void => {
+    const bodies = extractDollarQuotedFunctionBodies([functionStatement]);
+    fail(bodies.length === 1, `${migration} progress RPC body could not be parsed`);
+    const body = normalizeSql(bodies[0]).toLowerCase();
+    const insertPositions = [...body.matchAll(/\binsert\s+into\s+public\.learning_progress\b/g)].map((match) => match.index ?? -1);
+    const updatePositions = [...body.matchAll(/\bdo\s+update\s+set\b/g)].map((match) => match.index ?? -1);
+    fail(insertPositions.length === 1 && updatePositions.length === 1, `${migration} RPC must have exactly one INSERT/ON CONFLICT UPDATE write boundary`);
+    const firstWrite = Math.min(insertPositions[0], updatePositions[0]);
+    const orderedGuards: Array<[string, number]> = [
+      ["auth.uid identity", body.indexOf("v_user_id uuid := auth.uid()")],
+      ["approved student profile guard", body.indexOf("profiles.role = 'student'")],
+      ["product/item input guard", body.indexOf("if p_product_id is null")],
+      ["resume-seconds guard", body.search(guardPattern)],
+      ["product existence/binding guard", body.indexOf("if not exists (select 1 from public.products")],
+      ["material/product binding", body.indexOf("p_item_id <> p_product_id")],
+      ["active direct-grant access", body.indexOf("material_direct_grants.can_view = true")],
+      ["course/lesson binding", body.indexOf("course_lessons.id = p_item_id")],
+      ["active entitlement access", body.indexOf("product_entitlements.status = 'active'")],
+      ["expected-version precheck", body.indexOf("if p_expected_version > 0 and not exists")]
+    ];
+    for (const [label, position] of orderedGuards) {
+      fail(position >= 0 && position < firstWrite, `${migration} ${label} must be checked before INSERT/UPDATE`);
+    }
+  };
+  assertGuardsPrecedeWrites(functionStatement0049, legacyResumeGuard, "Migration 0049");
+  assertGuardsPrecedeWrites(functionStatement0050, finiteResumeGuard, "Migration 0050");
+
+  fail(/profiles\.account_status = 'approved'/i.test(functionStatement0050), "Migration 0050 must preserve approved-only profile authorization");
+  fail(/material_direct_grants\.revoked_at is null/i.test(functionStatement0050) && /material_direct_grants\.expires_at is null or material_direct_grants\.expires_at > now\(\)/i.test(functionStatement0050), "Migration 0050 must preserve active direct-grant expiry and revoke checks");
+  fail(/elsif not exists \([\s\S]*product_entitlements/i.test(functionStatement0050), "An invalid direct grant must not fall back to entitlement access");
+  fail(/p_status = 'completed' and p_watched_percent <> 100/i.test(functionStatement0050), "Migration 0050 must require 100 percent for completed progress");
+  fail(/started_at = coalesce\(public\.learning_progress\.started_at, excluded\.started_at\)/i.test(functionStatement0050) && /completed_at = coalesce\(excluded\.completed_at, public\.learning_progress\.completed_at\)/i.test(functionStatement0050), "Migration 0050 must preserve started/completed timestamp behavior");
+  fail(/where public\.learning_progress\.version = p_expected_version/i.test(functionStatement0050) && /using errcode = 'p0002'/i.test(functionStatement0050), "Migration 0050 must preserve CAS and P0002 conflict behavior");
+  fail(/p_watched_percent >= public\.learning_progress\.watched_percent/i.test(functionStatement0050) && /case public\.learning_progress\.status when 'completed' then 2 when 'in_progress' then 1 else 0 end\s*<=\s*case p_status when 'completed' then 2 when 'in_progress' then 1 else 0 end/i.test(functionStatement0050), "Migration 0050 must preserve watched-percent and status monotonicity");
+  fail(/resume_page = case when p_resume_page is null and p_resume_seconds is null then public\.learning_progress\.resume_page else p_resume_page end/i.test(functionStatement0050) && /resume_seconds = case when p_resume_page is null and p_resume_seconds is null then public\.learning_progress\.resume_seconds else p_resume_seconds end/i.test(functionStatement0050), "Migration 0050 must preserve both resume fields when no new position is supplied");
   fail(!/\b(?:grant|revoke)\b/i.test(code) && !/\b(?:service_role|bypassrls|set\s+role|alter\s+role|dynamic\s+sql)\b/i.test(executableCode), "Migration 0050 must not alter RPC privileges or broaden direct DML");
 }
 
@@ -3489,7 +3539,7 @@ export async function runAudit(): Promise<boolean> {
       migration0050ContractValid = false;
       results.push({ category: "0050_learning_progress_finite_seconds", check: "Rejects non-finite resume seconds without changing the progress boundary", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
-    if (migration0050ContractValid) results.push({ category: "0050_learning_progress_finite_seconds", check: "Rejects non-finite resume seconds without changing the progress boundary", passed: true, details: "Nullable finite non-negative seconds, unchanged 0049 hash, ten-argument RPC finite guard, legacy RPC compatibility, authorization, CAS, and privileges verified" });
+    if (migration0050ContractValid) results.push({ category: "0050_learning_progress_finite_seconds", check: "Rejects non-finite resume seconds without changing the progress boundary", passed: true, details: "Exact nullable finite constraint, complete 0049/0050 RPC comparison except finite guard, pre-write guard ordering, legacy RPC compatibility, authorization, CAS, monotonicity, timestamps, resume preservation, and privilege boundary verified" });
 
     const sql0046 = await fs.readFile(path.join(migrationsDir, "0046_direct_granted_material_visibility.sql"), "utf-8");
     let migration0046ContractValid = true;

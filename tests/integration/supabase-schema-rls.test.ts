@@ -2131,7 +2131,15 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       fs.readFile(path.join(migrationsPath, "0050_learning_progress_finite_seconds.sql"), "utf8")
     ]);
     assert.doesNotThrow(() => assertLearningProgressFiniteSecondsMigrationContract(sql0044, sql0045, sql0049, sql0050));
+
+    const resumeGuardMatch = /OR \((p_resume_seconds IS NOT NULL AND \(\s*p_resume_seconds < 0\s+OR p_resume_seconds = 'NaN'::numeric\s+OR p_resume_seconds = 'Infinity'::numeric\s+OR p_resume_seconds = '-Infinity'::numeric\s*\))\)/i.exec(sql0050);
+    assert.ok(resumeGuardMatch, "the finite resume guard must be present in the ten-argument RPC");
+    const delayedResumeGuard = sql0050
+      .replace(resumeGuardMatch[0], "OR false")
+      .replace("  RETURNING * INTO v_row;", `  RETURNING * INTO v_row;\n\n  IF (${resumeGuardMatch[1]}) THEN\n    RAISE EXCEPTION 'Progress write is not permitted' USING ERRCODE = '22023';\n  END IF;`);
     for (const hostile of [
+      sql0050.replace("resume_seconds IS NULL", "resume_seconds IS NOT NULL"),
+      sql0050.replace("resume_seconds >= 0", "resume_seconds > 0"),
       sql0050.replace("resume_seconds <> 'NaN'::numeric", "true"),
       sql0050.replace("resume_seconds <> 'Infinity'::numeric", "true"),
       sql0050.replace("resume_seconds <> '-Infinity'::numeric", "true"),
@@ -2139,9 +2147,36 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       sql0050.replace("p_resume_seconds = 'Infinity'::numeric", "false"),
       sql0050.replace("p_resume_seconds = '-Infinity'::numeric", "false"),
       sql0050.replace("p_resume_seconds < 0", "false"),
+      sql0050.replace("DROP CONSTRAINT learning_progress_resume_seconds_check", "DROP CONSTRAINT learning_progress_resume_position_exclusive_check"),
       sql0050.replace("profiles.role = 'student'", "profiles.role = 'tutor'"),
+      sql0050.replace("profiles.role = 'student'", "profiles.role <> 'admin'"),
+      sql0050.replace("profiles.account_status = 'approved'", "profiles.account_status = 'pending'"),
+      sql0050.replace("OR NOT EXISTS (", "OR EXISTS ("),
       sql0050.replace("WHERE public.learning_progress.version = p_expected_version", "WHERE public.learning_progress.version > p_expected_version"),
+      sql0050.replace("IF p_expected_version > 0 AND NOT EXISTS (", "IF p_expected_version > 0 AND EXISTS ("),
+      sql0050.replace("auth.uid()", "p_user_id"),
+      sql0050.replace("material_direct_grants.can_view = true", "material_direct_grants.can_view = false"),
+      sql0050.replace("material_direct_grants.revoked_at IS NULL", "material_direct_grants.revoked_at IS NOT NULL"),
+      sql0050.replace("material_direct_grants.expires_at > now()", "material_direct_grants.expires_at < now()"),
+      sql0050.replace("    ELSIF NOT EXISTS (\n      SELECT 1 FROM public.product_entitlements", "    IF NOT EXISTS (\n      SELECT 1 FROM public.product_entitlements"),
+      sql0050.replace("product_entitlements.status = 'active'", "product_entitlements.status = 'revoked'"),
+      sql0050.replace("p_item_id <> p_product_id", "p_item_id = p_product_id"),
+      sql0050.replace("course_lessons.id = p_item_id AND course_lessons.course_id = p_product_id", "course_lessons.id = p_item_id AND course_lessons.course_id <> p_product_id"),
+      sql0050.replace("p_status = 'completed' AND p_watched_percent <> 100", "p_status = 'completed' AND p_watched_percent <> 99"),
+      sql0050.replace("p_watched_percent >= public.learning_progress.watched_percent", "p_watched_percent < public.learning_progress.watched_percent"),
+      sql0050.replace("<= CASE p_status WHEN 'completed' THEN 2 WHEN 'in_progress' THEN 1 ELSE 0 END", ">= CASE p_status WHEN 'completed' THEN 2 WHEN 'in_progress' THEN 1 ELSE 0 END"),
+      sql0050.replace("started_at = COALESCE(public.learning_progress.started_at, EXCLUDED.started_at)", "started_at = EXCLUDED.started_at"),
+      sql0050.replace("completed_at = COALESCE(EXCLUDED.completed_at, public.learning_progress.completed_at)", "completed_at = EXCLUDED.completed_at"),
+      sql0050.replace("resume_page = CASE WHEN p_resume_page IS NULL AND p_resume_seconds IS NULL THEN public.learning_progress.resume_page ELSE p_resume_page END", "resume_page = EXCLUDED.resume_page"),
+      sql0050.replace("resume_seconds = CASE WHEN p_resume_page IS NULL AND p_resume_seconds IS NULL THEN public.learning_progress.resume_seconds ELSE p_resume_seconds END", "resume_seconds = EXCLUDED.resume_seconds"),
+      delayedResumeGuard,
       `${sql0050}\nGRANT INSERT ON TABLE public.learning_progress TO authenticated;`
+    ]) assert.throws(() => assertLearningProgressFiniteSecondsMigrationContract(sql0044, sql0045, sql0049, hostile), /./);
+    for (const hostile of [
+      `${sql0050}\nGRANT EXECUTE ON FUNCTION public.save_learning_progress(uuid, text, uuid, text, numeric, timestamptz, timestamptz, integer, integer, numeric) TO anon;`,
+      `${sql0050}\nGRANT EXECUTE ON FUNCTION public.save_learning_progress(uuid, text, uuid, text, numeric, timestamptz, timestamptz, integer, integer, numeric) TO PUBLIC;`,
+      `${sql0050}\nDROP FUNCTION public.save_learning_progress(uuid, text, uuid, text, numeric, timestamptz, timestamptz, integer);`,
+      `${sql0050}\nCREATE FUNCTION public.save_learning_progress(uuid, text, uuid, text, numeric, timestamptz, timestamptz, integer, integer) RETURNS public.learning_progress LANGUAGE sql AS 'SELECT NULL';`
     ]) assert.throws(() => assertLearningProgressFiniteSecondsMigrationContract(sql0044, sql0045, sql0049, hostile), /./);
     assert.throws(() => assertLearningProgressFiniteSecondsMigrationContract(sql0044, sql0045, `${sql0049}\n-- changed`, sql0050), /0049.*unchanged/i);
   });
