@@ -14,6 +14,8 @@ type LearningProgress = {
   watched_percent: number;
   started_at: string | null;
   completed_at: string | null;
+  resume_page: number | null;
+  resume_seconds: number | null;
   created_at: string;
   updated_at: string;
   version: number;

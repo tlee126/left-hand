@@ -121,6 +121,8 @@ export function SubjectWorkspaceClient({ workspace }: SubjectWorkspaceClientProp
       watched_percent: mutation.watchedPercent,
       started_at: mutation.startedAt ?? null,
       completed_at: mutation.completedAt ?? null,
+      resume_page: mutation.resumePage ?? current?.resume_page ?? null,
+      resume_seconds: mutation.resumeSeconds ?? current?.resume_seconds ?? null,
       created_at: current?.created_at ?? new Date().toISOString(),
       updated_at: new Date().toISOString(),
       version: (current?.version ?? 0) + 1
