@@ -56,6 +56,7 @@ import {
   assertLearningProgressDirectAccessMigrationContract,
   assertLearningProgressStudentRoleMigrationContract,
   assertLearningProgressResumePositionMigrationContract,
+  assertLearningProgressFiniteSecondsMigrationContract,
   assertDirectGrantedMaterialVisibilityMigration0046Unchanged,
   assertCatalogColumnSelectBoundaryMigration0047Unchanged,
   assertCatalogColumnSelectBoundaryMigrationContract,
@@ -304,6 +305,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ,"0047_catalog_column_select_boundary.sql"
       ,"0048_safe_catalog_read_surface.sql"
       ,"0049_learning_progress_resume_position.sql"
+      ,"0050_learning_progress_finite_seconds.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -2118,6 +2120,30 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       sql.replace("WHERE public.learning_progress.version = p_expected_version", "WHERE public.learning_progress.version > p_expected_version"),
       `${sql}\nGRANT INSERT ON TABLE public.learning_progress TO authenticated;`
     ]) assert.throws(() => assertLearningProgressResumePositionMigrationContract(hostile), /./);
+  });
+
+  test("migration 0050 rejects non-finite resume seconds without changing the legacy progress boundary", async () => {
+    const migrationsPath = path.resolve(process.cwd(), "supabase/migrations");
+    const [sql0044, sql0045, sql0049, sql0050] = await Promise.all([
+      fs.readFile(path.join(migrationsPath, "0044_learning_progress_material_direct_grant.sql"), "utf8"),
+      fs.readFile(path.join(migrationsPath, "0045_learning_progress_student_role_guard.sql"), "utf8"),
+      fs.readFile(path.join(migrationsPath, "0049_learning_progress_resume_position.sql"), "utf8"),
+      fs.readFile(path.join(migrationsPath, "0050_learning_progress_finite_seconds.sql"), "utf8")
+    ]);
+    assert.doesNotThrow(() => assertLearningProgressFiniteSecondsMigrationContract(sql0044, sql0045, sql0049, sql0050));
+    for (const hostile of [
+      sql0050.replace("resume_seconds <> 'NaN'::numeric", "true"),
+      sql0050.replace("resume_seconds <> 'Infinity'::numeric", "true"),
+      sql0050.replace("resume_seconds <> '-Infinity'::numeric", "true"),
+      sql0050.replace("p_resume_seconds = 'NaN'::numeric", "false"),
+      sql0050.replace("p_resume_seconds = 'Infinity'::numeric", "false"),
+      sql0050.replace("p_resume_seconds = '-Infinity'::numeric", "false"),
+      sql0050.replace("p_resume_seconds < 0", "false"),
+      sql0050.replace("profiles.role = 'student'", "profiles.role = 'tutor'"),
+      sql0050.replace("WHERE public.learning_progress.version = p_expected_version", "WHERE public.learning_progress.version > p_expected_version"),
+      `${sql0050}\nGRANT INSERT ON TABLE public.learning_progress TO authenticated;`
+    ]) assert.throws(() => assertLearningProgressFiniteSecondsMigrationContract(sql0044, sql0045, sql0049, hostile), /./);
+    assert.throws(() => assertLearningProgressFiniteSecondsMigrationContract(sql0044, sql0045, `${sql0049}\n-- changed`, sql0050), /0049.*unchanged/i);
   });
 
   test("migration 0046 grants row visibility only for an approved learner's active can_view material grant", async () => {

@@ -527,7 +527,7 @@ test("repository maps nullable and material resume positions through the additiv
 
   for (const invalid of [
     { ...pageInput, resumePage: 0 }, { ...pageInput, resumePage: 1.5 }, { ...pageInput, resumeSeconds: -1 },
-    { ...pageInput, resumeSeconds: Number.NaN }, { ...pageInput, resumeSeconds: 1 },
+    { ...pageInput, resumeSeconds: Number.NaN }, { ...pageInput, resumeSeconds: Number.POSITIVE_INFINITY }, { ...pageInput, resumeSeconds: Number.NEGATIVE_INFINITY }, { ...pageInput, resumeSeconds: 1 },
     { ...VALID_INPUT, resumePage: 1 }
   ]) await assert.rejects(() => repository.upsertLearningProgress(USER_ID, invalid), repository.LearningProgressInputError);
 });

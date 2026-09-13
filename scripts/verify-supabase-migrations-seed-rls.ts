@@ -53,6 +53,7 @@ const immutableMigrationHashes = {
 const materialDirectAccessMigration0042Hash = "c4a60e3bb1d7b7db041499299efe173f3fa08a88f9949aee0fd09d6fb8174138";
 const materialAccessSelectGrantMigration0043Hash = "c59782a31de476a00ac15a6f06391d6fb68daa8b9a2e6da71d787b2c478e47cd";
 const learningProgressMigration0044Hash = "f6d9e8d0d88901b0a9176526f8eb01f4b98eae55f549459973a7f46a9508b8c3";
+const learningProgressResumePositionMigration0049Hash = "b769603c1394dfc9d97e46696dac6dcda0aa6609272fb3a4555fd61243910885";
 const directGrantedMaterialVisibilityMigration0046Hash = "0002517e5f99c2a4cf3b2a7d3f03c65e2d865cd4e6d950e72b2a53f56fd38fda";
 const catalogColumnSelectBoundaryMigration0047Hash = "cc52a0d9eb7c95e12e545a653317dc7e3fdb651853651bfa16bd2e544e6056a8";
 
@@ -1761,6 +1762,35 @@ export function assertLearningProgressResumePositionMigrationContract(sql0049: s
   fail(!/\b(?:grant|revoke)\b[^;]*\bon\s+table\s+public\.learning_progress/i.test(code) && !/\b(?:service_role|bypassrls|set\s+role|alter\s+role|dynamic\s+sql)\b/i.test(executableCode), "Migration 0049 must not broaden DML or privileges");
 }
 
+/** Verifies that migration 0050 hardens only the ten-argument resume RPC and numeric constraint. */
+export function assertLearningProgressFiniteSecondsMigrationContract(sql0044: string, sql0045: string, sql0049: string, sql0050: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const hash0049 = createHash("sha256").update(canonicalMigrationContent(sql0049), "utf8").digest("hex");
+  fail(hash0049 === learningProgressResumePositionMigration0049Hash, "Migration 0049 must remain unchanged before finite-seconds hardening");
+  assertLearningProgressStudentRoleMigrationContract(sql0044, sql0045);
+  assertLearningProgressResumePositionMigrationContract(sql0049);
+
+  const statements = stripSqlCommentsAndSplitStatements(sql0050);
+  const normalized = statements.map(normalizeMigrationStatement);
+  const code = statements.join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  const functionStatement = statements.find((statement) => /^create or replace function public\.save_learning_progress\(/i.test(statement.trimStart())) ?? "";
+  const finiteConstraint = "resume_seconds is null or ( resume_seconds >= 0 and resume_seconds <> 'nan'::numeric and resume_seconds <> 'infinity'::numeric and resume_seconds <> '-infinity'::numeric )";
+
+  fail(statements.length === 2, "Migration 0050 must only replace the seconds constraint and ten-argument RPC");
+  fail(normalized[0] === `alter table public.learning_progress drop constraint learning_progress_resume_seconds_check, add constraint learning_progress_resume_seconds_check check ( ${finiteConstraint} )`, "Migration 0050 must replace the seconds constraint with an explicit nullable finite non-negative numeric check");
+  fail(/create or replace function public\.save_learning_progress\(\s*p_product_id uuid,\s*p_item_type text,\s*p_item_id uuid,\s*p_status text,\s*p_watched_percent numeric,\s*p_started_at timestamptz,\s*p_completed_at timestamptz,\s*p_expected_version integer/i.test(sql0045), "Migration 0045 must retain the exact legacy eight-argument RPC signature");
+  fail(!/create or replace function public\.save_learning_progress/i.test(sql0049), "Migration 0049 must not replace the legacy eight-argument RPC");
+  fail(/p_product_id uuid,\s*p_item_type text,\s*p_item_id uuid,\s*p_status text,\s*p_watched_percent numeric,\s*p_started_at timestamptz,\s*p_completed_at timestamptz,\s*p_expected_version integer,\s*p_resume_page integer,\s*p_resume_seconds numeric/i.test(functionStatement), "Migration 0050 must replace only the exact ten-argument RPC signature");
+  fail(/returns public\.learning_progress\s+language plpgsql\s+security definer\s+set search_path = pg_catalog, public/i.test(functionStatement), "Migration 0050 must preserve SECURITY DEFINER and the fixed search_path");
+  fail(/p_resume_seconds is not null and \(\s*p_resume_seconds < 0\s+or p_resume_seconds = 'nan'::numeric\s+or p_resume_seconds = 'infinity'::numeric\s+or p_resume_seconds = '-infinity'::numeric\s*\)/i.test(functionStatement), "Migration 0050 must reject negative, NaN, Infinity, and -Infinity RPC seconds before writes");
+  fail(/v_user_id uuid := auth\.uid\(\)/i.test(functionStatement) && /profiles\.account_status = 'approved'/i.test(functionStatement) && /profiles\.role = 'student'/i.test(functionStatement), "Migration 0050 must preserve auth.uid and the approved-student guard");
+  fail(/material_direct_grants\.can_view = true/i.test(functionStatement) && /elsif not exists \([\s\S]*product_entitlements/i.test(functionStatement) && /course_lessons\.course_id = p_product_id/i.test(functionStatement), "Migration 0050 must preserve direct-grant, entitlement, and lesson binding");
+  fail(/where public\.learning_progress\.version = p_expected_version/i.test(functionStatement) && /p_watched_percent >= public\.learning_progress\.watched_percent/i.test(functionStatement) && /using errcode = 'p0002'/i.test(functionStatement), "Migration 0050 must preserve CAS, conflict, and monotonicity");
+  fail(/resume_page = case when p_resume_page is null and p_resume_seconds is null then public\.learning_progress\.resume_page else p_resume_page end/i.test(functionStatement) && /resume_seconds = case when p_resume_page is null and p_resume_seconds is null then public\.learning_progress\.resume_seconds else p_resume_seconds end/i.test(functionStatement), "Migration 0050 must preserve resume fields when no new position is supplied");
+  fail(!/\b(?:grant|revoke)\b/i.test(code) && !/\b(?:service_role|bypassrls|set\s+role|alter\s+role|dynamic\s+sql)\b/i.test(executableCode), "Migration 0050 must not alter RPC privileges or broaden direct DML");
+}
+
 /** Pure contract used by the CLI audit and integration tests for migration 0016. */
 export function assertMigration0016Contract(sql0016: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -2784,7 +2814,8 @@ export async function runAudit(): Promise<boolean> {
       "0046_direct_granted_material_visibility.sql",
       "0047_catalog_column_select_boundary.sql",
       "0048_safe_catalog_read_surface.sql",
-      "0049_learning_progress_resume_position.sql"
+      "0049_learning_progress_resume_position.sql",
+      "0050_learning_progress_finite_seconds.sql"
     ];
 
     const migrationNumbers = sqlFiles.map((filename) => {
@@ -3451,6 +3482,14 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0049_learning_progress_resume_position", check: "Adds constrained material resume positions through an additive progress RPC", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0049ContractValid) results.push({ category: "0049_learning_progress_resume_position", check: "Adds constrained material resume positions through an additive progress RPC", passed: true, details: "Nullable page/seconds fields, exclusive material-only positions, preserved authorization/CAS, legacy RPC compatibility, and authenticated-only EXECUTE verified" });
+
+    const sql0050 = await fs.readFile(path.join(migrationsDir, "0050_learning_progress_finite_seconds.sql"), "utf-8");
+    let migration0050ContractValid = true;
+    try { assertLearningProgressFiniteSecondsMigrationContract(sql0044, sql0045, sql0049, sql0050); } catch (error) {
+      migration0050ContractValid = false;
+      results.push({ category: "0050_learning_progress_finite_seconds", check: "Rejects non-finite resume seconds without changing the progress boundary", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0050ContractValid) results.push({ category: "0050_learning_progress_finite_seconds", check: "Rejects non-finite resume seconds without changing the progress boundary", passed: true, details: "Nullable finite non-negative seconds, unchanged 0049 hash, ten-argument RPC finite guard, legacy RPC compatibility, authorization, CAS, and privileges verified" });
 
     const sql0046 = await fs.readFile(path.join(migrationsDir, "0046_direct_granted_material_visibility.sql"), "utf-8");
     let migration0046ContractValid = true;
