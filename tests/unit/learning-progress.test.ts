@@ -129,6 +129,8 @@ function progressRow(overrides: StoredRow = {}): StoredRow {
     watched_percent: 100,
     started_at: NOW,
     completed_at: NOW,
+    resume_page: null,
+    resume_seconds: null,
     created_at: NOW,
     updated_at: NOW,
     version: 1,
@@ -239,6 +241,8 @@ function createMockClient() {
         watched_percent: args.p_watched_percent,
         started_at: args.p_started_at,
         completed_at: args.p_completed_at,
+        resume_page: args.p_resume_page,
+        resume_seconds: args.p_resume_seconds,
         version: args.p_expected_version === 0 ? 1 : Number(args.p_expected_version) + 1
       };
       const key = [payload.user_id, payload.product_id, payload.item_type, payload.item_id].map(String).join(":");
@@ -490,12 +494,42 @@ test("repository sends the exact permitted RPC payload and repeated saves remain
     p_watched_percent: 100,
     p_started_at: NOW,
     p_completed_at: NOW,
-    p_expected_version: 0
+    p_expected_version: 0,
+    p_resume_page: null,
+    p_resume_seconds: null
   }]);
   await repository.upsertLearningProgress(USER_ID, VALID_INPUT);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].user_id, USER_ID);
   assert.equal(rows[0].product_id, PRODUCT_ID);
+});
+
+test("repository maps nullable and material resume positions through the additive RPC", async () => {
+  const repository = (globalThis as any).__learningProgressRepository;
+  reset();
+  products = [{ id: PRODUCT_ID, kind: "material" }];
+  const pageInput = { ...VALID_INPUT, itemType: "material", itemId: PRODUCT_ID, resumePage: 7 };
+  const saved = await repository.upsertLearningProgress(USER_ID, pageInput);
+  assert.equal(saved.resume_page, 7);
+  assert.equal(saved.resume_seconds, null);
+  assert.deepEqual(calls.find((call: Call) => call.method === "rpc")?.args[1], {
+    p_product_id: PRODUCT_ID, p_item_type: "material", p_item_id: PRODUCT_ID, p_status: "completed",
+    p_watched_percent: 100, p_started_at: NOW, p_completed_at: NOW, p_expected_version: 0,
+    p_resume_page: 7, p_resume_seconds: null
+  });
+
+  reset();
+  products = [{ id: PRODUCT_ID, kind: "material" }];
+  const secondsInput = { ...VALID_INPUT, itemType: "material", itemId: PRODUCT_ID, resumeSeconds: 12.5 };
+  const secondsSaved = await repository.upsertLearningProgress(USER_ID, secondsInput);
+  assert.equal(secondsSaved.resume_page, null);
+  assert.equal(secondsSaved.resume_seconds, 12.5);
+
+  for (const invalid of [
+    { ...pageInput, resumePage: 0 }, { ...pageInput, resumePage: 1.5 }, { ...pageInput, resumeSeconds: -1 },
+    { ...pageInput, resumeSeconds: Number.NaN }, { ...pageInput, resumeSeconds: 1 },
+    { ...VALID_INPUT, resumePage: 1 }
+  ]) await assert.rejects(() => repository.upsertLearningProgress(USER_ID, invalid), repository.LearningProgressInputError);
 });
 
 test("repository item identity and errors fail closed without raw details", async () => {
@@ -524,7 +558,9 @@ test("API authenticates and validates before current-access checks and progress 
     p_watched_percent: 100,
     p_started_at: NOW,
     p_completed_at: NOW,
-    p_expected_version: 0
+    p_expected_version: 0,
+    p_resume_page: null,
+    p_resume_seconds: null
   }]);
   timeline = [];
   await responseModule.POST(request(VALID_INPUT));
@@ -545,6 +581,39 @@ test("API authenticates and validates before current-access checks and progress 
   assert.equal(response.status, 403);
   assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
   assert.equal(calls.some((call: Call) => call.table === "student_workspace_product_read_surface"), false);
+});
+
+test("API accepts and returns material resume positions while rejecting invalid or lesson positions", async () => {
+  reset();
+  products = [{ id: PRODUCT_ID, kind: "material" }];
+  let response = await Route.POST(request({ ...VALID_INPUT, itemType: "material", itemId: PRODUCT_ID, resumePage: 3 }));
+  assert.equal(response.status, 200);
+  response = await Route.GET(new Request(`http://localhost/api/progress?productId=${PRODUCT_ID}`));
+  const pageProgress = (await response.json()).progress[0];
+  assert.equal(pageProgress.resume_page, 3);
+  assert.equal(pageProgress.resume_seconds, null);
+
+  reset();
+  products = [{ id: PRODUCT_ID, kind: "material" }];
+  response = await Route.POST(request({ ...VALID_INPUT, itemType: "material", itemId: PRODUCT_ID, resumeSeconds: 14.25 }));
+  assert.equal(response.status, 200);
+  response = await Route.GET(new Request(`http://localhost/api/progress?productId=${PRODUCT_ID}`));
+  const secondsProgress = (await response.json()).progress[0];
+  assert.equal(secondsProgress.resume_page, null);
+  assert.equal(secondsProgress.resume_seconds, 14.25);
+
+  for (const invalid of [
+    { ...VALID_INPUT, itemType: "material", itemId: PRODUCT_ID, resumePage: 0 },
+    { ...VALID_INPUT, itemType: "material", itemId: PRODUCT_ID, resumeSeconds: -1 },
+    { ...VALID_INPUT, itemType: "material", itemId: PRODUCT_ID, resumePage: 1, resumeSeconds: 1 },
+    { ...VALID_INPUT, resumePage: 1 },
+    { ...VALID_INPUT, itemType: "material", itemId: PRODUCT_ID, user_id: OTHER_USER_ID }
+  ]) {
+    reset(); products = [{ id: PRODUCT_ID, kind: "material" }];
+    response = await Route.POST(request(invalid));
+    assert.equal(response.status, 400);
+    assert.equal(calls.some((call: Call) => call.method === "rpc"), false);
+  }
 });
 
 test("material progress allows a current view grant regardless of download permission", async () => {

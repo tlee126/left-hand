@@ -26,6 +26,8 @@ export interface UpsertLearningProgressInput {
   expectedVersion: number;
   startedAt?: string | null;
   completedAt?: string | null;
+  resumePage?: number | null;
+  resumeSeconds?: number | null;
 }
 
 const REQUIRED_INPUT_KEYS = new Set([
@@ -36,7 +38,7 @@ const REQUIRED_INPUT_KEYS = new Set([
   "watchedPercent",
   "expectedVersion"
 ]);
-const OPTIONAL_INPUT_KEYS = new Set(["startedAt", "completedAt"]);
+const OPTIONAL_INPUT_KEYS = new Set(["startedAt", "completedAt", "resumePage", "resumeSeconds"]);
 const ITEM_TYPES = new Set<LearningProgressItemType>(["material", "lesson"]);
 const STATUSES = new Set<LearningProgressStatus>(["not_started", "in_progress", "completed"]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -63,6 +65,8 @@ export const LEARNING_PROGRESS_COLUMNS = [
   "watched_percent",
   "started_at",
   "completed_at",
+  "resume_page",
+  "resume_seconds",
   "created_at",
   "updated_at",
   "version"
@@ -116,6 +120,18 @@ function validateTimestamp(value: unknown): string | null {
   return value;
 }
 
+function validateResumePage(value: unknown): number | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) throw new LearningProgressInputError();
+  return value;
+}
+
+function validateResumeSeconds(value: unknown): number | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new LearningProgressInputError();
+  return value;
+}
+
 export function validateLearningProgressInput(input: unknown): UpsertLearningProgressInput {
   if (input === null || typeof input !== "object" || Array.isArray(input)) {
     throw new LearningProgressInputError();
@@ -143,6 +159,10 @@ export function validateLearningProgressInput(input: unknown): UpsertLearningPro
   if (typeof record.expectedVersion !== "number" || !Number.isSafeInteger(record.expectedVersion) || record.expectedVersion < 0) {
     throw new LearningProgressInputError();
   }
+  const resumePage = validateResumePage(record.resumePage);
+  const resumeSeconds = validateResumeSeconds(record.resumeSeconds);
+  if (resumePage !== null && resumeSeconds !== null) throw new LearningProgressInputError();
+  if (record.itemType === "lesson" && (resumePage !== null || resumeSeconds !== null)) throw new LearningProgressInputError();
 
   return {
     productId,
@@ -152,7 +172,9 @@ export function validateLearningProgressInput(input: unknown): UpsertLearningPro
     watchedPercent: record.watchedPercent,
     expectedVersion: record.expectedVersion,
     startedAt: validateTimestamp(record.startedAt),
-    completedAt: validateTimestamp(record.completedAt)
+    completedAt: validateTimestamp(record.completedAt),
+    resumePage,
+    resumeSeconds
   };
 }
 
@@ -176,6 +198,10 @@ function isValidProgressRow(value: unknown): value is LearningProgress {
     && row.watched_percent <= 100
     && (typeof row.started_at === "string" || row.started_at === null)
     && (typeof row.completed_at === "string" || row.completed_at === null)
+    && (row.resume_page === null || (typeof row.resume_page === "number" && Number.isSafeInteger(row.resume_page) && row.resume_page >= 1))
+    && (row.resume_seconds === null || (typeof row.resume_seconds === "number" && Number.isFinite(row.resume_seconds) && row.resume_seconds >= 0))
+    && !(row.resume_page !== null && row.resume_seconds !== null)
+    && (row.item_type === "material" || (row.resume_page === null && row.resume_seconds === null))
     && typeof row.created_at === "string"
     && typeof row.updated_at === "string"
     && Number.isSafeInteger(row.version)
@@ -441,7 +467,9 @@ export async function upsertLearningProgress(
       p_watched_percent: validated.watchedPercent,
       p_started_at: validated.startedAt ?? null,
       p_completed_at: validated.completedAt ?? null,
-      p_expected_version: validated.expectedVersion
+      p_expected_version: validated.expectedVersion,
+      p_resume_page: validated.resumePage ?? null,
+      p_resume_seconds: validated.resumeSeconds ?? null
     });
 
     if (error) {

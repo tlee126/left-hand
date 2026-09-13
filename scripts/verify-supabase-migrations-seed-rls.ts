@@ -1739,6 +1739,28 @@ export function assertLearningProgressStudentRoleMigrationContract(sql0044: stri
   fail(normalized0045[1] === normalized0044[1] && normalized0045[2] === normalized0044[2] && normalized0045[3] === normalized0044[3], "Migration 0045 must preserve exact EXECUTE privileges and must not add direct DML grants");
 }
 
+/** Verifies the additive resume-position RPC without weakening the current progress boundary. */
+export function assertLearningProgressResumePositionMigrationContract(sql0049: string): void {
+  const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
+  const statements = stripSqlCommentsAndSplitStatements(sql0049);
+  const code = statements.join(" ; ");
+  const executableCode = maskSqlStringLiterals(code);
+  const functionStatement = statements.find((statement) => /^create function public\.save_learning_progress\(/i.test(statement.trimStart())) ?? "";
+  fail(statements.length === 5, "Migration 0049 must contain only resume columns, constraints, one additive RPC, and its privileges");
+  fail(/add column if not exists resume_page integer null[\s\S]*add column if not exists resume_seconds numeric null/i.test(statements[0] ?? ""), "Migration 0049 must add nullable resume fields");
+  fail(/resume_page is null or resume_page >= 1/i.test(statements[1] ?? "") && /resume_seconds is null or resume_seconds >= 0/i.test(statements[1] ?? "") && /resume_page is null or resume_seconds is null/i.test(statements[1] ?? "") && /item_type = 'material' or \(resume_page is null and resume_seconds is null\)/i.test(statements[1] ?? ""), "Migration 0049 must constrain valid, exclusive material resume positions");
+  fail(/p_product_id uuid,\s*p_item_type text,\s*p_item_id uuid,\s*p_status text,\s*p_watched_percent numeric,\s*p_started_at timestamptz,\s*p_completed_at timestamptz,\s*p_expected_version integer,\s*p_resume_page integer,\s*p_resume_seconds numeric/i.test(functionStatement), "Migration 0049 must add the exact ten-argument resume RPC signature");
+  fail(/returns public\.learning_progress\s+language plpgsql\s+security definer\s+set search_path = pg_catalog, public/i.test(functionStatement), "Migration 0049 must preserve the SECURITY DEFINER boundary");
+  fail(/v_user_id uuid := auth\.uid\(\)/i.test(functionStatement) && /profiles\.account_status = 'approved'/i.test(functionStatement) && /profiles\.role = 'student'/i.test(functionStatement), "Migration 0049 must keep auth.uid and the approved-student guard");
+  fail(/material_direct_grants\.can_view = true/i.test(functionStatement) && /elsif not exists \([\s\S]*product_entitlements/i.test(functionStatement) && /course_lessons\.course_id = p_product_id/i.test(functionStatement), "Migration 0049 must preserve direct-grant and entitlement item binding");
+  fail(/where public\.learning_progress\.version = p_expected_version/i.test(functionStatement) && /p_watched_percent >= public\.learning_progress\.watched_percent/i.test(functionStatement) && /using errcode = 'p0002'/i.test(functionStatement), "Migration 0049 must preserve CAS, conflict, and monotonicity");
+  fail(/resume_page = case when p_resume_page is null and p_resume_seconds is null then public\.learning_progress\.resume_page else p_resume_page end/i.test(functionStatement) && /resume_seconds = case when p_resume_page is null and p_resume_seconds is null then public\.learning_progress\.resume_seconds else p_resume_seconds end/i.test(functionStatement), "Migration 0049 must preserve existing resume fields when a compatibility payload omits them");
+  const signature = "uuid, text, uuid, text, numeric, timestamptz, timestamptz, integer, integer, numeric";
+  fail(normalizeMigrationStatement(statements[3] ?? "") === `revoke all on function public.save_learning_progress(${signature}) from public, anon` && normalizeMigrationStatement(statements[4] ?? "") === `grant execute on function public.save_learning_progress(${signature}) to authenticated`, "Migration 0049 must grant only the new RPC to authenticated");
+  fail(!/create or replace function public\.save_learning_progress/i.test(code), "Migration 0049 must keep the legacy RPC signature intact");
+  fail(!/\b(?:grant|revoke)\b[^;]*\bon\s+table\s+public\.learning_progress/i.test(code) && !/\b(?:service_role|bypassrls|set\s+role|alter\s+role|dynamic\s+sql)\b/i.test(executableCode), "Migration 0049 must not broaden DML or privileges");
+}
+
 /** Pure contract used by the CLI audit and integration tests for migration 0016. */
 export function assertMigration0016Contract(sql0016: string): void {
   const fail = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
@@ -2761,7 +2783,8 @@ export async function runAudit(): Promise<boolean> {
       "0045_learning_progress_student_role_guard.sql",
       "0046_direct_granted_material_visibility.sql",
       "0047_catalog_column_select_boundary.sql",
-      "0048_safe_catalog_read_surface.sql"
+      "0048_safe_catalog_read_surface.sql",
+      "0049_learning_progress_resume_position.sql"
     ];
 
     const migrationNumbers = sqlFiles.map((filename) => {
@@ -2774,7 +2797,7 @@ export async function runAudit(): Promise<boolean> {
       && expected.every((filename, index) => sqlFiles[index] === filename);
     results.push({
       category: "Migrations",
-      check: "All 48 migration files exist with complete strict numerical order",
+      check: `All ${expected.length} migration files exist with complete strict numerical order`,
       passed: matchesCanonicalList && hasStrictSequentialNumbers,
       details: sqlFiles.join(", ")
     });
@@ -3420,6 +3443,14 @@ export async function runAudit(): Promise<boolean> {
       results.push({ category: "0045_learning_progress_student_role_guard", check: "Restricts the progress RPC to approved students without changing its authorization or privilege boundaries", passed: false, details: error instanceof Error ? error.message : String(error) });
     }
     if (migration0045ContractValid) results.push({ category: "0045_learning_progress_student_role_guard", check: "Restricts the progress RPC to approved students without changing its authorization or privilege boundaries", passed: true, details: "0044 hash pinned; tutor/admin/unapproved actors rejected; direct-grant, entitlement, item-binding, CAS, monotonicity, and exact EXECUTE privileges preserved" });
+
+    const sql0049 = await fs.readFile(path.join(migrationsDir, "0049_learning_progress_resume_position.sql"), "utf-8");
+    let migration0049ContractValid = true;
+    try { assertLearningProgressResumePositionMigrationContract(sql0049); } catch (error) {
+      migration0049ContractValid = false;
+      results.push({ category: "0049_learning_progress_resume_position", check: "Adds constrained material resume positions through an additive progress RPC", passed: false, details: error instanceof Error ? error.message : String(error) });
+    }
+    if (migration0049ContractValid) results.push({ category: "0049_learning_progress_resume_position", check: "Adds constrained material resume positions through an additive progress RPC", passed: true, details: "Nullable page/seconds fields, exclusive material-only positions, preserved authorization/CAS, legacy RPC compatibility, and authenticated-only EXECUTE verified" });
 
     const sql0046 = await fs.readFile(path.join(migrationsDir, "0046_direct_granted_material_visibility.sql"), "utf-8");
     let migration0046ContractValid = true;

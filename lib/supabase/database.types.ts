@@ -90,6 +90,8 @@ export type SaveLearningProgressRpcArgs = {
   p_started_at: string | null
   p_completed_at: string | null
   p_expected_version: number
+  p_resume_page: number | null
+  p_resume_seconds: number | null
 }
 
 export type AdminMaterialDirectGrantUpsertArgs = {
@@ -558,6 +560,8 @@ export type Database = {
           item_id: string
           item_type: string
           product_id: string
+          resume_page: number | null
+          resume_seconds: number | null
           started_at: string | null
           status: string
           updated_at: string
@@ -571,6 +575,8 @@ export type Database = {
           item_id: string
           item_type: string
           product_id: string
+          resume_page?: number | null
+          resume_seconds?: number | null
           started_at?: string | null
           status?: string
           updated_at?: string
@@ -584,6 +590,8 @@ export type Database = {
           item_id?: string
           item_type?: string
           product_id?: string
+          resume_page?: number | null
+          resume_seconds?: number | null
           started_at?: string | null
           status?: string
           updated_at?: string

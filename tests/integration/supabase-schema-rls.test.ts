@@ -55,6 +55,7 @@ import {
   assertLearningProgressMonotonicityMigrationContract,
   assertLearningProgressDirectAccessMigrationContract,
   assertLearningProgressStudentRoleMigrationContract,
+  assertLearningProgressResumePositionMigrationContract,
   assertDirectGrantedMaterialVisibilityMigration0046Unchanged,
   assertCatalogColumnSelectBoundaryMigration0047Unchanged,
   assertCatalogColumnSelectBoundaryMigrationContract,
@@ -302,6 +303,7 @@ describe("Supabase Migrations, Seed & RLS Hardening Verification", () => {
       ,"0046_direct_granted_material_visibility.sql"
       ,"0047_catalog_column_select_boundary.sql"
       ,"0048_safe_catalog_read_surface.sql"
+      ,"0049_learning_progress_resume_position.sql"
       ];
 
       assert.deepStrictEqual(sqlFiles, expectedFiles, "Migration files must match canonical list in strict numerical order");
@@ -2102,6 +2104,20 @@ describe("14. Migration 0018 Catalog Semantic Invariants", () => {
       `${sql0045}\nGRANT EXECUTE ON FUNCTION public.save_learning_progress(uuid, text, uuid, text, numeric, timestamptz, timestamptz, integer) TO anon;`,
       `${sql0045}\nGRANT EXECUTE ON FUNCTION public.save_learning_progress(uuid, text, uuid, text, numeric, timestamptz, timestamptz, integer) TO PUBLIC;`
     ]) assert.throws(() => assertLearningProgressStudentRoleMigrationContract(sql0044, hostile), /./);
+  });
+
+  test("migration 0049 adds constrained resume positions without replacing the legacy progress RPC", async () => {
+    const sql = await fs.readFile(path.resolve(process.cwd(), "supabase/migrations/0049_learning_progress_resume_position.sql"), "utf8");
+    assert.doesNotThrow(() => assertLearningProgressResumePositionMigrationContract(sql));
+    for (const hostile of [
+      sql.replace("resume_page >= 1", "resume_page >= 0"),
+      sql.replace("resume_seconds >= 0", "resume_seconds >= -1"),
+      sql.replace("resume_page IS NULL OR resume_seconds IS NULL", "true"),
+      sql.replace("profiles.role = 'student'", "profiles.role = 'tutor'"),
+      sql.replace("auth.uid()", "p_user_id"),
+      sql.replace("WHERE public.learning_progress.version = p_expected_version", "WHERE public.learning_progress.version > p_expected_version"),
+      `${sql}\nGRANT INSERT ON TABLE public.learning_progress TO authenticated;`
+    ]) assert.throws(() => assertLearningProgressResumePositionMigrationContract(hostile), /./);
   });
 
   test("migration 0046 grants row visibility only for an approved learner's active can_view material grant", async () => {
