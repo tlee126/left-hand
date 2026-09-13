@@ -21,7 +21,7 @@ export const MATERIAL_ASSET_COLUMNS = [
   "id", "product_id", "uploaded_by", "upload_reservation_id", "upload_idempotency_key", "storage_path", "original_name", "mime_type", "byte_size", "version", "visibility", "created_at", "updated_at"
 ] as const;
 export const MATERIAL_ASSET_SELECT = MATERIAL_ASSET_COLUMNS.join(", ");
-export const CURRENT_MATERIAL_ASSET_SELECT = ["product_id", "storage_path", "version", "visibility"].join(", ");
+export const CURRENT_MATERIAL_ASSET_SELECT = "product_id, version, mime_type, byte_size" as const;
 
 export type MaterialAsset = MaterialAssetRow;
 
@@ -72,8 +72,12 @@ export interface CurrentMaterialAsset {
 }
 
 export interface CurrentMaterialAssetVersion {
-  version: number;
-  mimeType: string;
+  version: number | null;
+  mimeType: string | null;
+  byteSize: number | null;
+  mimeSupported: boolean;
+  metadataComplete: boolean;
+  status: "ready" | "unsupported_mime" | "incomplete_metadata";
 }
 
 export interface MaterialAssetUploadReservationDetails {
@@ -397,14 +401,44 @@ export async function listCurrentMaterialAssetMetadata(productIds: readonly stri
   if (productIds.length === 0) return {};
   try {
     const supabase = await createClient();
-    const { data, error } = await supabase.from("material_assets").select("product_id, version, mime_type").in("product_id", [...productIds]).order("version", { ascending: false });
+    const canonicalProductIds = new Set(productIds.map((productId) => productId.toLowerCase()));
+    const { data, error } = await supabase.from("material_assets").select(CURRENT_MATERIAL_ASSET_SELECT).in("product_id", [...productIds]).order("version", { ascending: false });
     if (error) throw new Error();
-    return (data ?? []).reduce<Record<string, CurrentMaterialAssetVersion>>((result, row) => {
-      if (result[row.product_id] === undefined && isSupportedMaterialMimeType(row.mime_type)) {
-        result[row.product_id] = { version: row.version, mimeType: row.mime_type };
+    const latestRows = new Map<string, (typeof data)[number]>();
+    const invalidVersionProducts = new Set<string>();
+    const duplicateVersionProducts = new Set<string>();
+    for (const row of data ?? []) {
+      const productId = typeof row.product_id === "string" ? row.product_id.toLowerCase() : "";
+      if (!canonicalProductIds.has(productId)) continue;
+      if (!Number.isSafeInteger(row.version) || row.version < 1) {
+        invalidVersionProducts.add(productId);
+        continue;
       }
-      return result;
-    }, {});
+      const current = latestRows.get(productId);
+      if (!current || row.version > current.version) latestRows.set(productId, row);
+      else if (row.version === current.version) duplicateVersionProducts.add(productId);
+    }
+
+    const result: Record<string, CurrentMaterialAssetVersion> = {};
+    for (const productId of canonicalProductIds) {
+      if (invalidVersionProducts.has(productId) || duplicateVersionProducts.has(productId)) {
+        result[productId] = { version: null, mimeType: null, byteSize: null, mimeSupported: false, metadataComplete: false, status: "incomplete_metadata" };
+        continue;
+      }
+      const row = latestRows.get(productId);
+      if (!row) continue;
+      const version = Number.isSafeInteger(row.version) && row.version >= 1 ? row.version : null;
+      const mimeType = typeof row.mime_type === "string" && row.mime_type.length > 0 ? row.mime_type : null;
+      const byteSize = typeof row.byte_size === "number" && Number.isSafeInteger(row.byte_size) && row.byte_size >= 0 ? row.byte_size : null;
+      const mimeSupported = mimeType !== null && isSupportedMaterialMimeType(mimeType);
+      const sizeValid = byteSize !== null && byteSize > 0;
+      const metadataComplete = version !== null && mimeType !== null && sizeValid;
+      const status = !version || !mimeType ? "incomplete_metadata"
+        : !mimeSupported ? "unsupported_mime"
+        : metadataComplete ? "ready" : "incomplete_metadata";
+      result[productId] = { version, mimeType, byteSize, mimeSupported, metadataComplete, status };
+    }
+    return result;
   } catch {
     throw new MaterialAssetRepositoryError();
   }
