@@ -21,7 +21,41 @@ type Scenario = {
   refreshedVersion?: number | null;
   immediateRefreshTimeout?: boolean;
 };
-type RunResult = { statusText: string; role: string | null; refreshCalls: number; fetchCalls: string[]; uploadCalls: number };
+type RunResult = { statusText: string; role: string | null; refreshCalls: number; fetchCalls: string[]; uploadCalls: number; inputDisabled: boolean; buttonDisabled: boolean; buttonText: string };
+
+const GLOBALS = ["window", "document", "navigator", "HTMLElement", "Node", "DOMException", "IS_REACT_ACT_ENVIRONMENT", "fetch", "__uploadRouter", "__uploadCreateClient"] as const;
+type GlobalName = typeof GLOBALS[number];
+function snapshotGlobals(): Map<GlobalName, PropertyDescriptor | undefined> {
+  return new Map(GLOBALS.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+}
+function restoreGlobals(snapshot: Map<GlobalName, PropertyDescriptor | undefined>, errors: unknown[]): void {
+  for (const name of GLOBALS) {
+    try {
+      const descriptor = snapshot.get(name);
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    } catch (error) { errors.push(error); }
+  }
+}
+async function cleanupSteps(steps: Array<() => void | Promise<void>>): Promise<unknown[]> {
+  const errors: unknown[] = [];
+  for (const step of steps) {
+    try { await step(); } catch (error) { errors.push(error); }
+  }
+  return errors;
+}
+
+test("cleanup continues through every step when an earlier cleanup action throws", async () => {
+  const completed: string[] = [];
+  const errors = await cleanupSteps([
+    () => { completed.push("unmount"); throw new Error("controlled unmount failure"); },
+    () => { completed.push("remove container"); },
+    () => { completed.push("restore globals"); }
+  ]);
+  assert.deepEqual(completed, ["unmount", "remove container", "restore globals"]);
+  assert.equal(errors.length, 1);
+  assert.match(String(errors[0]), /controlled unmount failure/);
+});
 
 const PRODUCT_ID = "650e8400-e29b-41d4-a716-446655440000";
 const dataUrl = (source: string) => "data:text/javascript," + encodeURIComponent(source);
@@ -54,22 +88,22 @@ before(async () => {
 });
 
 async function run(scenario: Scenario = {}): Promise<RunResult> {
-  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/quan-tri/catalog" });
+  const original = snapshotGlobals();
+  let dom: any = null;
+  let container: HTMLElement | null = null;
+  let root: ReturnType<typeof createRoot> | null = null;
+  let refreshCalls = 0;
+  let uploadCalls = 0;
+  let currentVersion = scenario.initialVersion === undefined ? null : scenario.initialVersion;
+  let metadataReadError = scenario.metadataReadError ?? false;
+  const fetchCalls: string[] = [];
+  const install = (name: GlobalName, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, value, writable: true });
+  try {
+  dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/quan-tri/catalog" });
   if (scenario.immediateRefreshTimeout) {
     const originalSetTimeout = dom.window.setTimeout.bind(dom.window);
     dom.window.setTimeout = ((callback: (...args: unknown[]) => void) => originalSetTimeout(callback, 0)) as typeof dom.window.setTimeout;
   }
-  const original = {
-    window: globalThis.window,
-    document: globalThis.document,
-    navigator: globalThis.navigator,
-    HTMLElement: globalThis.HTMLElement,
-    Node: globalThis.Node,
-    DOMException: globalThis.DOMException,
-    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT,
-    fetch: globalThis.fetch
-  };
-  const install = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, value, writable: true });
   install("window", dom.window);
   install("document", dom.window.document);
   install("navigator", dom.window.navigator);
@@ -77,13 +111,6 @@ async function run(scenario: Scenario = {}): Promise<RunResult> {
   install("Node", dom.window.Node);
   install("DOMException", dom.window.DOMException);
   install("IS_REACT_ACT_ENVIRONMENT", true);
-
-  let refreshCalls = 0;
-  let uploadCalls = 0;
-  let currentVersion = scenario.initialVersion ?? null;
-  let metadataReadError = scenario.metadataReadError ?? false;
-  let root: ReturnType<typeof createRoot> | null = null;
-  const fetchCalls: string[] = [];
   (globalThis as typeof globalThis & { __uploadRouter?: unknown; __uploadCreateClient?: unknown }).__uploadRouter = {
     refresh() {
       refreshCalls += 1;
@@ -109,30 +136,34 @@ async function run(scenario: Scenario = {}): Promise<RunResult> {
     return Response.json({ success: true });
   };
 
-  const container = document.createElement("div");
+  container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  try {
     await act(async () => root!.render(createElement(MaterialUploadForm, { productId: PRODUCT_ID, currentVersion, metadataReadError })));
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     const file = new dom.window.File(["%PDF-1.4"], "material.pdf", { type: "application/pdf" });
     Object.defineProperty(input, "files", { configurable: true, value: [file] });
     await act(async () => {
-      container.querySelector("form")!.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+      container!.querySelector("form")!.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     await act(async () => root!.render(createElement(MaterialUploadForm, { productId: PRODUCT_ID, currentVersion, metadataReadError })));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const status = container.querySelector('[role="status"], [role="alert"]');
-    return { statusText: status?.textContent ?? "", role: status?.getAttribute("role") ?? null, refreshCalls, fetchCalls, uploadCalls };
+    return { statusText: status?.textContent ?? "", role: status?.getAttribute("role") ?? null, refreshCalls, fetchCalls, uploadCalls,
+      inputDisabled: (container.querySelector('input[type="file"]') as HTMLInputElement).disabled,
+      buttonDisabled: (container.querySelector('button[type="submit"]') as HTMLButtonElement).disabled,
+      buttonText: (container.querySelector('button[type="submit"]') as HTMLButtonElement).textContent ?? "" };
   } finally {
-    await act(async () => root!.unmount());
-    container.remove();
-    globalThis.fetch = original.fetch;
-    for (const [name, value] of Object.entries(original)) if (name !== "fetch") install(name, value);
-    delete (globalThis as typeof globalThis & { __uploadRouter?: unknown }).__uploadRouter;
-    delete (globalThis as typeof globalThis & { __uploadCreateClient?: unknown }).__uploadCreateClient;
+    const restoreErrors: unknown[] = [];
+    const cleanupErrors = await cleanupSteps([
+      async () => { if (root) await act(async () => root!.unmount()); },
+      () => { container?.remove(); },
+      () => { dom?.window.close(); },
+      () => { restoreGlobals(original, restoreErrors); }
+    ]);
+    assert.deepEqual([...cleanupErrors, ...restoreErrors], [], "all cleanup steps must complete without errors");
   }
 }
 
@@ -153,18 +184,19 @@ test("near-simultaneous submits reuse one in-flight upload and wait for refreshe
   const finalizeStarted = deferred<void>();
   const refreshStarted = deferred<void>();
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/quan-tri/catalog" });
-  const original = {
-    window: globalThis.window,
-    document: globalThis.document,
-    navigator: globalThis.navigator,
-    HTMLElement: globalThis.HTMLElement,
-    Node: globalThis.Node,
-    DOMException: globalThis.DOMException,
-    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT,
-    fetch: globalThis.fetch,
-    consoleError: console.error
-  };
-  const install = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, value, writable: true });
+  const original = snapshotGlobals();
+  const originalConsoleError = console.error;
+  const consoleErrors: unknown[][] = [];
+  const windowErrors: string[] = [];
+  const onWindowError = (event: ErrorEvent) => windowErrors.push(event.message);
+  let root: ReturnType<typeof createRoot> | null = null;
+  let container: HTMLElement | null = null;
+  const install = (name: GlobalName, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, value, writable: true });
+  let refreshCalls = 0;
+  let uploadCalls = 0;
+  let currentVersion: number | null = 4;
+  const fetchCalls: string[] = [];
+  try {
   install("window", dom.window);
   install("document", dom.window.document);
   install("navigator", dom.window.navigator);
@@ -173,21 +205,13 @@ test("near-simultaneous submits reuse one in-flight upload and wait for refreshe
   install("DOMException", dom.window.DOMException);
   install("IS_REACT_ACT_ENVIRONMENT", true);
 
-  const consoleErrors: unknown[][] = [];
-  const windowErrors: string[] = [];
-  const onWindowError = (event: ErrorEvent) => windowErrors.push(event.message);
   dom.window.addEventListener("error", onWindowError);
-  console.error = (...args: unknown[]) => { consoleErrors.push(args); };
-
-  let refreshCalls = 0;
-  let uploadCalls = 0;
-  let currentVersion: number | null = null;
-  let root: ReturnType<typeof createRoot> | null = null;
-  const fetchCalls: string[] = [];
+  console.error = (...args: unknown[]) => { consoleErrors.push(args); originalConsoleError(...args); };
   (globalThis as typeof globalThis & { __uploadRouter?: unknown; __uploadCreateClient?: unknown }).__uploadRouter = {
     refresh() {
       refreshCalls += 1;
       refreshStarted.resolve();
+      if (root) root.render(createElement(MaterialUploadForm, { productId: PRODUCT_ID, currentVersion, metadataReadError: false }));
     }
   };
   (globalThis as typeof globalThis & { __uploadCreateClient?: unknown }).__uploadCreateClient = () => ({
@@ -204,14 +228,13 @@ test("near-simultaneous submits reuse one in-flight upload and wait for refreshe
     return Response.json({ success: true });
   };
 
-  const container = document.createElement("div");
+  container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
   const submit = async () => act(async () => {
-    container.querySelector("form")!.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+    container!.querySelector("form")!.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
   });
 
-  try {
     await act(async () => root!.render(createElement(MaterialUploadForm, { productId: PRODUCT_ID, currentVersion })));
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     Object.defineProperty(input, "files", {
@@ -225,6 +248,11 @@ test("near-simultaneous submits reuse one in-flight upload and wait for refreshe
     assert.equal((container.querySelector('button[type="submit"]') as HTMLButtonElement).disabled, true);
     assert.match(container.querySelector('[role="status"]')?.textContent ?? "", /Đang chuẩn bị tải lên/);
 
+    // Browser-like disabled-button interaction: clicking the disabled control cannot submit again.
+    (container.querySelector('button[type="submit"]') as HTMLButtonElement).click();
+    assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/prepare")).length, 1, "disabled-button click must not start a second request");
+
+    // Direct form dispatch separately exercises the component's active-state submit guard.
     await submit();
     assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/prepare")).length, 1, "second submit while prepare is pending must not start another prepare");
     assert.equal(uploadCalls, 0);
@@ -242,6 +270,7 @@ test("near-simultaneous submits reuse one in-flight upload and wait for refreshe
     });
     assert.equal(uploadCalls, 1);
     assert.equal((container.querySelector('input[type="file"]') as HTMLInputElement).disabled, true);
+    assert.equal((container.querySelector('button[type="submit"]') as HTMLButtonElement).disabled, true);
     assert.match(container.querySelector('[role="status"]')?.textContent ?? "", /Đang tải tệp trực tiếp/);
     assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/prepare")).length, 1);
 
@@ -251,6 +280,9 @@ test("near-simultaneous submits reuse one in-flight upload and wait for refreshe
     });
     assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/finalize")).length, 1);
     assert.equal(uploadCalls, 1);
+    assert.equal((container.querySelector('input[type="file"]') as HTMLInputElement).disabled, true);
+    assert.equal((container.querySelector('button[type="submit"]') as HTMLButtonElement).disabled, true);
+    assert.match(container.querySelector('[role="status"]')?.textContent ?? "", /Đang xác nhận phiên bản/);
 
     await act(async () => {
       finalizeResponse.resolve(Response.json({ success: true, version: 5 }));
@@ -260,11 +292,18 @@ test("near-simultaneous submits reuse one in-flight upload and wait for refreshe
     assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/prepare")).length, 1, "completing the first flow must not create a deferred duplicate request");
     assert.equal(uploadCalls, 1);
     assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/finalize")).length, 1);
+    assert.equal(currentVersion, 4, "refresh leaves server props at the old version in this gate case");
+    assert.match(container.querySelector('[role="status"]')?.textContent ?? "", /Đang cập nhật metadata/);
+    assert.equal((container.querySelector('input[type="file"]') as HTMLInputElement).disabled, true);
+    assert.equal((container.querySelector('button[type="submit"]') as HTMLButtonElement).disabled, true);
     assert.doesNotMatch(container.querySelector('[role="status"]')?.textContent ?? "", /Tải tệp tài liệu thành công/);
 
     currentVersion = 5;
     await act(async () => root!.render(createElement(MaterialUploadForm, { productId: PRODUCT_ID, currentVersion })));
     assert.match(container.querySelector('[role="status"]')?.textContent ?? "", /Tải tệp tài liệu thành công/);
+    assert.equal((container.querySelector('input[type="file"]') as HTMLInputElement).disabled, false);
+    assert.equal((container.querySelector('button[type="submit"]') as HTMLButtonElement).disabled, false);
+    assert.doesNotMatch(container.querySelector('[role="status"]')?.textContent ?? "", /Đang (?:chuẩn bị|tải tệp trực tiếp|xác nhận phiên bản|cập nhật metadata)/);
     assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/prepare")).length, 1);
     assert.equal(uploadCalls, 1);
     assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/finalize")).length, 1);
@@ -272,26 +311,71 @@ test("near-simultaneous submits reuse one in-flight upload and wait for refreshe
     assert.deepEqual(consoleErrors, []);
     assert.deepEqual(windowErrors, []);
   } finally {
-    if (root) await act(async () => root!.unmount());
-    container.remove();
-    dom.window.removeEventListener("error", onWindowError);
-    dom.window.close();
-    globalThis.fetch = original.fetch;
-    console.error = original.consoleError;
-    for (const [name, value] of Object.entries(original)) {
-      if (name !== "fetch" && name !== "consoleError") install(name, value);
-    }
-    delete (globalThis as typeof globalThis & { __uploadRouter?: unknown }).__uploadRouter;
-    delete (globalThis as typeof globalThis & { __uploadCreateClient?: unknown }).__uploadCreateClient;
+    const restoreErrors: unknown[] = [];
+    const cleanupErrors = await cleanupSteps([
+      async () => { if (root) await act(async () => root!.unmount()); },
+      () => { container?.remove(); },
+      () => { dom.window.removeEventListener("error", onWindowError); },
+      () => { dom.window.close(); },
+      () => { console.error = originalConsoleError; },
+      () => { restoreGlobals(original, restoreErrors); }
+    ]);
+    assert.deepEqual([...cleanupErrors, ...restoreErrors], [], "all cleanup steps must run even if one step fails");
   }
 });
 
 test("prepare, storage, and finalize failures never refresh or report success", async () => {
-  for (const scenario of [{ prepareStatus: 500 }, { uploadError: true }, { finalizeStatus: 500 }]) {
-    const result = await run(scenario);
-    assert.equal(result.refreshCalls, 0);
-    assert.equal(result.role, "alert");
-    assert.match(result.statusText, /Không thể tải tệp tài liệu/);
+  const prepare = await run({ prepareStatus: 500 });
+  assert.equal(prepare.role, "alert");
+  assert.match(prepare.statusText, /Không thể tải tệp tài liệu/);
+  assert.doesNotMatch(prepare.statusText, /thành công/);
+  assert.doesNotMatch(prepare.statusText, /Đang (?:chuẩn bị|tải|xác nhận|cập nhật)/);
+  assert.equal(prepare.inputDisabled, false, "prepare failure releases the file input");
+  assert.equal(prepare.buttonDisabled, false, "prepare failure releases submit");
+  assert.equal(prepare.fetchCalls.filter((url) => url.endsWith("/upload/prepare")).length, 1);
+  assert.equal(prepare.uploadCalls, 0);
+  assert.equal(prepare.fetchCalls.filter((url) => url.endsWith("/upload/finalize")).length, 0);
+  assert.equal(prepare.refreshCalls, 0);
+
+  const storage = await run({ uploadError: true });
+  assert.equal(storage.role, "alert");
+  assert.match(storage.statusText, /Không thể tải tệp tài liệu/);
+  assert.doesNotMatch(storage.statusText, /thành công/);
+  assert.doesNotMatch(storage.statusText, /Đang (?:chuẩn bị|tải|xác nhận|cập nhật)/);
+  assert.equal(storage.inputDisabled, false, "storage failure releases the file input");
+  assert.equal(storage.buttonDisabled, false, "storage failure releases submit");
+  assert.equal(storage.fetchCalls.filter((url) => url.endsWith("/upload/prepare")).length, 1);
+  assert.equal(storage.uploadCalls, 1);
+  assert.equal(storage.fetchCalls.filter((url) => url.endsWith("/upload/finalize")).length, 0, "storage failure must skip finalize");
+  assert.equal(storage.refreshCalls, 0);
+
+  const finalize = await run({ finalizeStatus: 500 });
+  assert.equal(finalize.role, "alert");
+  assert.match(finalize.statusText, /Không thể tải tệp tài liệu/);
+  assert.doesNotMatch(finalize.statusText, /thành công/);
+  assert.doesNotMatch(finalize.statusText, /Đang (?:chuẩn bị|tải|xác nhận|cập nhật)/);
+  assert.equal(finalize.inputDisabled, false, "finalize failure releases the file input");
+  assert.equal(finalize.buttonDisabled, false, "finalize failure releases submit");
+  assert.equal(finalize.fetchCalls.filter((url) => url.endsWith("/upload/prepare")).length, 1);
+  assert.equal(finalize.uploadCalls, 1);
+  assert.equal(finalize.fetchCalls.filter((url) => url.endsWith("/upload/finalize")).length, 1);
+  assert.equal(finalize.refreshCalls, 0);
+});
+
+test("server version equal to or above pending version confirms success", async () => {
+  const atPendingVersion = await run({ initialVersion: 4, refreshedVersion: 5 });
+  assert.match(atPendingVersion.statusText, /Tải tệp tài liệu thành công/);
+  assert.equal(atPendingVersion.inputDisabled, false);
+  assert.equal(atPendingVersion.buttonDisabled, false);
+  const abovePendingVersion = await run({ initialVersion: 4, refreshedVersion: 6 });
+  assert.match(abovePendingVersion.statusText, /Tải tệp tài liệu thành công/);
+  assert.equal(abovePendingVersion.inputDisabled, false);
+  assert.equal(abovePendingVersion.buttonDisabled, false);
+  for (const result of [atPendingVersion, abovePendingVersion]) {
+    assert.equal(result.fetchCalls.filter((url) => url.endsWith("/upload/prepare")).length, 1);
+    assert.equal(result.uploadCalls, 1);
+    assert.equal(result.fetchCalls.filter((url) => url.endsWith("/upload/finalize")).length, 1);
+    assert.equal(result.refreshCalls, 1);
   }
 });
 
