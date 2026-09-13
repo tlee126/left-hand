@@ -9,7 +9,7 @@ import { mock } from "node:test";
 import { readFile } from "node:fs/promises";
 import { transform } from "esbuild";
 const scenario = JSON.parse(process.argv[1]);
-const timeline = [], calls = [], mutations = [], forms = [], controls = [], headings = [], links = [];
+const timeline = [], calls = [], mutations = [], forms = [], controls = [], headings = [], links = [], metadataQueries = [], articleTexts = [];
 const id = "11111111-1111-1111-1111-111111111111";
 const access = scenario.access ?? { status: "approved", profile: { role: "admin" } };
 const modules = Object.fromEntries(["auth", "repo", "actions", "nav", "jsx", "link", "cache"].map(key => [key, "data:text/javascript,catalog-ui-" + key]));
@@ -42,7 +42,9 @@ mock.module(modules.repo, { namedExports: {
  ...Object.fromEntries(["Subjects", "Materials", "Courses", "Tutors"].map(entity => ["listAdmin" + entity, async (...args) => {
   timeline.push("repository:" + entity); calls.push({name: "listAdmin" + entity, args});
   if (scenario.fail === entity || scenario.fail === true) throw Error("SQL SELECT PRIVATE_SECRET 0901234567 PRIVATE_NOTE stack trace");
-  return scenario.empty ? [] : Array.from({length: scenario.rows ?? 1}, () => row);
+  if (scenario.empty) return [];
+  if (entity === "Materials" && Array.isArray(scenario.materialIds)) return scenario.materialIds.map((materialId, index) => ({...row, id: materialId, title: "Material " + String.fromCharCode(65 + index)}));
+  return Array.from({length: scenario.rows ?? 1}, () => row);
  }]))
 } });
 mock.module(modules.actions, { namedExports: Object.fromEntries(["Subject", "Material", "Course", "Tutor"].flatMap(entity => ["create", "update", "delete"].map(verb => {
@@ -58,6 +60,11 @@ async function load(file) {
  }
  const database = await transform(await readFile("lib/supabase/database.types.ts", "utf8"), {loader: "ts", format: "esm"});
  source = source.replaceAll("@/lib/supabase/database.types", "data:text/javascript," + encodeURIComponent(database.code));
+ globalThis.__metadataScenario = scenario; globalThis.__metadataQueries = metadataQueries;
+ const metadataRepositoryModule = "data:text/javascript," + encodeURIComponent("export async function listCurrentMaterialAssetMetadata(ids) { globalThis.__metadataQueries.push([...ids]); if (globalThis.__metadataScenario.assetFailure) throw Error('private asset query detail'); return globalThis.__metadataScenario.assets ?? {}; }");
+ source = source.replace(/await import\("@\/lib\/repositories\/material-asset-repository"\)/, "await import(" + JSON.stringify(metadataRepositoryModule) + ")");
+ const metadataUtil = await transform(await readFile("app/quan-tri/catalog/material-asset-metadata.ts", "utf8"), {loader: "ts", format: "esm"});
+ source = source.replaceAll("./material-asset-metadata", "data:text/javascript," + encodeURIComponent(metadataUtil.code));
  for (const [from, to] of [["@/lib/auth/session", "auth"], ["@/lib/repositories/admin-catalog-repository", "repo"], ["@/lib/domain/subjects", domainSubjectsModule], ["@/lib/domain/product-types", domainProductTypesModule], ["./actions", "actions"], ["./material-upload-form", materialUploadModule], ["./material-view-button", materialViewModule], ["./material-direct-access-panel", materialDirectAccessModule], ["next/navigation", "nav"], ["next/link", "link"]]) source = source.replaceAll(from, to.startsWith("data:") ? to : modules[to]);
  const result = await transform(source, {loader: "tsx", format: "esm", jsx: "automatic"});
  return (await import("data:text/javascript," + encodeURIComponent(result.code.replaceAll("react/jsx-runtime", modules.jsx)))).default;
@@ -86,6 +93,7 @@ function walk(node, current = null) {
  }
  if (["h1", "h2", "h3"].includes(node.type)) headings.push(textOf(node));
  if(node.type === "a") links.push({href: p.href, text: textOf(node).trim()});
+ if(node.type === "article") articleTexts.push(textOf(node).replace(/\s+/g, " "));
  walk(p.children, current);
 }
 let error, text = "";
@@ -106,10 +114,10 @@ try {
   await form.action(data);
  }
 } catch(e) {error = e.message;}
-console.log(JSON.stringify({timeline, calls, mutations, forms: forms.map(f => ({hasAction: typeof f.action === "function", controls: f.controls})), controls, headings, links, text, error}));
+console.log(JSON.stringify({timeline, calls, metadataQueries, articleTexts, mutations, forms: forms.map(f => ({hasAction: typeof f.action === "function", controls: f.controls})), controls, headings, links, text, error}));
 `;
 type Control = { name?: string; required: boolean; defaultValue?: string; defaultChecked?: boolean; options: string[] };
-type Result = { timeline: string[]; calls: {name: string; args: unknown[]}[]; mutations: {name: string; args: Record<string, unknown>[]}[]; forms: {hasAction: boolean; controls: Control[]}[]; controls: Control[]; headings: string[]; links: {href: string; text: string}[]; text: string; error?: string };
+type Result = { timeline: string[]; calls: {name: string; args: unknown[]}[]; metadataQueries: string[][]; articleTexts: string[]; mutations: {name: string; args: Record<string, unknown>[]}[]; forms: {hasAction: boolean; controls: Control[]}[]; controls: Control[]; headings: string[]; links: {href: string; text: string}[]; text: string; error?: string };
 async function run(scenario: Record<string, unknown> = {}): Promise<Result> {
  const {stdout} = await promisify(execFile)(process.execPath, ["--experimental-test-module-mocks", "--import", "tsx/esm", "-e", harness, JSON.stringify(scenario)], {maxBuffer: 4 * 1024 * 1024});
  return JSON.parse(stdout.trim());
@@ -208,6 +216,53 @@ test("empty states, fixed query banners, and repository failures disclose no pri
   for(const forbidden of ["private_secret", "private_note", "private_actor", "0901234567", "sql select", "stack trace", "gpa", "kế hoạch học tập", "môn đã học", "tiến độ tuần", "studentdashboardclient"]) assert.ok(!serialized.includes(forbidden), forbidden);
  }
  assert.equal((await run({invalidId: true})).forms.length, 4);
+});
+test("server catalog reload renders current MIME, size, and version from fresh repository data", async () => {
+ const first = await run({assets: { ["11111111-1111-1111-1111-111111111111"]: {version: 2, mimeType: "application/pdf", byteSize: 2048, mimeSupported: true, metadataComplete: true, status: "ready"} }});
+ const reloaded = await run({assets: { ["11111111-1111-1111-1111-111111111111"]: {version: 3, mimeType: "video/mp4", byteSize: 1048576, mimeSupported: true, metadataComplete: true, status: "ready"} }});
+ assert.deepEqual(first.metadataQueries, [["11111111-1111-1111-1111-111111111111"]]);
+ assert.ok(first.text.includes("Loại file: application/pdf"));
+ assert.ok(first.text.includes("Dung lượng: 2 KB"));
+ assert.ok(first.text.includes("Phiên bản: v2"));
+ assert.ok(reloaded.text.includes("Loại file: video/mp4"));
+ assert.ok(reloaded.text.includes("Dung lượng: 1 MB"));
+ assert.ok(reloaded.text.includes("Phiên bản: v3"));
+ assert.ok(!reloaded.text.includes("Phiên bản: v2"));
+ assert.doesNotMatch(reloaded.text, /storage_path|provider|signed|token|materials\//i);
+});
+test("admin catalog keeps two materials isolated and distinguishes empty, unsupported, incomplete, and query-error states", async () => {
+ const materialA = "21111111-1111-1111-1111-111111111111";
+ const materialB = "31111111-1111-1111-1111-111111111111";
+ const pair = await run({
+  materialIds: [materialA, materialB],
+  assets: {
+   [materialA]: {version: 4, mimeType: "application/pdf", byteSize: 4096, mimeSupported: true, metadataComplete: true, status: "ready"},
+   [materialB]: {version: 7, mimeType: "video/webm", byteSize: 8192, mimeSupported: true, metadataComplete: true, status: "ready"}
+  }
+ });
+ const cardA = pair.articleTexts.find(card => card.includes("Material A")) ?? "";
+ const cardB = pair.articleTexts.find(card => card.includes("Material B")) ?? "";
+ assert.ok(cardA.includes("application/pdf") && cardA.includes("v4"));
+ assert.ok(!cardA.includes("video/webm") && !cardA.includes("v7"));
+ assert.ok(cardB.includes("video/webm") && cardB.includes("v7"));
+ assert.ok(!cardB.includes("application/pdf") && !cardB.includes("v4"));
+ assert.deepEqual(pair.metadataQueries, [[materialA, materialB]]);
+
+ const unsupported = await run({assets: { ["11111111-1111-1111-1111-111111111111"]: {version: 9, mimeType: "application/octet-stream", byteSize: 99, mimeSupported: false, metadataComplete: true, status: "unsupported_mime"} }});
+ assert.ok(unsupported.text.includes("Loại file: application/octet-stream"));
+ assert.ok(unsupported.text.includes("Phiên bản: v9"));
+ assert.ok(unsupported.text.includes("chưa được hỗ trợ để xem"));
+ assert.ok(!unsupported.articleTexts[1]?.includes("Xem tài liệu"));
+
+ const incomplete = await run({assets: { ["11111111-1111-1111-1111-111111111111"]: {version: 10, mimeType: "application/pdf", byteSize: null, mimeSupported: true, metadataComplete: false, status: "incomplete_metadata"} }});
+ assert.ok(incomplete.text.includes("Dung lượng: Chưa có dữ liệu"));
+ assert.ok(incomplete.text.includes("Metadata của tệp hiện tại không đầy đủ"));
+ const empty = await run();
+ assert.ok(empty.text.includes("Chưa có tệp được tải lên."));
+ const failed = await run({assetFailure: true});
+ assert.ok(failed.text.includes("Không thể tải metadata tệp hiện tại"));
+ assert.ok(!failed.text.includes("Chưa có tệp được tải lên."));
+ assert.ok(!failed.text.includes("private asset query detail"));
 });
 test("pagination is bounded and admin layout retains exact navigation and home link", async () => {
  const paged = await run({rows: 21, params: {page: "2"}});
