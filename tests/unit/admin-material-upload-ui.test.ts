@@ -30,6 +30,12 @@ const constantsModule = dataUrl("export const MAX_PDF_BYTES = 20971520; export c
 const attemptModule = dataUrl("export function getOrCreateMaterialUploadAttempt(previous, identity) { return previous && previous.productId === identity.productId && previous.originalName === identity.originalName && previous.mimeType === identity.mimeType && previous.byteSize === identity.byteSize ? previous : { ...identity, idempotencyKey: 'a50e8400-e29b-41d4-a716-446655440000' }; }");
 const navigationModule = dataUrl("export function useRouter() { return globalThis.__uploadRouter; }");
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => { resolve = complete; });
+  return { promise, resolve };
+}
+
 let MaterialUploadForm: (props: { productId: string; currentVersion: number | null; metadataReadError?: boolean }) => ReactNode | Promise<ReactNode>;
 before(async () => {
   const source = await (await import("node:fs/promises")).readFile("app/quan-tri/catalog/material-upload-form.tsx", "utf8");
@@ -137,6 +143,147 @@ test("successful finalize refreshes exactly once after the committed response", 
   assert.equal(result.refreshCalls, 1);
   assert.match(result.statusText, /Tải tệp tài liệu thành công/);
   assert.equal(result.role, "status");
+});
+
+test("near-simultaneous submits reuse one in-flight upload and wait for refreshed server props", async () => {
+  const prepareResponse = deferred<Response>();
+  const storageResponse = deferred<{ error: Error | null }>();
+  const finalizeResponse = deferred<Response>();
+  const uploadStarted = deferred<void>();
+  const finalizeStarted = deferred<void>();
+  const refreshStarted = deferred<void>();
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/quan-tri/catalog" });
+  const original = {
+    window: globalThis.window,
+    document: globalThis.document,
+    navigator: globalThis.navigator,
+    HTMLElement: globalThis.HTMLElement,
+    Node: globalThis.Node,
+    DOMException: globalThis.DOMException,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT,
+    fetch: globalThis.fetch,
+    consoleError: console.error
+  };
+  const install = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, value, writable: true });
+  install("window", dom.window);
+  install("document", dom.window.document);
+  install("navigator", dom.window.navigator);
+  install("HTMLElement", dom.window.HTMLElement);
+  install("Node", dom.window.Node);
+  install("DOMException", dom.window.DOMException);
+  install("IS_REACT_ACT_ENVIRONMENT", true);
+
+  const consoleErrors: unknown[][] = [];
+  const windowErrors: string[] = [];
+  const onWindowError = (event: ErrorEvent) => windowErrors.push(event.message);
+  dom.window.addEventListener("error", onWindowError);
+  console.error = (...args: unknown[]) => { consoleErrors.push(args); };
+
+  let refreshCalls = 0;
+  let uploadCalls = 0;
+  let currentVersion: number | null = null;
+  let root: ReturnType<typeof createRoot> | null = null;
+  const fetchCalls: string[] = [];
+  (globalThis as typeof globalThis & { __uploadRouter?: unknown; __uploadCreateClient?: unknown }).__uploadRouter = {
+    refresh() {
+      refreshCalls += 1;
+      refreshStarted.resolve();
+    }
+  };
+  (globalThis as typeof globalThis & { __uploadCreateClient?: unknown }).__uploadCreateClient = () => ({
+    storage: { from() { return { uploadToSignedUrl() { uploadCalls += 1; uploadStarted.resolve(); return storageResponse.promise; } }; } }
+  });
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    fetchCalls.push(url);
+    if (url.endsWith("/upload/prepare")) return prepareResponse.promise;
+    if (url.endsWith("/upload/finalize")) {
+      finalizeStarted.resolve();
+      return finalizeResponse.promise;
+    }
+    return Response.json({ success: true });
+  };
+
+  const container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  const submit = async () => act(async () => {
+    container.querySelector("form")!.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+  });
+
+  try {
+    await act(async () => root!.render(createElement(MaterialUploadForm, { productId: PRODUCT_ID, currentVersion })));
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [new dom.window.File(["%PDF-1.4"], "material.pdf", { type: "application/pdf" })]
+    });
+
+    await submit();
+    assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/prepare")).length, 1);
+    assert.equal((container.querySelector('input[type="file"]') as HTMLInputElement).disabled, true);
+    assert.equal((container.querySelector('button[type="submit"]') as HTMLButtonElement).disabled, true);
+    assert.match(container.querySelector('[role="status"]')?.textContent ?? "", /Đang chuẩn bị tải lên/);
+
+    await submit();
+    assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/prepare")).length, 1, "second submit while prepare is pending must not start another prepare");
+    assert.equal(uploadCalls, 0);
+    assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/finalize")).length, 0);
+    assert.equal(refreshCalls, 0);
+
+    await act(async () => {
+      prepareResponse.resolve(Response.json({
+        reservationId: "750e8400-e29b-41d4-a716-446655440001",
+        version: 5,
+        status: "reserved",
+        upload: { bucket: "materials", path: "opaque", token: "opaque" }
+      }));
+      await uploadStarted.promise;
+    });
+    assert.equal(uploadCalls, 1);
+    assert.equal((container.querySelector('input[type="file"]') as HTMLInputElement).disabled, true);
+    assert.match(container.querySelector('[role="status"]')?.textContent ?? "", /Đang tải tệp trực tiếp/);
+    assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/prepare")).length, 1);
+
+    await act(async () => {
+      storageResponse.resolve({ error: null });
+      await finalizeStarted.promise;
+    });
+    assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/finalize")).length, 1);
+    assert.equal(uploadCalls, 1);
+
+    await act(async () => {
+      finalizeResponse.resolve(Response.json({ success: true, version: 5 }));
+      await refreshStarted.promise;
+    });
+    assert.equal(refreshCalls, 1);
+    assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/prepare")).length, 1, "completing the first flow must not create a deferred duplicate request");
+    assert.equal(uploadCalls, 1);
+    assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/finalize")).length, 1);
+    assert.doesNotMatch(container.querySelector('[role="status"]')?.textContent ?? "", /Tải tệp tài liệu thành công/);
+
+    currentVersion = 5;
+    await act(async () => root!.render(createElement(MaterialUploadForm, { productId: PRODUCT_ID, currentVersion })));
+    assert.match(container.querySelector('[role="status"]')?.textContent ?? "", /Tải tệp tài liệu thành công/);
+    assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/prepare")).length, 1);
+    assert.equal(uploadCalls, 1);
+    assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/finalize")).length, 1);
+    assert.equal(refreshCalls, 1);
+    assert.deepEqual(consoleErrors, []);
+    assert.deepEqual(windowErrors, []);
+  } finally {
+    if (root) await act(async () => root!.unmount());
+    container.remove();
+    dom.window.removeEventListener("error", onWindowError);
+    dom.window.close();
+    globalThis.fetch = original.fetch;
+    console.error = original.consoleError;
+    for (const [name, value] of Object.entries(original)) {
+      if (name !== "fetch" && name !== "consoleError") install(name, value);
+    }
+    delete (globalThis as typeof globalThis & { __uploadRouter?: unknown }).__uploadRouter;
+    delete (globalThis as typeof globalThis & { __uploadCreateClient?: unknown }).__uploadCreateClient;
+  }
 });
 
 test("prepare, storage, and finalize failures never refresh or report success", async () => {
