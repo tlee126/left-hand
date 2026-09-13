@@ -47,6 +47,7 @@ export default function MaterialViewer({
   const [rendering, setRendering] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef(0);
+  const metadataControllerRef = useRef<AbortController | null>(null);
   const loadingTaskRef = useRef<PdfLoadingTask | null>(null);
   const pdfRef = useRef<PdfDocument | null>(null);
   const renderTaskRef = useRef<PdfRenderTask | null>(null);
@@ -63,21 +64,42 @@ export default function MaterialViewer({
   function destroyLoadingTask(): void {
     const loadingTask = loadingTaskRef.current;
     loadingTaskRef.current = null;
-    if (loadingTask) void loadingTask.destroy();
+    if (loadingTask) void loadingTask.destroy().catch(() => undefined);
   }
 
   function destroyPdf(): void {
     const currentPdf = pdfRef.current;
     pdfRef.current = null;
-    if (currentPdf) void currentPdf.destroy();
+    if (currentPdf) void currentPdf.destroy().catch(() => undefined);
   }
 
-  useEffect(() => () => {
+  function cancelMetadataRequest(): void {
+    const controller = metadataControllerRef.current;
+    metadataControllerRef.current = null;
+    controller?.abort();
+  }
+
+  useEffect(() => {
     requestRef.current += 1;
+    cancelMetadataRequest();
     cancelRenderTask();
     destroyLoadingTask();
     destroyPdf();
-  }, []);
+    setOpen(false);
+    setLoading(false);
+    setError(null);
+    setResolvedMimeType(mimeType);
+    setPdf(null);
+    setPage(1);
+    setRendering(false);
+    return () => {
+      requestRef.current += 1;
+      cancelMetadataRequest();
+      cancelRenderTask();
+      destroyLoadingTask();
+      destroyPdf();
+    };
+  }, [productId, mimeType]);
 
   useEffect(() => {
     if (autoOpen) void openViewer();
@@ -119,9 +141,10 @@ export default function MaterialViewer({
   }, [open, page, pdf]);
 
   async function openViewer(): Promise<void> {
-    let currentMimeType = mimeType;
+    let currentMimeType = mimeType ?? resolvedMimeType;
     requestRef.current += 1;
     const requestId = requestRef.current;
+    cancelMetadataRequest();
     cancelRenderTask();
     destroyLoadingTask();
     destroyPdf();
@@ -130,14 +153,27 @@ export default function MaterialViewer({
     setLoading(true);
     setError(null);
     setPage(1);
+    setRendering(false);
     try {
       if (!currentMimeType) {
-        const metadataResponse = await fetch(`${viewEndpoint}?metadata=1`, { method: "GET", cache: "no-store" });
-        const metadata: unknown = await metadataResponse.json().catch(() => null);
-        const candidate = metadata && typeof metadata === "object" ? (metadata as { mimeType?: unknown }).mimeType : null;
-        if (!metadataResponse.ok || typeof candidate !== "string" || (candidate !== "application/pdf" && !isVideo(candidate))) throw new Error();
-        currentMimeType = candidate;
-        setResolvedMimeType(candidate);
+        const controller = new AbortController();
+        metadataControllerRef.current = controller;
+        try {
+          const metadataResponse = await fetch(`${viewEndpoint}?metadata=1`, {
+            method: "GET",
+            cache: "no-store",
+            credentials: "same-origin",
+            signal: controller.signal
+          });
+          if (requestId !== requestRef.current) return;
+          const metadata: unknown = await metadataResponse.json().catch(() => null);
+          const candidate = metadata && typeof metadata === "object" ? (metadata as { mimeType?: unknown }).mimeType : null;
+          if (!metadataResponse.ok || typeof candidate !== "string" || (candidate !== "application/pdf" && !isVideo(candidate))) throw new Error();
+          currentMimeType = candidate;
+          setResolvedMimeType(candidate);
+        } finally {
+          if (metadataControllerRef.current === controller) metadataControllerRef.current = null;
+        }
       }
     } catch {
       if (requestId === requestRef.current) {
@@ -146,18 +182,22 @@ export default function MaterialViewer({
       }
       return;
     }
+    if (requestId !== requestRef.current) return;
     if (currentMimeType === "application/pdf") {
       try {
-        const response = await fetch(viewEndpoint, { method: "GET", cache: "no-store" });
-        if (!response.ok) throw new Error();
         const { getDocument, GlobalWorkerOptions } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+        if (requestId !== requestRef.current) return;
         GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/legacy/build/pdf.worker.min.mjs", import.meta.url).toString();
-        const loadingTask = getDocument({ data: new Uint8Array(await response.arrayBuffer()) } as any) as unknown as PdfLoadingTask;
+        const loadingTask = getDocument({
+          url: viewEndpoint,
+          withCredentials: true,
+          disableRange: false,
+          disableStream: false
+        } as any) as unknown as PdfLoadingTask;
         loadingTaskRef.current = loadingTask;
         const loaded = await loadingTask.promise;
         if (requestId !== requestRef.current) {
-          await loadingTask.destroy();
-          await loaded.destroy();
+          await loaded.destroy().catch(() => undefined);
           return;
         }
         pdfRef.current = loaded;
@@ -175,14 +215,16 @@ export default function MaterialViewer({
 
   function closeViewer(): void {
     requestRef.current += 1;
+    cancelMetadataRequest();
     cancelRenderTask();
     destroyLoadingTask();
     destroyPdf();
     setPdf(null);
-    setResolvedMimeType(mimeType);
     setOpen(false);
     setLoading(false);
     setError(null);
+    setPage(1);
+    setRendering(false);
   }
 
   async function downloadMaterial(): Promise<void> {

@@ -15,6 +15,9 @@ let materials: Row[];
 let lessons: Row[];
 let requests: QueryRecord[];
 let directGrantBatchCalls: string[][];
+let mimeLookups: string[][];
+let mimeTypes: Record<string, string>;
+let mimeLookupFails: boolean;
 let repository: any;
 
 function uuid(index: number): string {
@@ -30,6 +33,9 @@ function resetData(): void {
   lessons = [];
   requests = [];
   directGrantBatchCalls = [];
+  mimeLookups = [];
+  mimeTypes = {};
+  mimeLookupFails = false;
 }
 
 function execute(table: string, filters: Array<[string, unknown]>, inFilter: [string, unknown[]] | null, range: [number, number] | null, limit: number | null, orders: string[]): { data: unknown; error: null } {
@@ -90,6 +96,7 @@ function configureProducts(count: number, allEntitled = true): void {
     .filter((_product, index) => allEntitled || index === 0)
     .map((product) => ({ user_id: USER_ID, product_id: product.id, status: "active", expires_at: null, revoked_at: null }));
   materials = products.filter((product) => product.kind === "material").map((product) => ({ product_id: product.id, pages: 10 }));
+  mimeTypes = Object.fromEntries(materials.map((material) => [material.product_id, "application/pdf"]));
   lessons = products.filter((product) => product.kind === "course").flatMap((product) => [
     { id: uuid(10_000 + Number.parseInt(product.id.slice(-4), 16) * 2), course_id: product.id, title: "Second", description: null, duration_minutes: 2, order_index: 2 },
     { id: uuid(20_000 + Number.parseInt(product.id.slice(-4), 16) * 2), course_id: product.id, title: "First", description: null, duration_minutes: 1, order_index: 1 }
@@ -115,6 +122,19 @@ before(async () => {
       isActiveMaterialDirectGrant: (grant: Row, userId: string, materialId: string) => grant.user_id === userId && grant.material_id === materialId && grant.revoked_at === null && (grant.expires_at === null || Date.parse(grant.expires_at) > Date.now())
     }
   } as any;
+  const materialAssetPath = require.resolve("../../lib/repositories/material-asset-repository");
+  require.cache[materialAssetPath] = {
+    id: materialAssetPath,
+    filename: materialAssetPath,
+    loaded: true,
+    exports: {
+      listCurrentMaterialMimeTypesForAuthorizedProducts: async (productIds: string[]) => {
+        mimeLookups.push([...productIds]);
+        if (mimeLookupFails) throw new Error("private asset metadata unavailable");
+        return Object.fromEntries(productIds.flatMap((productId) => mimeTypes[productId] ? [[productId, mimeTypes[productId]]] : []));
+      }
+    }
+  } as any;
   repository = await import("../../lib/repositories/student-workspace-repository");
 });
 
@@ -126,6 +146,7 @@ test("workspace reads normal material/course data with deterministic bounded que
 
   assert.equal(result?.hasNextPage, false);
   assert.deepEqual(result?.materials.map((row: any) => row.productId), [products[0].id]);
+  assert.equal(result?.materials[0].mimeType, "application/pdf");
   assert.deepEqual(result?.courses.map((row: any) => row.productId), [products[1].id]);
   assert.deepEqual(result?.courses[0].lessons.map((row: any) => row.orderIndex), [1, 2]);
   assert.ok(requests.every((request) => !request.inValues || request.inValues.length <= repository.STUDENT_WORKSPACE_ID_CHUNK_SIZE));
@@ -135,6 +156,7 @@ test("workspace reads normal material/course data with deterministic bounded que
     ["student_workspace_product_read_surface", "id, subject_id, kind, title, description"]
   ]);
   assert.ok(requests.every((request) => request.columns !== "*"));
+  assert.deepEqual(mimeLookups, [[products[0].id]], "server MIME lookup receives only the entitlement-authorized material IDs");
 });
 
 test("workspace skips child and entitlement queries when their ID lists are empty", async () => {
@@ -144,6 +166,7 @@ test("workspace skips child and entitlement queries when their ID lists are empt
   const materialOnly = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
   assert.equal(materialOnly?.materials.length, 1);
   assert.equal(requests.some((request) => request.table === "course_lessons"), false);
+  assert.deepEqual(mimeLookups, [[products[0].id]], "material MIME is fetched only after the material row is authorized");
 
   resetData();
   configureProducts(1);
@@ -153,6 +176,18 @@ test("workspace skips child and entitlement queries when their ID lists are empt
   const courseOnly = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
   assert.equal(courseOnly?.courses.length, 1);
   assert.equal(requests.some((request) => request.table === "learner_material_read_surface"), false);
+  assert.deepEqual(mimeLookups, [], "a course-only workspace never reads material MIME");
+});
+
+test("private MIME lookup failure preserves the authorized workspace and leaves MIME fallback available", async () => {
+  configureProducts(1);
+  mimeLookupFails = true;
+
+  const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
+
+  assert.equal(result?.materials[0].productId, products[0].id);
+  assert.equal(result?.materials[0].mimeType, null);
+  assert.deepEqual(mimeLookups, [[products[0].id]]);
 });
 
 test("workspace rejects missing material metadata before querying lessons or returning partial data", async () => {
@@ -183,6 +218,7 @@ test("workspace rejects missing material metadata before querying lessons or ret
   ], "repository stops after the missing metadata read; no lesson query follows");
   assert.equal(requests.filter((request) => request.table === "learner_material_read_surface").length, 1);
   assert.equal(requests.filter((request) => request.table === "course_lessons").length, 0, "the existing authorized course lesson is never queried after missing metadata is detected");
+  assert.deepEqual(mimeLookups, [], "MIME is not read before authorized learner material metadata is validated");
 });
 
 test("workspace rejects duplicate authorized learner material metadata without returning partial data", async () => {
@@ -225,6 +261,8 @@ test("direct-granted materials are visible without entitlement and use direct do
   const result = await repository.getAuthorizedStudentWorkspace(USER_ID, "ke-toan");
 
   assert.deepEqual(result?.materials.map((row: any) => ({ productId: row.productId, allowDownload: row.allowDownload })), [{ productId: products[0].id, allowDownload: true }]);
+  assert.equal(result?.materials[0].mimeType, "application/pdf");
+  assert.deepEqual(mimeLookups, [[products[0].id]], "direct-grant authorization precedes the server MIME lookup");
 });
 
 test("direct-grant-only published, draft, and archived materials satisfy the workspace repository contract", async () => {

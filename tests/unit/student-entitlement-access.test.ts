@@ -38,6 +38,7 @@ let subjectCalls: string[] = [];
 let productCalls: string[] = [];
 let entitlementCalls: Array<[string, string]> = [];
 let materialCalls: string[][] = [];
+let mimeCalls: Array<{ columns: string; ids: string[] }> = [];
 let lessonCalls: string[][] = [];
 let capturedButtons: Array<Record<string, unknown>> = [];
 let renderedWorkspace: unknown = null;
@@ -113,6 +114,7 @@ function reset() {
   productCalls = [];
   entitlementCalls = [];
   materialCalls = [];
+  mimeCalls = [];
   lessonCalls = [];
 }
 
@@ -344,6 +346,13 @@ before(async () => {
     getMaterialDirectGrantsForUserAndMaterials: async () => [],
     isActiveMaterialDirectGrant: () => false
   });
+  setMock(require.resolve("../../lib/repositories/material-asset-repository"), {
+    listCurrentMaterialMimeTypesForAuthorizedProducts: async (productIds: string[]) => {
+      timeline.push("material MIME lookup");
+      mimeCalls.push({ columns: "product_id, version, visibility, mime_type", ids: [...productIds] });
+      return Object.fromEntries(productIds.filter((productId) => uuidEquals(productId, PRODUCT_ID)).map((productId) => [productId.toLowerCase(), "application/pdf"]));
+    }
+  });
   setMock(require.resolve("../../components/site/header"), { Header: runtimeAdapter("header") });
   setMock(require.resolve("../../components/site/footer"), { Footer: runtimeAdapter("footer") });
   setMock(require.resolve("../../components/site/floating-actions"), { FloatingActions: runtimeAdapter("aside") });
@@ -523,6 +532,7 @@ test("multiple matching entitlement rows fail closed, while one valid row among 
     "subject lookup",
     "product lookup",
     "entitlement lookup",
+    "material MIME lookup",
     "authorized workspace data",
     "client render"
   ]);
@@ -575,6 +585,7 @@ test("authorized page executes the complete guard-to-render timeline and passes 
     "subject lookup",
     "product lookup",
     "entitlement lookup",
+    "material MIME lookup",
     "authorized workspace data",
     "client render"
   ]);
@@ -585,6 +596,7 @@ test("authorized page executes the complete guard-to-render timeline and passes 
   assert.match(markup, /Học liệu đã được cấp quyền/);
   assert.deepEqual(renderedWorkspace, {
     ...workspaceData,
+    materials: [{ ...workspaceData.materials[0], mimeType: "application/pdf" }],
     subject: { ...workspaceData.subject },
     progressUnavailable: true
   });
@@ -609,7 +621,7 @@ test("real client exposes server-backed continuation and explicit overflow or pr
   assert.match(progressFailure, /Tiến độ hiện chưa thể tải/);
 });
 
-test("real client renders only server-authorized fields and uses the view-only API boundary", async () => {
+test("real client receives server-authorized MIME and exposes only the view-only app boundary", async () => {
   clientInitialTab = "documents";
   const markup = await renderPageMarkup();
   const materialButton = capturedButtons.find((button) => flattenText(button.children).includes("Mở tài liệu"));
@@ -625,30 +637,8 @@ test("real client renders only server-authorized fields and uses the view-only A
   assert.match(directMarkup, /Được cấp riêng/);
   assert.doesNotMatch(markup, /UNAUTHORIZED|purchasedSubjects|localStorage|left-hand-demo-auth/);
   assert.doesNotMatch(markup, new RegExp(`${STORAGE_PATH}|${BUCKET_NAME}|${RAW_ERROR}|${PII}`));
-
-  const fetchCalls: Array<[string, RequestInit | undefined]> = [];
-  const openedUrls: string[] = [];
-  const originalFetch = globalThis.fetch;
-  const originalWindow = (globalThis as { window?: unknown }).window;
-  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    fetchCalls.push([String(input), init]);
-    return new Response(JSON.stringify({ mimeType: "application/pdf" }), {
-      status: 200,
-      headers: { "content-type": "application/json" }
-    });
-  };
-  (globalThis as { window?: { open: (...args: string[]) => void } }).window = {
-    open: (url: string) => openedUrls.push(url)
-  };
-  try {
-    await (materialButton.onClick as () => Promise<void>)();
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
-    else (globalThis as { window?: unknown }).window = originalWindow;
-  }
-  assert.deepEqual(fetchCalls, [[`/api/materials/${PRODUCT_ID}/view?metadata=1`, { method: "GET", cache: "no-store" }]]);
-  assert.deepEqual(openedUrls, []);
+  assert.equal((renderedWorkspace as typeof workspaceData).materials[0].mimeType, "application/pdf");
+  assert.deepEqual(mimeCalls, [{ columns: "product_id, version, visibility, mime_type", ids: [PRODUCT_ID] }]);
   assert.doesNotMatch(markup, /Tải xuống/);
 });
 

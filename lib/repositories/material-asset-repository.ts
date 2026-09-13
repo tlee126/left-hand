@@ -10,7 +10,8 @@ import {
   isValidMaterialStoragePathForProductAndVersion,
   isValidMaterialUuid,
   materialSizeLimit,
-  sanitizeMaterialFilename
+  sanitizeMaterialFilename,
+  type SupportedMaterialMimeType
 } from "@/lib/storage/material-storage";
 
 type MaterialAssetRow = Database["public"]["Tables"]["material_assets"]["Row"];
@@ -404,6 +405,47 @@ export async function listCurrentMaterialAssetMetadata(productIds: readonly stri
       }
       return result;
     }, {});
+  } catch {
+    throw new MaterialAssetRepositoryError();
+  }
+}
+
+/**
+ * Reads only MIME values for products the server caller has already authorized.
+ * This intentionally uses the server-only admin client because learners have no
+ * direct read privilege on material_assets; no storage capability or path leaves
+ * this repository.
+ */
+export async function listCurrentMaterialMimeTypesForAuthorizedProducts(
+  productIds: readonly string[]
+): Promise<Record<string, SupportedMaterialMimeType>> {
+  validateProductIds(productIds);
+  if (productIds.length === 0) return {};
+  const canonicalProductIds = productIds.map((productId) => productId.toLowerCase());
+  const authorizedProductIds = new Set(canonicalProductIds);
+  try {
+    const supabase = createServerAdminClient();
+    const { data, error } = await supabase
+      .from("material_assets")
+      .select("product_id, version, visibility, mime_type")
+      .in("product_id", canonicalProductIds)
+      .eq("visibility", "private")
+      .order("product_id", { ascending: true })
+      .order("version", { ascending: false });
+    if (error || !Array.isArray(data)) throw new Error();
+    const result: Record<string, SupportedMaterialMimeType> = {};
+    const newestVersions = new Set<string>();
+    for (const row of data) {
+      const productId = typeof row.product_id === "string" && isValidMaterialUuid(row.product_id)
+        ? row.product_id.toLowerCase()
+        : null;
+      if (!productId || !authorizedProductIds.has(productId) || newestVersions.has(productId)) continue;
+      newestVersions.add(productId);
+      if (row.visibility === "private" && Number.isSafeInteger(row.version) && row.version >= 1 && isSupportedMaterialMimeType(row.mime_type)) {
+        result[productId] = row.mime_type;
+      }
+    }
+    return result;
   } catch {
     throw new MaterialAssetRepositoryError();
   }

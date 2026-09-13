@@ -37,6 +37,7 @@ let signerCalls: string[] = [];
 let signerProductCalls: string[] = [];
 let mutationCalls: string[] = [];
 let viewerCalls: string[] = [];
+let viewerRangeHeaders: Array<string | null> = [];
 let viewerStatus: number | null = null;
 let directGrants: unknown[] = [];
 let directListMissingMaterial = false;
@@ -198,6 +199,7 @@ before(async () => {
     fetchMaterialObjectForViewer: async (storagePath: string, expectedProductId: string, rangeHeader?: string | null) => {
       timeline.push("viewer");
       viewerCalls.push(`${storagePath}:${expectedProductId}`);
+      viewerRangeHeaders.push(rangeHeader ?? null);
       return new Response(viewerStatus === 416 ? null : (rangeHeader ? "RANGE_BYTES" : "PRIVATE_BYTES"), {
         status: viewerStatus ?? (rangeHeader ? 206 : 200),
         headers: {
@@ -241,6 +243,7 @@ afterEach(() => {
   signerProductCalls = [];
   mutationCalls = [];
   viewerCalls = [];
+  viewerRangeHeaders = [];
   viewerStatus = null;
   directGrants = [];
   directListMissingMaterial = false;
@@ -557,12 +560,15 @@ test("authorized view preserves provider range headers while an unauthorized ran
   assert.equal(ranged.headers.get("Content-Length"), "11");
   assert.equal(ranged.headers.get("Accept-Ranges"), "bytes");
   assert.deepEqual(timeline, ["auth", "direct-grant", "entitlement", "asset", "viewer"]);
+  assert.deepEqual(viewerRangeHeaders, ["bytes=0-10"], "the app forwards the browser's Range header into the private storage adapter");
+  assert.equal(JSON.stringify([...ranged.headers]).includes(SIGNED_URL), false);
 
   timeline = [];
   entitlement = null;
   const denied = await requestView(PRODUCT_ID, { Range: "bytes=0-10" });
   await assertGeneric(denied);
   assert.deepEqual(timeline, ["auth", "direct-grant", "entitlement"]);
+  assert.deepEqual(viewerRangeHeaders, ["bytes=0-10"], "unauthorized ranges never reach private storage");
 });
 
 test("download streams video attachments through the same server boundary", async () => {
