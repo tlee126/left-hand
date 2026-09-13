@@ -183,10 +183,12 @@ test("near-simultaneous submits reuse one in-flight upload and wait for refreshe
   const uploadStarted = deferred<void>();
   const finalizeStarted = deferred<void>();
   const refreshStarted = deferred<void>();
-  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/quan-tri/catalog" });
+  let dom: any = null;
   const original = snapshotGlobals();
   const originalConsoleError = console.error;
+  const originalStderrWrite = process.stderr.write;
   const consoleErrors: unknown[][] = [];
+  let forwardedConsoleOutput = "";
   const windowErrors: string[] = [];
   const onWindowError = (event: ErrorEvent) => windowErrors.push(event.message);
   let root: ReturnType<typeof createRoot> | null = null;
@@ -197,6 +199,7 @@ test("near-simultaneous submits reuse one in-flight upload and wait for refreshe
   let currentVersion: number | null = 4;
   const fetchCalls: string[] = [];
   try {
+  dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/quan-tri/catalog" });
   install("window", dom.window);
   install("document", dom.window.document);
   install("navigator", dom.window.navigator);
@@ -206,7 +209,27 @@ test("near-simultaneous submits reuse one in-flight upload and wait for refreshe
   install("IS_REACT_ACT_ENVIRONMENT", true);
 
   dom.window.addEventListener("error", onWindowError);
-  console.error = (...args: unknown[]) => { consoleErrors.push(args); originalConsoleError(...args); };
+  process.stderr.write = function (this: NodeJS.WriteStream, chunk: string | Uint8Array, ...args: unknown[]) {
+    const text = String(chunk);
+    if (text.includes("F-02 controlled console.error marker")) forwardedConsoleOutput += text;
+    return Reflect.apply(originalStderrWrite, this, [chunk, ...args]);
+  } as typeof process.stderr.write;
+  console.error = (...args: unknown[]) => { consoleErrors.push(args); Reflect.apply(originalConsoleError, console, args); };
+  const consoleMarker = "F-02 controlled console.error marker";
+  console.error(consoleMarker);
+  assert.deepEqual(consoleErrors, [[consoleMarker]], "calling console.error must populate the collector");
+  assert.match(forwardedConsoleOutput, new RegExp(consoleMarker), "the captured original console.error must still write to stderr");
+
+  const windowMarker = "F-02 controlled window error marker";
+  const windowError = new dom.window.ErrorEvent("error", {
+    message: windowMarker,
+    error: new dom.window.Error(windowMarker),
+    cancelable: true
+  });
+  assert.equal(dom.window.dispatchEvent(windowError), true, "the window error event must not be canceled");
+  assert.equal(windowError.defaultPrevented, false);
+  assert.deepEqual(windowErrors, [windowMarker], "dispatching a window ErrorEvent must populate the listener collector");
+
   (globalThis as typeof globalThis & { __uploadRouter?: unknown; __uploadCreateClient?: unknown }).__uploadRouter = {
     refresh() {
       refreshCalls += 1;
@@ -308,16 +331,23 @@ test("near-simultaneous submits reuse one in-flight upload and wait for refreshe
     assert.equal(uploadCalls, 1);
     assert.equal(fetchCalls.filter((url) => url.endsWith("/upload/finalize")).length, 1);
     assert.equal(refreshCalls, 1);
-    assert.deepEqual(consoleErrors, []);
-    assert.deepEqual(windowErrors, []);
+    assert.deepEqual(consoleErrors, [[consoleMarker]], "the upload flow must not add console errors");
+    assert.match(forwardedConsoleOutput, new RegExp(consoleMarker));
+    assert.deepEqual(windowErrors, [windowMarker], "the upload flow must not add window errors");
   } finally {
     const restoreErrors: unknown[] = [];
     const cleanupErrors = await cleanupSteps([
       async () => { if (root) await act(async () => root!.unmount()); },
       () => { container?.remove(); },
-      () => { dom.window.removeEventListener("error", onWindowError); },
-      () => { dom.window.close(); },
+      () => { dom?.window.removeEventListener("error", onWindowError); },
+      () => {
+        if (!dom) return;
+        dom.window.dispatchEvent(new dom.window.ErrorEvent("error", { message: "F-02 cleanup listener probe" }));
+        assert.deepEqual(windowErrors, ["F-02 controlled window error marker"], "the listener must not receive errors after cleanup");
+      },
+      () => { dom?.window.close(); },
       () => { console.error = originalConsoleError; },
+      () => { process.stderr.write = originalStderrWrite; },
       () => { restoreGlobals(original, restoreErrors); }
     ]);
     assert.deepEqual([...cleanupErrors, ...restoreErrors], [], "all cleanup steps must run even if one step fails");
