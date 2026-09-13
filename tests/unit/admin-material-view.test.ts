@@ -59,10 +59,15 @@ installGlobal("DOMException", dom.window.DOMException);
 installGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 dom.window.HTMLCanvasElement.prototype.getContext = () => ({});
 
-const requestedPages = [], renderedPages = [];
-let pdfDestroyCalls = 0, loadingDestroyCalls = 0, renderCancelCalls = 0, getDocumentCalls = 0, fetchCalls = 0;
+const requestedPages = [], renderedPages = [], getDocumentOptions = [], fetchCalls = [];
+let pdfDestroyCalls = 0, loadingDestroyCalls = 0, renderCancelCalls = 0, getDocumentCalls = 0, bodyMaterializationCalls = 0;
 let workerAtCall, disableWorker;
-let resolveFirstFetch;
+let resolveFirstLoad;
+let resolveStaleLoad;
+let resolveClosedLoad;
+let resolvePendingMetadata;
+let deferMetadata = false;
+let lastMetadataSignal;
 let resolveSecondRender;
 const pdf = {
   numPages: 2,
@@ -79,20 +84,37 @@ const pdf = {
   },
   destroy: async () => { pdfDestroyCalls += 1; }
 };
+let stalePdfDestroyCalls = 0;
+let closedPdfDestroyCalls = 0;
+const stalePdf = { numPages: 7, getPage: async () => { throw new Error("stale PDF must not render"); }, destroy: async () => { stalePdfDestroyCalls += 1; } };
+const closedPdf = { numPages: 9, getPage: async () => { throw new Error("closed PDF must not render"); }, destroy: async () => { closedPdfDestroyCalls += 1; } };
 globalThis.__workerOptions = {};
 globalThis.__getDocument = options => {
   getDocumentCalls += 1;
+  getDocumentOptions.push(options);
   workerAtCall = globalThis.__workerOptions.workerSrc;
   disableWorker = options.disableWorker;
-  return { promise: Promise.resolve(pdf), destroy: async () => { loadingDestroyCalls += 1; } };
+  const promise = getDocumentCalls === 1
+    ? new Promise(resolve => { resolveFirstLoad = resolve; })
+    : getDocumentCalls === 2
+      ? Promise.reject(new Error("PDF reload failed"))
+      : getDocumentCalls === 5
+        ? new Promise(resolve => { resolveStaleLoad = resolve; })
+        : getDocumentCalls === 7
+          ? new Promise(resolve => { resolveClosedLoad = resolve; })
+      : Promise.resolve(pdf);
+  return { promise, destroy: async () => { loadingDestroyCalls += 1; } };
 };
-globalThis.fetch = async () => {
-  fetchCalls += 1;
-  if (fetchCalls === 1) return new Promise(resolve => { resolveFirstFetch = resolve; });
-  return fetchCalls === 2
-    ? new Response(null, { status: 500 })
-    : new Response(new Uint8Array([37, 80, 68, 70]), { status: 200, headers: { "Content-Type": "application/pdf" } });
+globalThis.fetch = async (input, init) => {
+  fetchCalls.push({ input: String(input), init });
+  if (String(input).endsWith("?metadata=1")) lastMetadataSignal = init?.signal;
+  if (deferMetadata && String(input).endsWith("?metadata=1")) return new Promise(resolve => { resolvePendingMetadata = resolve; });
+  return Response.json({ mimeType: "application/pdf" });
 };
+const originalArrayBuffer = Response.prototype.arrayBuffer;
+const originalBlob = Response.prototype.blob;
+Response.prototype.arrayBuffer = function() { bodyMaterializationCalls += 1; return originalArrayBuffer.call(this); };
+Response.prototype.blob = function() { bodyMaterializationCalls += 1; return originalBlob.call(this); };
 
 const container = document.createElement("div");
 document.body.append(container);
@@ -105,8 +127,9 @@ const button = label => {
 };
 await act(async () => { root.render(createElement(component, { productId: "2f7c5d75-4c0c-4f6d-b6b4-1d5e3b9d1e64", mimeType: "application/pdf", allowDownload: false })); });
 await act(async () => { button("Mở tài liệu").click(); await Promise.resolve(); });
+await flush();
 const loadingShown = container.querySelector('[role="status"]') !== null;
-resolveFirstFetch(new Response(new Uint8Array([37, 80, 68, 70]), { status: 200, headers: { "Content-Type": "application/pdf" } }));
+resolveFirstLoad(pdf);
 await flush();
 await act(async () => { button("Trang sau").click(); });
 await flush();
@@ -117,8 +140,52 @@ const closed = container.querySelector('[role="dialog"]') === null && container.
 await act(async () => { button("Mở tài liệu").click(); });
 await flush();
 const errorShown = container.querySelector('[role="alert"]') !== null;
-console.log(JSON.stringify({ loadingShown, workerAtCall, disableWorker, getDocumentCalls, requestedPages, renderedPages, pdfDestroyCalls, loadingDestroyCalls, renderCancelCalls, hasNativeToolbar, closed, errorShown, fetchCalls }));
+await act(async () => { button("Đóng").click(); });
+const knownMimeFetchCalls = fetchCalls.length;
+await act(async () => { root.render(createElement(component, { productId: "750e8400-e29b-41d4-a716-446655440001", mimeType: null, allowDownload: false })); });
+await act(async () => { button("Mở tài liệu").click(); });
+await flush();
+await flush();
+await act(async () => { button("Đóng").click(); });
+await act(async () => { button("Mở tài liệu").click(); });
+await flush();
+const metadataFetchCalls = fetchCalls.filter(call => call.input.endsWith("?metadata=1"));
+await act(async () => { button("Đóng").click(); });
+await act(async () => { button("Mở tài liệu").click(); });
+await flush();
+const materialSwitchLoadingShown = container.querySelector('[role="status"]') !== null;
+await act(async () => { root.render(createElement(component, { productId: "950e8400-e29b-41d4-a716-446655440002", mimeType: "application/pdf", allowDownload: false })); });
+await flush();
+await act(async () => { button("Mở tài liệu").click(); });
+await flush();
+resolveStaleLoad(stalePdf);
+await flush();
+const materialSwitchStayedCurrent = container.querySelector("nav")?.textContent?.includes("Trang 1/2") === true;
+await act(async () => { button("Đóng").click(); });
+await act(async () => { button("Mở tài liệu").click(); });
+await flush();
+const closedLoadingShown = container.querySelector('[role="status"]') !== null;
+await act(async () => { button("Đóng").click(); });
+resolveClosedLoad(closedPdf);
+await flush();
+const closedWhileLoadingStayedClosed = container.querySelector('[role="dialog"]') === null && container.querySelector('[role="alert"]') === null;
+deferMetadata = true;
+await act(async () => { root.render(createElement(component, { productId: "a50e8400-e29b-41d4-a716-446655440004", mimeType: null, allowDownload: false })); });
+await act(async () => { button("Mở tài liệu").click(); });
+await flush();
+await act(async () => { button("Đóng").click(); });
+const metadataAbortObserved = lastMetadataSignal?.aborted === true;
+resolvePendingMetadata(Response.json({ mimeType: "application/pdf" }));
+await flush();
+const metadataCloseStayedClosed = container.querySelector('[role="dialog"]') === null && container.querySelector('[role="alert"]') === null;
+const allMetadataFetchCalls = fetchCalls.filter(call => call.input.endsWith("?metadata=1"));
+const usesAppUrl = getDocumentOptions.every(options => typeof options.url === "string" && /^\/api\/materials\/[0-9a-f-]+\/view$/.test(options.url));
+const credentialsEnabled = getDocumentOptions.every(options => options.withCredentials === true);
+const rangeAndStreamEnabled = getDocumentOptions.every(options => options.disableRange === false && options.disableStream === false);
 await act(async () => root.unmount());
+Response.prototype.arrayBuffer = originalArrayBuffer;
+Response.prototype.blob = originalBlob;
+console.log(JSON.stringify({ loadingShown, workerAtCall, disableWorker, getDocumentCalls, requestedPages, renderedPages, pdfDestroyCalls, loadingDestroyCalls, renderCancelCalls, hasNativeToolbar, closed, errorShown, fetchCalls, metadataFetchCalls, allMetadataFetchCalls, knownMimeFetchCalls, bodyMaterializationCalls, usesAppUrl, credentialsEnabled, rangeAndStreamEnabled, materialSwitchLoadingShown, materialSwitchStayedCurrent, stalePdfDestroyCalls, closedLoadingShown, closedWhileLoadingStayedClosed, closedPdfDestroyCalls, metadataAbortObserved, metadataCloseStayedClosed }));
 `;
 
 test("material view button visibility follows current asset presence", () => {
@@ -409,21 +476,53 @@ test("learner PDF viewer uses the bundled worker, renders multiple pages, and cl
     hasNativeToolbar: boolean;
     closed: boolean;
     errorShown: boolean;
-    fetchCalls: number;
+    fetchCalls: Array<{ input: string; init?: RequestInit }>;
+    metadataFetchCalls: Array<{ input: string; init?: RequestInit }>;
+    allMetadataFetchCalls: Array<{ input: string; init?: RequestInit }>;
+    knownMimeFetchCalls: number;
+    bodyMaterializationCalls: number;
+    usesAppUrl: boolean;
+    credentialsEnabled: boolean;
+    rangeAndStreamEnabled: boolean;
+    materialSwitchLoadingShown: boolean;
+    materialSwitchStayedCurrent: boolean;
+    stalePdfDestroyCalls: number;
+    closedLoadingShown: boolean;
+    closedWhileLoadingStayedClosed: boolean;
+    closedPdfDestroyCalls: number;
+    metadataAbortObserved: boolean;
+    metadataCloseStayedClosed: boolean;
   };
   assert.equal(result.loadingShown, true);
-  assert.equal(result.getDocumentCalls, 1);
+  assert.equal(result.getDocumentCalls, 7);
   assert.match(result.workerAtCall ?? "", /pdf\.worker\.min\.mjs/);
   assert.equal(result.disableWorker, undefined);
-  assert.deepEqual(result.requestedPages, [1, 2]);
-  assert.deepEqual(result.renderedPages, [1, 2]);
+  assert.deepEqual(result.requestedPages, [1, 2, 1, 1, 1]);
+  assert.deepEqual(result.renderedPages, [1, 2, 1, 1, 1]);
   assert.equal(result.hasNativeToolbar, false);
   assert.equal(result.closed, true);
-  assert.equal(result.pdfDestroyCalls, 1);
-  assert.equal(result.loadingDestroyCalls, 1);
+  assert.equal(result.pdfDestroyCalls, 4);
+  assert.equal(result.loadingDestroyCalls, 7);
   assert.ok(result.renderCancelCalls >= 1);
   assert.equal(result.errorShown, true);
-  assert.equal(result.fetchCalls, 2);
+  assert.equal(result.knownMimeFetchCalls, 0, "a PDF with server-provided MIME opens and reopens without a metadata or body fetch");
+  assert.equal(result.metadataFetchCalls.length, 1, "missing MIME uses the authorized fallback once, then remains resolved after reopening");
+  assert.equal(result.metadataFetchCalls[0].input, "/api/materials/750e8400-e29b-41d4-a716-446655440001/view?metadata=1");
+  assert.equal(result.metadataFetchCalls[0].init?.credentials, "same-origin");
+  assert.equal(result.allMetadataFetchCalls.length, 2);
+  assert.equal(result.allMetadataFetchCalls[1].input, "/api/materials/a50e8400-e29b-41d4-a716-446655440004/view?metadata=1");
+  assert.equal(result.bodyMaterializationCalls, 0, "the viewer never materializes a response as an ArrayBuffer or Blob");
+  assert.equal(result.usesAppUrl, true, "PDF.js receives only the app-controlled view URL");
+  assert.equal(result.credentialsEnabled, true, "PDF.js sends the current same-origin session credentials");
+  assert.equal(result.rangeAndStreamEnabled, true, "PDF.js URL transport keeps streaming and Range requests enabled");
+  assert.equal(result.materialSwitchLoadingShown, true);
+  assert.equal(result.materialSwitchStayedCurrent, true, "a late load from the previous material cannot replace the new PDF");
+  assert.equal(result.stalePdfDestroyCalls, 1, "a document that resolves after its material changed is destroyed");
+  assert.equal(result.closedLoadingShown, true);
+  assert.equal(result.closedWhileLoadingStayedClosed, true, "closing during loading suppresses late errors and keeps the viewer closed");
+  assert.equal(result.closedPdfDestroyCalls, 1, "a document that resolves after close is destroyed");
+  assert.equal(result.metadataAbortObserved, true, "closing during MIME resolution aborts its same-origin request");
+  assert.equal(result.metadataCloseStayedClosed, true, "a late metadata response cannot reopen or update a closed viewer");
 });
 
 test("learner download control fetches the app endpoint and creates a browser download", async () => {
